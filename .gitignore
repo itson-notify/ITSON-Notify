@@ -1,4 +1,13 @@
-.env
+# Dependencias
 node_modules/
+
+# Variables de entorno (solo se versiona el ejemplo)
+.env
+.env.*
+!.env.example
+
+# Sesiones guardadas del RPA (cookies)
 .auth/
-*.png
+
+# Screenshots y salidas de depuración del RPA
+.artifacts/
