@@ -1,0 +1,12 @@
+{
+  "name": "itson-notify",
+  "private": true,
+  "description": "Scripts de conveniencia para correr el RPA y el backend de ITSON Notify",
+  "scripts": {
+    "install:all": "npm --prefix automation install",
+    "demo:login": "node automation/rpa/portal-itson/login-demo.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
