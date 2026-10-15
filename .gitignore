@@ -11,3 +11,7 @@ node_modules/
 
 # Screenshots y salidas de depuración del RPA
 .artifacts/
+
+# Build del frontend
+dist/
+.claude
