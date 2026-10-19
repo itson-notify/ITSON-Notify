@@ -1,0 +1,4 @@
+[
+  { "id": 501, "shortname": "MPA", "fullname": "Materia de prueba A", "visible": 1 },
+  { "id": 502, "shortname": "MPB", "fullname": "Materia de prueba B", "visible": 1 }
+]

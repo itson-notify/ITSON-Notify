@@ -1,0 +1,17 @@
+{
+  "usergrades": [
+    {
+      "courseid": 502,
+      "userid": 4242,
+      "gradeitems": [
+        {
+          "id": 9101, "itemname": "Proyecto final", "itemtype": "mod", "itemmodule": "assign",
+          "categoryid": 80, "cmid": 3101, "graderaw": "95.00000", "gradeformatted": "95.00",
+          "grademin": "0.00000", "grademax": "100.00000", "percentageformatted": "95.00 %",
+          "gradeishidden": 0
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}

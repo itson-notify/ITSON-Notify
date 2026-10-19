@@ -1,0 +1,5 @@
+{
+  "exception": "required_capability_exception",
+  "errorcode": "nopermissions",
+  "message": "Sorry, but you do not currently have permissions to do that (View the user report)."
+}
