@@ -1,0 +1,41 @@
+{
+  "usergrades": [
+    {
+      "courseid": 501,
+      "userid": 4242,
+      "gradeitems": [
+        {
+          "id": 9001, "itemname": "Tarea 1", "itemtype": "mod", "itemmodule": "assign",
+          "categoryid": 70, "cmid": 3001, "graderaw": 85.5, "gradeformatted": "85.50",
+          "grademin": 0, "grademax": 100, "percentageformatted": "85.50 %", "gradeishidden": false
+        },
+        {
+          "id": 9002, "itemname": "Tarea 1", "itemtype": "mod", "itemmodule": "assign",
+          "categoryid": 71, "cmid": 3002, "graderaw": 70, "gradeformatted": "70.00",
+          "grademin": 0, "grademax": 100, "percentageformatted": "70.00 %", "gradeishidden": false
+        },
+        {
+          "id": 9003, "itemname": "Examen parcial 1", "itemtype": "mod", "itemmodule": "quiz",
+          "categoryid": 70, "cmid": 3003, "graderaw": null, "gradeformatted": "-",
+          "grademin": 0, "grademax": 10, "percentageformatted": "-", "gradeishidden": false
+        },
+        {
+          "id": 9004, "itemname": "Oculto sin calificar", "itemtype": "manual",
+          "categoryid": 70, "cmid": null, "graderaw": null, "gradeformatted": "-",
+          "grademin": 0, "grademax": 100, "percentageformatted": "-", "gradeishidden": true
+        },
+        {
+          "id": 9005, "itemname": "Oculto calificado", "itemtype": "manual",
+          "categoryid": 70, "cmid": null, "graderaw": 9, "gradeformatted": "9.00",
+          "grademin": 0, "grademax": 10, "percentageformatted": "90.00 %", "gradeishidden": true
+        },
+        {
+          "id": 9006, "itemname": null, "itemtype": "course",
+          "categoryid": null, "cmid": null, "graderaw": 78.25, "gradeformatted": "78.25",
+          "grademin": 0, "grademax": 100, "percentageformatted": "78.25 %", "gradeishidden": false
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}
