@@ -8,11 +8,14 @@ const { extractGrades } = require("./index");
 
 // Uso: npm run extract:grades [-- --out archivo.json]
 // Sin --out imprime el JSON en stdout; los mensajes van a stderr.
-// Códigos de salida (igual que login-demo.js): 0 éxito, 1 credenciales o error.
-const EXIT_CODES = { ok: 0, credenciales: 1, error: 1 };
+// Códigos de salida (igual que login-demo.js): 0 éxito, 1 credenciales o error,
+// 2 cambio de contraseña.
+const EXIT_CODES = { ok: 0, credenciales: 1, error: 1, cambio_password: 2 };
 
 const MENSAJES = {
   credenciales: "Extracción fallida: credenciales incorrectas. Favor de verificarlas.",
+  cambio_password:
+    "iVirtual pide CAMBIO DE CONTRASEÑA. Hay que actualizarla manualmente en el portal.",
   error: "Extracción fallida:",
 };
 

@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "start": "node schedulers/extraccion-cron.js",
     "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "keywords": [],
   "author": "",
