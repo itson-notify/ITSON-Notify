@@ -1,0 +1,9 @@
+{
+  "name": "itson-notify-railway-iac",
+  "private": true,
+  "type": "module",
+  "description": "SDK para que el CLI de Railway evalúe railway.ts (ITN-25). No se despliega.",
+  "devDependencies": {
+    "railway": "^3.16.0"
+  }
+}
