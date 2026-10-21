@@ -99,3 +99,60 @@ Varias filas de `inserted` pueden ser del mismo ítem (una por campo). Conviene 
 `(subject_id, external_item_id)` para mandar un solo aviso por ítem. Además, el total del curso llega con
 `grade_label` `null`. Decidir si se notifica o cómo se nombra ("Total del curso") le toca a ITN-28; el `type`
 del ítem viene en la extracción de ITN-23, pero hoy no se guarda en `snapshot_grades`.
+
+# Notificación de prueba (ITN-28)
+
+- `notificationService.js`: `notifyGradeChange(gradeChange, { repo, channels, context })` envía el aviso de una
+  fila de `grade_changes` por cada canal y registra cada envío en `notifications_log` (tabla de la migración 002,
+  no hace falta migración nueva).
+- `notificationChannels.js`: `buildChannels({ env, logger })` arma los canales:
+  - `log`: siempre.
+  - `email` (Resend, por HTTP, sin dependencias): solo si existen `RESEND_API_KEY` y `NOTIFY_EMAIL_TO`. Si falta
+    alguna, el canal se omite con un aviso en el log y no falla nada. Remitente: `NOTIFY_EMAIL_FROM`.
+  - FCM y Telegram están fuera de alcance.
+
+```js
+const { inserted } = await detectChanges({ userId, currentSnapshotId }, gradeRepo);
+const channels = buildChannels();
+for (const cambio of inserted) {
+  await notifyGradeChange(cambio, { repo: notificationsRepo, channels, context: { subjectName, itemLabel } });
+}
+```
+
+## Mensaje
+
+Solo lleva la actividad, la materia y los valores (`"Tarea 2 en Cálculo cambió de 70 a 75 (calificación)."`).
+Nunca email, nombre, matrícula, ids ni credenciales. `itemLabel: null` se muestra como "Total del curso".
+
+## Idempotencia y reintentos
+
+- Un registro por `(grade_change_id, channel)` (unique de la migración 002).
+- Si el canal ya quedó `sent`, no se reenvía: el resultado es `duplicate`.
+- Si quedó `pending` o `failed`, se reintenta sobre la misma fila (`attempts + 1`), hasta `MAX_ATTEMPTS` (5).
+- Un canal que falla queda `failed` con el error (sin la llave) y no detiene a los demás.
+
+## Contrato del repo de `notifications_log`
+
+### `claimNotification({ user_id, grade_change_id, channel, payload })` → fila
+
+Inserta la fila con `status = 'pending'` y `attempts = 0` **ignorando el conflicto** en
+`(grade_change_id, channel)`. Si ya existía, devuelve la fila existente sin modificarla. Siempre devuelve
+`{ id, status, attempts, ... }`. Con supabase-js (service_role, solo backend):
+
+```js
+const { data } = await db.from("notifications_log")
+  .upsert(row, { onConflict: "grade_change_id,channel", ignoreDuplicates: true })
+  .select();
+// si data está vacío, ya existía: leerla con .eq("grade_change_id", ...).eq("channel", ...).single()
+```
+
+### `updateNotification(id, patch)`
+
+Actualiza `status`, `attempts`, `error` y `sent_at`.
+
+## Pruebas
+
+`backend/tests/services/notificationService.test.js` simula con un usuario de prueba (datos inventados) un
+cambio 70 → 75 y verifica: el registro en `notifications_log`, que un segundo envío no se duplica y que sin
+`RESEND_API_KEY` solo funciona el canal `log`. Usa repos en memoria y un `fetch` falso, así que no toca Supabase
+ni Resend.

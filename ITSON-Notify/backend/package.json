@@ -2,7 +2,7 @@
   "name": "backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Backend de ITSON Notify (ITN-27). Por ahora solo los servicios de ITN-24 y sus pruebas.",
+  "description": "Backend de ITSON Notify (ITN-27). Por ahora solo los servicios de ITN-24 e ITN-28 y sus pruebas.",
   "scripts": {
     "test": "node --test"
   },
