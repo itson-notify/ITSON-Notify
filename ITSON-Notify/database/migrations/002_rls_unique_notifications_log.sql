@@ -51,3 +51,9 @@ create index if not exists idx_notifications_log_user_created
   on notifications_log(user_id, created_at desc);
 
 alter table notifications_log enable row level security;
+
+-- Desde el 30 de octubre de 2026 Supabase ya no da acceso automatico a la Data
+-- API en tablas nuevas de public. Solo la service_role (backend); anon y
+-- authenticated no reciben permisos. Agregado en ITN-28, despues de aplicar
+-- esta migracion en itson-notify-dev: ahi el grant llega con la 004.
+grant select, insert, update, delete on public.notifications_log to service_role;
