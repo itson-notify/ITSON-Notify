@@ -1,7 +1,7 @@
--- 004 - ITN-28 - Grants explicitos a service_role
+-- 005 - ITN-28 - Grants explicitos a service_role
 -- Supabase / PostgreSQL 15+
 -- Desde el 30 de octubre de 2026 Supabase ya no otorga acceso automatico a la
--- Data API en tablas nuevas de public. Ninguna migracion (001 a 003) tenia
+-- Data API en tablas nuevas de public. Ninguna migracion (001 a 004) tenia
 -- grants explicitos: hasta ahora dependian de los permisos por defecto.
 -- Esta migracion los deja explicitos para que un entorno nuevo funcione igual.
 --
