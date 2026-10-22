@@ -4,8 +4,8 @@
 - `gradeChangeService.js`: `detectChanges({ userId, currentSnapshotId }, repo)` obtiene los snapshots, corre el
   diff y guarda en `grade_changes` mediante un **repo inyectado**.
 
-El backend Express (ITN-27) todavía no existe. Este módulo no depende de Express ni de Supabase: el repo real
-se conecta cuando ITN-27 se mergee. Las pruebas usan un repo en memoria
+Este módulo no depende de Express ni de Supabase. El repo real sobre Supabase es
+`backend/src/repositories/gradeChangeRepository.js` (ITN-27). Las pruebas del servicio usan un repo en memoria
 (`backend/tests/services/gradeChangeService.test.js`) que sirve de implementación de referencia.
 
 ```bash
