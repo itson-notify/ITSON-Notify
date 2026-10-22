@@ -4,6 +4,7 @@
 const express = require("express");
 const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
+const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 
 function createApp({ config, supabase, logger = createLogger(), now = () => Date.now() }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
@@ -19,6 +20,7 @@ function createApp({ config, supabase, logger = createLogger(), now = () => Date
 
   // Rutas del worker. La llave se revisa ANTES de parsear el body.
   app.use("/internal", requireApiKey(config.internalApiKey), express.json({ limit: "1mb" }));
+  app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now }));
 
   app.use((req, res) => {
     res.status(404).json({ error: "no_encontrado" });
