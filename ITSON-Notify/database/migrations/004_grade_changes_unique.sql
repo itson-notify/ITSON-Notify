@@ -11,7 +11,7 @@
 -- Requiere 003. Idempotente: se puede ejecutar mas de una vez sin error ni
 -- efectos extra. Todo corre en una sola transaccion.
 -- No crea tablas: no necesita grants nuevos.
--- NO aplicada todavia en ningun entorno.
+-- Aplicada en itson-notify-dev el 21/10/2026
 
 -- 0) Antes de aplicar: filas duplicadas que impedirian crear el unique.
 -- group by trata los NULL como iguales, igual que nulls not distinct.
