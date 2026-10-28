@@ -118,6 +118,25 @@ describe("errores", () => {
     assert.equal(calls.length, 1, "no se reintenta un error de Moodle");
   });
 
+  test("cambio de contraseña obligatorio devuelve 'cambio_password'", async (t) => {
+    const { calls } = mockMoodle(t, {
+      token: () => json(fixture("forcepasswordchange")),
+    });
+    const result = await extractGrades(CREDS, OPTS);
+
+    assert.deepEqual(result, { status: "cambio_password", courses: [] });
+    assert.equal(calls.length, 1, "no se reintenta");
+  });
+
+  test("contraseña expirada también devuelve 'cambio_password'", async (t) => {
+    mockMoodle(t, {
+      token: () => json({ error: "x", errorcode: "passwordisexpired" }),
+    });
+    const result = await extractGrades(CREDS, OPTS);
+
+    assert.equal(result.status, "cambio_password");
+  });
+
   test("token inválido devuelve 'error' sin exponer el token", async (t) => {
     mockMoodle(t, {
       core_webservice_get_site_info: () => json(fixture("invalidtoken")),

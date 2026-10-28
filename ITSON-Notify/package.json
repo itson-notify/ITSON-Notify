@@ -5,7 +5,8 @@
   "scripts": {
     "install:all": "npm --prefix automation install",
     "demo:login": "node automation/rpa/portal-itson/login-demo.js",
-    "extract:grades": "node automation/rpa/ivirtual-api/cli.js"
+    "extract:grades": "node automation/rpa/ivirtual-api/cli.js",
+    "cron:extraccion": "node automation/schedulers/extraccion-cron.js"
   },
   "engines": {
     "node": ">=20"
