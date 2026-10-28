@@ -7,7 +7,7 @@
 -- Requiere 002. Idempotente: se puede ejecutar mas de una vez sin error ni
 -- efectos extra. Todo corre en una sola transaccion: si algo falla, no queda
 -- nada a medias.
--- NO aplicada todavia en ningun entorno.
+-- Aplicada en itson-notify-dev (requisito de la 004, tambien aplicada ahi).
 
 begin;
 
