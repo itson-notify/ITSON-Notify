@@ -2,7 +2,7 @@
   "name": "backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Backend de ITSON Notify (ITN-27): recibe los resultados del worker, los guarda en Supabase y detecta cambios (ITN-24).",
+  "description": "Backend de ITSON Notify (ITN-27): recibe los resultados del worker, los guarda en Supabase y detecta cambios (ITN-24). Incluye los servicios de ITN-24 e ITN-28 y sus pruebas.",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --env-file=.env src/server.js",

@@ -3,7 +3,12 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "node --test"
+    "start": "node schedulers/extraccion-cron.js",
+    "test": "node --test",
+    "alert:test": "node scripts/enviar-alerta-prueba.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "keywords": [],
   "author": "",
