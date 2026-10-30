@@ -5,14 +5,20 @@ const assert = require("node:assert/strict");
 
 const { ejecutar } = require("../extraccion-cron");
 
-const ENV = { Id_User: "00000000000", P_User: "pass-de-prueba" };
+const ENV = {
+  Id_User: "00000000000",
+  P_User: "pass-de-prueba",
+  BACKEND_URL: "http://backend.test",
+  INTERNAL_API_KEY: "llave-de-prueba-".padEnd(40, "x"),
+  ALUMNO_EMAIL: "alumno@example.test",
+};
 const CURSOS = [{ items: [{}, {}] }, { items: [{}] }];
 
-function simular(t, resultado, env = ENV) {
+function simular(t, resultado, env = ENV, envio = { ok: true }) {
   const lineas = [];
   const extract = t.mock.fn(async () => resultado);
   const alertar = t.mock.fn(async () => {});
-  const entregar = t.mock.fn(async () => {});
+  const entregar = t.mock.fn(async () => envio);
   const log = (linea) => lineas.push(linea);
   const correr = () => ejecutar({ env, extract, alertar, entregar, log });
   return { correr, extract, alertar, entregar, lineas };
@@ -26,6 +32,27 @@ describe("cron de extracción", () => {
     assert.equal(s.entregar.mock.callCount(), 1);
     assert.equal(s.alertar.mock.callCount(), 0);
     assert.ok(s.lineas.some((l) => l.includes("2 curso(s), 3 ítem(s)")));
+    const [, opciones] = s.entregar.mock.calls[0].arguments;
+    assert.equal(opciones.config.endpoint, "http://backend.test/internal/grade-snapshots");
+    assert.ok(!Number.isNaN(Date.parse(opciones.capturedAt)));
+  });
+
+  test("entrega fallida tras los reintentos: sale con 1", async (t) => {
+    const s = simular(t, { status: "ok", courses: CURSOS }, ENV, { ok: false, status: 503 });
+
+    assert.equal(await s.correr(), 1);
+    assert.equal(s.entregar.mock.callCount(), 1);
+  });
+
+  test("sin variables del backend sale con 1 sin consultar ni imprimir valores", async (t) => {
+    const { BACKEND_URL, ALUMNO_EMAIL, ...resto } = ENV;
+    const s = simular(t, { status: "ok", courses: CURSOS }, resto);
+
+    assert.equal(await s.correr(), 1);
+    assert.equal(s.extract.mock.callCount(), 0);
+    const todo = s.lineas.join("\n");
+    assert.match(todo, /BACKEND_URL, ALUMNO_EMAIL/);
+    assert.ok(!todo.includes(ENV.INTERNAL_API_KEY));
   });
 
   test("cambio de contraseña: alerta una vez y sale con 2", async (t) => {
