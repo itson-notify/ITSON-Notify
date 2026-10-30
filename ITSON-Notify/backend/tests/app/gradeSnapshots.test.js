@@ -148,6 +148,8 @@ describe("persistencia y detección", () => {
       reason: "primera_corrida",
       changes_detected: 0,
       changes_inserted: 0,
+      notified: 0,
+      failed: 0,
     });
     assert.equal(db.tables.app_users.length, 1);
     assert.equal(db.tables.subjects.length, 2);

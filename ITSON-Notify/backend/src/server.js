@@ -5,6 +5,7 @@ const { loadConfig } = require("./config/env");
 const { createSupabaseClient } = require("./config/supabase");
 const { createApp } = require("./app");
 const { createLogger } = require("./utils/logger");
+const { buildChannels } = require("./services/notificationChannels");
 
 function main() {
   let config;
@@ -18,7 +19,9 @@ function main() {
 
   const logger = createLogger();
   const supabase = createSupabaseClient(config);
-  const app = createApp({ config, supabase, logger });
+  // Email solo si existen RESEND_API_KEY y NOTIFY_EMAIL_TO; si no, solo log.
+  const channels = buildChannels({ env: process.env, logger });
+  const app = createApp({ config, supabase, logger, channels });
 
   app.listen(config.port, () => {
     logger.info("servidor_iniciado", { port: config.port });

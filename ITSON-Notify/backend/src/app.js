@@ -1,12 +1,20 @@
 // ITN-27 - App de Express, separada del arranque (server.js) para probarla con
-// supertest. Las dependencias (config, cliente de Supabase, logger) se
-// inyectan: las pruebas usan un Supabase simulado.
+// supertest. Las dependencias (config, cliente de Supabase, logger, canales de
+// notificación) se inyectan: las pruebas usan un Supabase simulado. Sin
+// `channels`, solo se usa el canal log.
 const express = require("express");
 const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
+const { buildChannels } = require("./services/notificationChannels");
 
-function createApp({ config, supabase, logger = createLogger(), now = () => Date.now() }) {
+function createApp({
+  config,
+  supabase,
+  logger = createLogger(),
+  now = () => Date.now(),
+  channels = buildChannels({ env: {}, logger }),
+}) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
   if (!supabase) throw new Error("createApp requiere un cliente de Supabase");
 
@@ -20,7 +28,7 @@ function createApp({ config, supabase, logger = createLogger(), now = () => Date
 
   // Rutas del worker. La llave se revisa ANTES de parsear el body.
   app.use("/internal", requireApiKey(config.internalApiKey), express.json({ limit: "1mb" }));
-  app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now }));
+  app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now, channels }));
 
   app.use((req, res) => {
     res.status(404).json({ error: "no_encontrado" });
