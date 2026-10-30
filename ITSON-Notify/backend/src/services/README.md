@@ -105,19 +105,27 @@ del ítem viene en la extracción de ITN-23, pero hoy no se guarda en `snapshot_
 - `notificationService.js`: `notifyGradeChange(gradeChange, { repo, channels, context })` envía el aviso de una
   fila de `grade_changes` por cada canal y registra cada envío en `notifications_log` (tabla de la migración 002,
   no hace falta migración nueva).
+- `notifyGroupedChanges(inserted, { repo, channels })`: lo que usa la ruta (`routes/gradeSnapshots.js`). Agrupa
+  `inserted` por `(subject_id, external_item_id)` y manda un aviso por ítem y canal con `buildGroupedMessage`.
+  Reclama cada grupo con su `grade_change_id` menor y guarda en `payload` el mensaje y `grade_change_ids`.
+  Devuelve `{ notified, failed, results }` y no lanza por fallas de canal ni de Supabase.
+- `retryPendingNotifications(userId, { repo, channels })`: reenvía el `payload` guardado de las filas
+  `pending`/`failed` del usuario con `attempts < MAX_ATTEMPTS`. Devuelve `{ retried, notified, failed, results }`.
 - `notificationChannels.js`: `buildChannels({ env, logger })` arma los canales:
-  - `log`: siempre.
+  - `log`: siempre. Registra el evento fijo `notificacion_enviada` con `grade_change_id` y `grade_change_ids`;
+    nunca el texto del mensaje.
   - `email` (Resend, por HTTP, sin dependencias): solo si existen `RESEND_API_KEY` y `NOTIFY_EMAIL_TO`. Si falta
     alguna, el canal se omite con un aviso en el log y no falla nada. Remitente: `NOTIFY_EMAIL_FROM`.
   - FCM y Telegram están fuera de alcance.
 
 ```js
-const { inserted } = await detectChanges({ userId, currentSnapshotId }, gradeRepo);
-const channels = buildChannels();
-for (const cambio of inserted) {
-  await notifyGradeChange(cambio, { repo: notificationsRepo, channels, context: { subjectName, itemLabel } });
-}
+const result = await detectChanges({ userId, currentSnapshotId }, gradeRepo);
+const channels = buildChannels({ env: process.env, logger });
+await retryPendingNotifications(userId, { repo: notificationsRepo, channels });
+if (!result.baseline) await notifyGroupedChanges(result.inserted, { repo: notificationsRepo, channels });
 ```
+
+`notifyGradeChange` (una fila, un aviso) se mantiene con la misma API.
 
 ## Mensaje
 
@@ -149,6 +157,19 @@ const { data } = await db.from("notifications_log")
 ### `updateNotification(id, patch)`
 
 Actualiza `status`, `attempts`, `error` y `sent_at`.
+
+### `listPendingNotifications(userId, maxAttempts)` → filas
+
+Filas del usuario con `status` en `pending`/`failed`, `attempts < maxAttempts` y `grade_change_id` no nulo,
+de la más vieja a la más nueva (tope de 100 por corrida).
+
+### `getItemContext(refs)` → `Map`
+
+`refs`: `[{ subjectId, externalItemId, snapshotId }]` (los grupos de `groupChanges`). Lee `subjects.name` y
+`snapshot_grades.grade_label` con una consulta por tabla y devuelve `Map(subjectId + "\u0000" + externalItemId →
+{ subjectName, itemLabel })`. `itemLabel` `null` es el total del curso; `undefined` si no se encontró.
+
+Implementación real: `backend/src/repositories/notificationRepository.js`.
 
 ## Pruebas
 

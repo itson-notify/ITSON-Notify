@@ -1,7 +1,7 @@
 # Backend de ITSON Notify (ITN-27)
 
-Servidor Express que recibe cada extracción del worker (ITN-25), la guarda en Supabase y corre el detector de
-cambios de ITN-24. No envía notificaciones: ese acople es de ITN-28.
+Servidor Express que recibe cada extracción del worker (ITN-25), la guarda en Supabase, corre el detector de
+cambios de ITN-24 y notifica los cambios nuevos (ITN-28).
 
 ```bash
 cd backend
@@ -13,6 +13,11 @@ npm test               # node:test, con Supabase simulado
 
 Requiere Node 20 o más nuevo. En Railway se usa `npm start` y las variables del servicio, sin archivo `.env`.
 
+**Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
+`004_grade_changes_unique.sql` (llave natural de `grade_changes`; hoy vive en su propia rama, todavía no en
+`main`) y `005_service_role_grants.sql` (grants explícitos; obligatoria en entornos creados desde el 30 de
+octubre de 2026).
+
 ## Variables
 
 | Variable                    | Uso                                                              |
@@ -23,6 +28,14 @@ Requiere Node 20 o más nuevo. En Railway se usa `npm start` y las variables del
 | `SUPABASE_SERVICE_ROLE_KEY` | Llave `service_role`. **Solo en el backend**                     |
 
 Si falta alguna o es inválida, el servidor no arranca y el mensaje nombra la variable (nunca su valor).
+
+Opcionales (notificaciones, ITN-28). Sin ellas el servidor arranca igual y solo usa el canal `log`:
+
+| Variable            | Uso                                                                        |
+| ------------------- | -------------------------------------------------------------------------- |
+| `RESEND_API_KEY`    | Llave de Resend. Sin ella, el canal `email` se omite                       |
+| `NOTIFY_EMAIL_TO`   | Destinatario de prueba. Sin él, el canal `email` se omite                  |
+| `NOTIFY_EMAIL_FROM` | Remitente. Vacío usa `ITSON Notify <onboarding@resend.dev>`                |
 
 Las tablas tienen RLS activado y sin políticas, así que solo la `service_role` puede leer y escribir. Por eso
 el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca reciben esa llave.
@@ -37,6 +50,9 @@ el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca rec
 | `src/models/gradeSnapshotPayload.js`         | Esquema zod del body                                         |
 | `src/repositories/snapshotRepository.js`     | Upserts del snapshot                                         |
 | `src/repositories/gradeChangeRepository.js`  | Repo real de `detectChanges` (contrato en `src/services/README.md`) |
+| `src/repositories/notificationRepository.js` | Repo real de `notifications_log` (ITN-28)                    |
+| `src/services/notificationService.js`        | Agrupa cambios por ítem, envía y reintenta pendientes        |
+| `src/services/notificationChannels.js`       | Canales `log` y `email` (Resend)                             |
 | `src/routes/gradeSnapshots.js`               | `POST /internal/grade-snapshots`                             |
 | `src/utils/logger.js`                        | Logs JSON con lista blanca de campos                         |
 
@@ -120,7 +136,9 @@ formado responde `400 {"error":"cuerpo_invalido"}` y un body de más de 1 MB, `4
   "baseline": false,
   "reason": null,
   "changes_detected": 2,
-  "changes_inserted": 2
+  "changes_inserted": 2,
+  "notified": 2,
+  "failed": 0
 }
 ```
 
@@ -128,6 +146,8 @@ formado responde `400 {"error":"cuerpo_invalido"}` y un body de más de 1 MB, `4
 - `baseline` y `reason`: los de `detectChanges` (`primera_corrida`, `snapshot_legacy` o `null`).
 - `changes_detected`: cambios calculados contra el snapshot anterior. `changes_inserted`: filas nuevas en
   `grade_changes` en esta llamada (0 en un reenvío).
+- `notified` y `failed`: envíos por canal que quedaron `sent` o `failed` en esta llamada, contando los
+  reintentos de pendientes. Un fallo de notificación nunca cambia el `200`.
 
 #### Errores
 
@@ -166,11 +186,38 @@ Después corre `detectChanges({ userId, currentSnapshotId }, repo)`, que inserta
 
 Así, enviar dos veces el mismo payload no duplica filas ni cambios.
 
+## Notificaciones (ITN-28)
+
+Después de `detectChanges`, en cada llamada:
+
+1. **Reintenta pendientes** del mismo usuario: filas de `notifications_log` en `pending` o `failed`, con
+   `attempts < 5` y `grade_change_id` no nulo (hasta 100 por corrida). Reenvía el `payload` guardado. Corre
+   también en baseline.
+2. Si `baseline` es `false`, **notifica `inserted` agrupado por `(subject_id, external_item_id)`**: un aviso por
+   ítem y canal, p. ej. `"Tarea 3 en Cálculo: calificación de 8 a 9."`. El cambio de `grade_value` y
+   `grade_text` de una misma nota sale en un solo mensaje; si solo cambió `grade_text`, también se notifica.
+3. Cada grupo se reclama en `notifications_log` con el **`grade_change_id` menor del grupo** (unique
+   `(grade_change_id, channel)` de la 002). `payload` guarda `subject`, `text` y `grade_change_ids` (todos los
+   ids del grupo). Lo que ya quedó `sent` no se vuelve a enviar.
+
+El nombre de la materia sale de `subjects` y el de la actividad de `snapshot_grades` (del snapshot anterior si
+el ítem se borró). Si no se encuentran, el mensaje usa "Una actividad" y omite la materia. El total del curso
+(`grade_label` `null`) se notifica como "Total del curso".
+
+Todo esto corre dentro de `try/catch`: el snapshot y los cambios ya están guardados, así que un fallo de canal
+o de Supabase solo se refleja en `failed` y en el log, y la fila queda `failed` (o `pending`) para la siguiente
+corrida.
+
 ## Privacidad de los logs
 
 Los logs son una línea JSON por evento y solo llevan ids (`snapshot_id`, `user_id`), conteos y códigos de error
 (`step`, `error_code`). El logger descarta cualquier otro campo. Nunca se registran calificaciones, nombres de
 materias, correos, matrículas, llaves ni el body.
+
+Los eventos de notificación (`notificacion_enviada`, `notificacion_fallida`,
+`reintento_notificaciones_fallido`, `notificacion_no_procesada`) solo llevan `grade_change_id`,
+`grade_change_ids`, `channel`, `attempts` y conteos. Nunca el texto del mensaje, el error del proveedor
+(puede traer el correo) ni el `user_id`. El error del proveedor solo se guarda en `notifications_log.error`.
 
 ## Limitaciones conocidas
 
@@ -187,8 +234,17 @@ materias, correos, matrículas, llaves ni el body.
 - **Reenvío con ítems distintos.** Un reenvío con el mismo `run_id` agrega o actualiza ítems, pero no borra
   los que ya no vienen. El worker debe reenviar exactamente la misma extracción.
 - **Grants.** Las tablas de dev existen desde antes del 30 de octubre de 2026 y conservan el acceso
-  automático de la `service_role`. En un entorno nuevo hace falta la migración 005 (grants explícitos,
-  rama de ITN-28).
+  automático de la `service_role`. En un entorno nuevo hace falta la migración 005 (grants explícitos).
+- **Grupo sin reclamar.** Si falla el reclamo en `notifications_log` (Supabase caído justo en ese paso), ese
+  grupo no queda registrado y la siguiente corrida no lo ve: `inserted` ya no lo trae y el reintento solo lee
+  `notifications_log`. Queda contado en `failed`. Recuperarlo requiere buscar `grade_changes` sin fila en
+  `notifications_log`.
+- **Corridas simultáneas del mismo alumno.** Dos peticiones al mismo tiempo podrían reintentar la misma fila
+  `pending` y enviarla dos veces. El worker corre una vez por intervalo, así que no se esperan.
+- **Pendiente: alertas al equipo desde el backend.** `sendTeamAlert` (Telegram) vive en
+  `automation/monitors/telegram.js` y el backend no puede importarlo. Para avisar al equipo de notificaciones
+  fallidas hay que sacar ese módulo a algo compartido. **Ticket aparte.** Mientras tanto, los fallos solo
+  quedan en el log estructurado y en `notifications_log`.
 
 ## Lo que necesita ITN-25 para llamar a este endpoint
 
