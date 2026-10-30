@@ -67,9 +67,10 @@ function notificationsRepo() {
   };
 }
 
+// Guarda cada llamada como JSON { event, ...fields }.
 const silentLogger = () => {
   const lines = [];
-  const push = (l) => lines.push(l);
+  const push = (event, fields = {}) => lines.push(JSON.stringify({ event, ...fields }));
   return { lines, info: push, warn: push, error: push };
 };
 
@@ -110,7 +111,13 @@ describe("notifyGradeChange", () => {
     assert.equal(fila.status, "sent");
     assert.ok(fila.sent_at);
     assert.equal(fila.payload.text, "Tarea 2 en Materia de prueba cambió de 70 a 75 (calificación).");
-    assert.ok(logger.lines.some((l) => l.includes(`grade_change=${cambio.id}`)));
+    const linea = JSON.parse(logger.lines.find((l) => l.includes("notificacion_enviada")));
+    assert.deepEqual(linea, {
+      event: "notificacion_enviada",
+      grade_change_id: cambio.id,
+      grade_change_ids: [cambio.id],
+    });
+    assert.ok(!logger.lines.join("\n").includes(fila.payload.text), "el log no lleva el mensaje");
   });
 
   test("(2) un segundo envío del mismo cambio no se duplica", async () => {
@@ -145,7 +152,7 @@ describe("notifyGradeChange", () => {
     assert.deepEqual(results.map((r) => `${r.channel}:${r.status}`), ["log:sent"]);
     assert.deepEqual(repo.log.map((r) => r.channel), ["log"]);
     assert.equal(llamadasFetch, 0);
-    assert.ok(logger.lines.some((l) => l.includes("canal email omitido")));
+    assert.ok(logger.lines.some((l) => l.includes("canal_email_omitido")));
   });
 
   test("con RESEND_API_KEY también envía por email a Resend", async () => {

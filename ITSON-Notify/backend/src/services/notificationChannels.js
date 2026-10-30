@@ -6,13 +6,17 @@
 const RESEND_URL = "https://api.resend.com/emails";
 const RESEND_TIMEOUT_MS = 10_000;
 
-// Escribe el aviso en el logger. Solo recibe el mensaje ya armado (sin datos
-// personales) y el id del cambio para poder rastrearlo.
+// Registra que se notificó, con un evento fijo y solo los ids de
+// grade_changes. Nunca escribe el texto del mensaje: lleva materia, actividad
+// y calificaciones.
 function logChannel(logger = console) {
   return {
     name: "log",
-    async send(message, { gradeChangeId }) {
-      logger.info(`[notificacion] grade_change=${gradeChangeId} ${message.subject}: ${message.text}`);
+    async send(message, { gradeChangeId, gradeChangeIds }) {
+      logger.info("notificacion_enviada", {
+        grade_change_id: gradeChangeId,
+        grade_change_ids: gradeChangeIds ?? [gradeChangeId],
+      });
     },
   };
 }
@@ -53,11 +57,11 @@ function buildChannels({ env = process.env, logger = console, fetchImpl } = {}) 
   const channels = [logChannel(logger)];
 
   if (!env.RESEND_API_KEY) {
-    logger.info("[notificacion] RESEND_API_KEY no definida: canal email omitido");
+    logger.info("canal_email_omitido", { reason: "sin_resend_api_key" });
     return channels;
   }
   if (!env.NOTIFY_EMAIL_TO) {
-    logger.warn("[notificacion] NOTIFY_EMAIL_TO no definida: canal email omitido");
+    logger.warn("canal_email_omitido", { reason: "sin_notify_email_to" });
     return channels;
   }
 

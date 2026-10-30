@@ -1,7 +1,7 @@
 // ITN-27 - Logger de una línea JSON por evento.
 // Privacidad: solo deja pasar campos de una lista blanca (ids, conteos,
-// códigos) y solo si el valor es número, booleano, null o un texto corto con
-// forma de id. Así un dato sensible (calificación, materia, correo, matrícula,
+// códigos) y solo si el valor es número, booleano, null, un texto corto con
+// forma de id o una lista corta de esos textos. Así un dato sensible (calificación, materia, correo, matrícula,
 // llave, body) no llega a los logs aunque alguien lo pase por error.
 
 const CAMPOS_PERMITIDOS = new Set([
@@ -20,14 +20,28 @@ const CAMPOS_PERMITIDOS = new Set([
   "error_code",
   "compensation",
   "port",
+  // ITN-28: solo ids de grade_changes y conteos, nunca el mensaje.
+  "grade_change_id",
+  "grade_change_ids",
+  "channel",
+  "attempts",
+  "retried",
+  "notified",
+  "failed",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.
 const TEXTO_SEGURO = /^[A-Za-z0-9_.:-]{1,64}$/;
 
+// Listas de ids (p. ej. grade_change_ids de un grupo), con tope de largo.
+const MAX_LISTA = 20;
+
 function valorSeguro(value) {
   if (value === null || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) {
+    return value.length <= MAX_LISTA && value.every((v) => typeof v === "string" && TEXTO_SEGURO.test(v));
+  }
   return typeof value === "string" && TEXTO_SEGURO.test(value);
 }
 
