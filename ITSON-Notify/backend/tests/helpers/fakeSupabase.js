@@ -1,7 +1,7 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
-// usa el backend del query builder de supabase-js (select, upsert, delete,
-// eq/neq/lt, order, limit, range, single, maybeSingle) y las reglas de las
-// migraciones 001 a 004 que importan aquí:
+// usa el backend del query builder de supabase-js (select, upsert, update,
+// delete, eq/neq/lt/in/not is null, order, limit, range, single, maybeSingle) y
+// las reglas de las migraciones 001 a 004 que importan aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
 //     escritas;
@@ -22,6 +22,12 @@ const TABLES = {
   grade_changes: {
     uniques: [["previous_snapshot_id", "current_snapshot_id", "subject_id", "external_item_id", "field_name"]],
     notNull: ["user_id", "field_name", "change_type"],
+  },
+  // 002: unique (grade_change_id, channel); status y attempts con default.
+  notifications_log: {
+    uniques: [["grade_change_id", "channel"]],
+    notNull: ["user_id", "channel", "status", "attempts"],
+    defaults: { status: "pending", attempts: 0, error: null, sent_at: null, payload: null },
   },
 };
 
@@ -71,8 +77,23 @@ class Query {
     this.options = options;
     return this;
   }
+  update(patch) {
+    this.op = "update";
+    this.patch = patch;
+    return this;
+  }
   delete() {
     this.op = "delete";
+    return this;
+  }
+  in(column, values) {
+    this.filters.push((r) => norm(r[column]) !== null && values.includes(r[column]));
+    return this;
+  }
+  // Solo la forma que usa el backend: .not(column, "is", null).
+  not(column, operator, value) {
+    if (operator !== "is" || value !== null) throw new Error(`not(${operator}) no soportado en el fake`);
+    this.filters.push((r) => norm(r[column]) !== null);
     return this;
   }
   eq(column, value) {
@@ -124,6 +145,7 @@ class Query {
     let result;
     if (this.op === "upsert") result = this.executeUpsert();
     else if (this.op === "delete") result = this.executeDelete();
+    else if (this.op === "update") result = this.executeUpdate();
     else result = { data: this.executeSelect(), error: null };
     if (result.error) return result;
 
@@ -205,6 +227,16 @@ class Query {
     }
     this.db.tables[this.table] = staged;
     return { data: devueltas.map((r) => project(r, this.columns)), error: null };
+  }
+
+  executeUpdate() {
+    const def = TABLES[this.table];
+    const cambiadas = this.db.tables[this.table].filter((r) => this.filters.every((f) => f(r)));
+    for (const c of def.notNull ?? []) {
+      if (c in this.patch && norm(this.patch[c]) === null) return pgError("23502", `null en ${c}`);
+    }
+    for (const r of cambiadas) Object.assign(r, this.patch);
+    return { data: cambiadas.map((r) => project(r, this.columns)), error: null };
   }
 
   executeDelete() {
