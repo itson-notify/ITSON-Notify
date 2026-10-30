@@ -5,13 +5,12 @@
 -- grants explicitos: hasta ahora dependian de los permisos por defecto.
 -- Esta migracion los deja explicitos para que un entorno nuevo funcione igual.
 --
--- notifications_log tambien esta aqui: su grant se agrego a la 002 despues de
--- que esa migracion ya se habia aplicado en itson-notify-dev.
---
 -- Solo service_role (backend). anon y authenticated no reciben permisos;
 -- todas las tablas siguen con RLS activado y sin politicas.
 -- Idempotente: un grant repetido no falla ni cambia nada.
--- NO aplicada todavia en ningun entorno.
+-- Pendiente de aplicar. No hace falta en itson-notify-dev, que conserva los
+-- permisos por defecto de cuando se creo; si es obligatoria en cualquier
+-- entorno creado desde el 30 de octubre de 2026.
 
 begin;
 
