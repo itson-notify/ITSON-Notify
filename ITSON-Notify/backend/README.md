@@ -14,9 +14,8 @@ npm test               # node:test, con Supabase simulado
 Requiere Node 20 o más nuevo. En Railway se usa `npm start` y las variables del servicio, sin archivo `.env`.
 
 **Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
-`004_grade_changes_unique.sql` (llave natural de `grade_changes`; hoy vive en su propia rama, todavía no en
-`main`) y `005_service_role_grants.sql` (grants explícitos; obligatoria en entornos creados desde el 30 de
-octubre de 2026).
+`004_grade_changes_unique.sql` (llave natural de `grade_changes`) y `005_service_role_grants.sql` (grants
+explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026).
 
 ## Variables
 
