@@ -8,6 +8,7 @@ corridas no hay contenedor encendido, así que tampoco hay consumo.
 |-------|---------|
 | Servicio, horario y política de reinicio | [`.railway/railway.ts`](../../../.railway/railway.ts) (raíz del repo) |
 | Punto de entrada del cron | [`automation/schedulers/extraccion-cron.js`](../../automation/schedulers/extraccion-cron.js) |
+| Entrega al backend (ITN-27) | [`automation/schedulers/entrega-backend.js`](../../automation/schedulers/entrega-backend.js) |
 | Enganche de alertas (Telegram en ITN-38/39) | [`automation/monitors/alertas.js`](../../automation/monitors/alertas.js) |
 | Nombres de variables | [`.env.example`](../../.env.example) |
 
@@ -36,6 +37,7 @@ anterior sigue activa se salta la siguiente.
 |--------|-------------|----------|
 | 0 | Extracción correcta, o `RPA_PAUSADO=true` | Nada. |
 | 1 | Error pasajero (red, 5xx, Moodle) o falta configuración | Se registra. La siguiente corrida lo vuelve a intentar. |
+| 1 | Entrega al backend fallida tras los reintentos | Se registra con `run_id` y se manda alerta al equipo por Telegram. |
 | 1 | Credenciales rechazadas | Se registra `ALERTA_RPA` y se llama al enganche de alertas. |
 | 2 | iVirtual pide **cambio de contraseña** | Se registra `ALERTA_RPA` y se llama al enganche de alertas. |
 
@@ -83,8 +85,9 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
    railway config apply
    ```
 
-5. En el dashboard, en **worker-rpa → Variables**, captura `Id_User` y `P_User` (márcalas como *sealed*) y
-   `RPA_PAUSADO=false`. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` en este servicio.
+5. En el dashboard, en **worker-rpa → Variables**, captura `Id_User`, `P_User` e `INTERNAL_API_KEY` (márcalas
+   como *sealed*), `BACKEND_URL`, `ALUMNO_EMAIL` y `RPA_PAUSADO=false`. `INTERNAL_API_KEY` debe ser la misma
+   que la del backend. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` en este servicio.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.
 7. Prueba una corrida y revisa los logs:
 
@@ -99,6 +102,46 @@ declara esas variables en `railway.ts` con `preserve()` para que el valor siga v
 Notas de build: el servicio usa `automation/` como directorio raíz, con `node` ≥ 20 según `engines`. El paquete
 `playwright` 1.63 no descarga navegadores al instalarse, así que la imagen queda ligera. El respaldo con
 Playwright (`fallback.js`) **no** se usa en el cron.
+
+## Entrega al backend
+
+Después de una extracción correcta, el worker manda `POST ${BACKEND_URL}/internal/grade-snapshots` con
+`x-api-key: INTERNAL_API_KEY`. El contrato del body está en [`backend/README.md`](../../backend/README.md): el
+worker toma `courses` tal cual sale de `extractGrades()` y agrega `run_id`, `captured_at`, `source` y
+`user.email` (`ALUMNO_EMAIL`).
+
+| Variable | Uso |
+|----------|-----|
+| `BACKEND_URL` | URL base del backend, sin la ruta (p. ej. la URL privada de Railway) |
+| `INTERNAL_API_KEY` | La misma llave que el backend, mínimo 32 caracteres |
+| `ALUMNO_EMAIL` | Correo del alumno. Nunca la matrícula |
+
+Las tres son obligatorias. Si falta alguna o es inválida, el cron sale con 1 **antes** de consultar iVirtual y
+el log nombra la variable, nunca su valor.
+
+- **run_id:** un UUID por corrida. Los reintentos de esa corrida reusan el mismo; el backend es idempotente
+  por `run_id`.
+- **Timeout:** 30 s por intento.
+- **Reintentos:** hasta 3 (4 intentos en total) con espera de 1, 2 y 4 s, solo ante error de red, timeout o
+  `5xx`. `400`, `401`, `409` y `413` no se reintentan.
+- **Fallo:** el log lleva `run_id`, status e intento; se manda una alerta con `sendTeamAlert` (sin `run_id`,
+  porque el filtro de Telegram rechaza cadenas largas) y el proceso sale con 1.
+- **Éxito:** el log lleva `run_id`, `baseline` y `changes_detected`.
+- **Sin cursos:** si la extracción no trae cursos no se envía nada (el backend rechaza `courses` vacío) y sale
+  con 0.
+
+Nunca se loguea ni se manda en alertas el body, las calificaciones, el correo, la URL ni la llave.
+
+### Probar contra el backend local
+
+1. En `ITSON-Notify/.env` llena `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` del proyecto de **dev**,
+   `INTERNAL_API_KEY` (32+ caracteres, p. ej. `openssl rand -hex 32`), `BACKEND_URL=http://localhost:3000`,
+   `ALUMNO_EMAIL` y las credenciales de iVirtual.
+2. Copia esas variables al backend (`backend/.env`, ver `backend/README.md`) y arráncalo con `npm run dev`.
+3. Corre el cron una vez desde la raíz de `ITSON-Notify/`: `npm run cron:extraccion`.
+4. Debe salir con 0 y loguear `Entrega al backend correcta: run_id=... baseline=true` la primera vez
+   (`baseline=false` en las siguientes).
+5. Para probar el fallo, detén el backend y vuelve a correr el cron: verás 4 intentos y código de salida 1.
 
 ## Límite de gasto (usage limit)
 
@@ -124,8 +167,7 @@ workspace:
 
 ## Pendiente
 
-- **ITN-27 (backend Express):** hoy el resultado de la extracción se descarta (`entregarResultados` en
-  `extraccion-cron.js`). Cuando exista el backend, hay que enviarlo con `x-api-key: INTERNAL_API_KEY` a la URL
-  interna en `BACKEND_URL`, y agregar el backend a `railway.ts` o a su propio partial.
+- **Backend en `railway.ts`:** el backend Express (ITN-27) todavía no está en `railway.ts` ni en un partial
+  propio.
 - **ITN-38/ITN-39 (Telegram):** reemplazar el log de `notificarFalloCritico` en `automation/monitors/alertas.js`
   por el envío real.

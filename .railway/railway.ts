@@ -7,8 +7,16 @@
 // backend Express (ITN-27) se agregará como otro recurso o partial, y lo
 // que no aparezca aquí no se toca.
 //
-// Las variables (Id_User, P_User, RPA_PAUSADO...) NO se declaran aquí: viven
-// solo en Railway (Variables del servicio) y nunca en el repo.
+// Las variables NO se declaran aquí: viven solo en Railway (Variables del
+// servicio) y nunca en el repo. worker-rpa necesita:
+//   Id_User, P_User           cuenta de iVirtual (sealed)
+//   RPA_PAUSADO               true detiene las extracciones
+//   BACKEND_URL               URL base del backend (ITN-27), obligatoria
+//   INTERNAL_API_KEY          llave x-api-key, igual a la del backend (sealed)
+//   ALUMNO_EMAIL              correo del alumno para user.email, obligatoria
+//   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   alertas al equipo (opcionales)
+// Si falta BACKEND_URL, INTERNAL_API_KEY o ALUMNO_EMAIL el cron sale con 1
+// sin consultar iVirtual.
 import { defineRailway, github, project, service } from "railway/iac";
 
 export const partial = "worker-rpa";

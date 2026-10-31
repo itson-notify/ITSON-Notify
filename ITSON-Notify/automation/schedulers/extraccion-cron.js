@@ -5,6 +5,7 @@ require("dotenv").config({
 });
 const { extractGrades } = require("../rpa/ivirtual-api");
 const { notificarFalloCritico } = require("../monitors/alertas");
+const { entregarResultados, leerConfigEntrega } = require("./entrega-backend");
 
 // Punto de entrada del cron de Railway (ITN-25). Railway lo arranca según el
 // cronSchedule de .railway/railway.ts; corre UNA extracción y termina.
@@ -13,7 +14,8 @@ const { notificarFalloCritico } = require("../monitors/alertas");
 //
 // Códigos de salida (mismos que cli.js y login-demo.js):
 //   0  éxito, o RPA_PAUSADO=true
-//   1  credenciales incorrectas, error o configuración incompleta
+//   1  credenciales incorrectas, error, configuración incompleta o entrega
+//      al backend fallida tras los reintentos
 //   2  iVirtual pide cambio de contraseña
 //
 // A diferencia de cli.js, nunca imprime calificaciones: los logs de Railway
@@ -24,13 +26,6 @@ const EXIT_CODES = { ok: 0, credenciales: 1, error: 1, cambio_password: 2 };
 // Con 'credenciales' además conviene pausar (RPA_PAUSADO=true) para no sumar
 // intentos fallidos a la cuenta en cada corrida.
 const FALLOS_CRITICOS = new Set(["cambio_password", "credenciales"]);
-
-// PENDIENTE ITN-27: enviar el resultado al backend Express (x-api-key con
-// INTERNAL_API_KEY) para guardar el snapshot y detectar cambios (ITN-24).
-// Mientras el backend no exista, el resultado se descarta.
-async function entregarResultados(result, { log }) {
-  log("Entrega al backend pendiente (ITN-27): el resultado se descarta.");
-}
 
 async function ejecutar({
   env = process.env,
@@ -47,15 +42,22 @@ async function ejecutar({
     log("Faltan Id_User o P_User en las variables del servicio.");
     return EXIT_CODES.error;
   }
+  // Antes de consultar iVirtual: sin backend la extracción no sirve de nada.
+  const entrega = leerConfigEntrega(env);
+  if (!entrega.ok) {
+    log(entrega.error);
+    return EXIT_CODES.error;
+  }
 
   log("Consultando iVirtual (API de Moodle)...");
   const result = await extract({ usuario: env.Id_User, password: env.P_User });
 
   if (result.status === "ok") {
     const items = result.courses.reduce((n, c) => n + c.items.length, 0);
+    const capturedAt = new Date().toISOString();
     log(`Extracción correcta: ${result.courses.length} curso(s), ${items} ítem(s).`);
-    await entregar(result, { log });
-    return EXIT_CODES.ok;
+    const envio = await entregar(result, { config: entrega.config, capturedAt, log });
+    return envio.ok ? EXIT_CODES.ok : EXIT_CODES.error;
   }
 
   if (FALLOS_CRITICOS.has(result.status)) {
