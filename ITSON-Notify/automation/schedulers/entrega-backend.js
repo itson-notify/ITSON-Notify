@@ -98,7 +98,8 @@ async function entregarResultados(
   {
     config,
     capturedAt = new Date().toISOString(),
-    log = console.error,
+    log = console.log,
+    logError = console.error,
     fetchFn = globalThis.fetch,
     alertarEquipo = sendTeamAlert,
     randomUUID = crypto.randomUUID,
@@ -146,7 +147,7 @@ async function entregarResultados(
     }
 
     const status = ultimo.status ?? ultimo.error;
-    log(`Entrega al backend fallida: run_id=${runId} status=${status} intento=${intento}`);
+    logError(`Entrega al backend fallida: run_id=${runId} status=${status} intento=${intento}`);
     if (!esReintentable(ultimo.status) || intento === totalIntentos) break;
     await sleep(backoffBaseMs * 2 ** (intento - 1));
   }
@@ -157,7 +158,7 @@ async function entregarResultados(
   await alertarEquipo(
     `ITSON Notify: el worker no pudo entregar la extracción al backend (status ${status}). ` +
       "Revisa los logs de worker-rpa en Railway.",
-    { log },
+    { log: logError },
   );
   return { ok: false, runId, status, intentos };
 }

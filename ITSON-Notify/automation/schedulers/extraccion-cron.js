@@ -20,6 +20,9 @@ const { entregarResultados, leerConfigEntrega } = require("./entrega-backend");
 //
 // A diferencia de cli.js, nunca imprime calificaciones: los logs de Railway
 // solo llevan conteos. No loguear usuario, contraseña ni token.
+//
+// Railway marca como error todo lo que sale por stderr: lo informativo va por
+// log (stdout) y las fallas por logError (stderr).
 const EXIT_CODES = { ok: 0, credenciales: 1, error: 1, cambio_password: 2 };
 
 // Fallos que no se arreglan solos: avisar y esperar intervención manual.
@@ -32,20 +35,21 @@ async function ejecutar({
   extract = extractGrades,
   alertar = notificarFalloCritico,
   entregar = entregarResultados,
-  log = console.error,
+  log = console.log,
+  logError = console.error,
 } = {}) {
   if (env.RPA_PAUSADO === "true") {
     log("RPA pausado (RPA_PAUSADO=true). No se consulta iVirtual.");
     return EXIT_CODES.ok;
   }
   if (!env.Id_User || !env.P_User) {
-    log("Faltan Id_User o P_User en las variables del servicio.");
+    logError("Faltan Id_User o P_User en las variables del servicio.");
     return EXIT_CODES.error;
   }
   // Antes de consultar iVirtual: sin backend la extracción no sirve de nada.
   const entrega = leerConfigEntrega(env);
   if (!entrega.ok) {
-    log(entrega.error);
+    logError(entrega.error);
     return EXIT_CODES.error;
   }
 
@@ -56,22 +60,22 @@ async function ejecutar({
     const items = result.courses.reduce((n, c) => n + c.items.length, 0);
     const capturedAt = new Date().toISOString();
     log(`Extracción correcta: ${result.courses.length} curso(s), ${items} ítem(s).`);
-    const envio = await entregar(result, { config: entrega.config, capturedAt, log });
+    const envio = await entregar(result, { config: entrega.config, capturedAt, log, logError });
     return envio.ok ? EXIT_CODES.ok : EXIT_CODES.error;
   }
 
   if (FALLOS_CRITICOS.has(result.status)) {
-    log(`Extracción detenida: ${result.status}. Se requiere intervención manual.`);
+    logError(`Extracción detenida: ${result.status}. Se requiere intervención manual.`);
     await alertar(
       { tipo: result.status, fuente: "ivirtual-api", fecha: new Date().toISOString() },
-      { log },
+      { log: logError },
     );
     return EXIT_CODES[result.status];
   }
 
   // Falla pasajera (red, 5xx, Moodle): ya hubo reintentos dentro del cliente;
   // la siguiente corrida del cron lo vuelve a intentar.
-  log(`Extracción fallida: ${result.error ?? result.status}`);
+  logError(`Extracción fallida: ${result.error ?? result.status}`);
   return EXIT_CODES.error;
 }
 

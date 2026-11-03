@@ -44,6 +44,7 @@ const respuesta = (status, body = {}) => ({
 // fetchFn recibe una lista de respuestas (o funciones) que devuelve en orden.
 function simular(t, pasos, extra = {}) {
   const lineas = [];
+  const errores = [];
   let i = 0;
   const fetchFn = t.mock.fn(async (url, init) => {
     const paso = pasos[Math.min(i++, pasos.length - 1)];
@@ -56,19 +57,21 @@ function simular(t, pasos, extra = {}) {
       config: CONFIG,
       capturedAt: CAPTURED_AT,
       log: (l) => lineas.push(l),
+      logError: (l) => errores.push(l),
       fetchFn,
       alertarEquipo,
       randomUUID: () => RUN_ID,
       sleep,
       ...extra,
     });
-  return { correr, fetchFn, alertarEquipo, sleep, lineas };
+  return { correr, fetchFn, alertarEquipo, sleep, lineas, errores };
 }
 
 const bodyEnviado = (s, n = 0) => JSON.parse(s.fetchFn.mock.calls[n].arguments[1].body);
 
 function sinDatosSensibles(s) {
-  const todo = s.lineas.join("\n") + JSON.stringify(s.alertarEquipo.mock.calls);
+  const todo =
+    [...s.lineas, ...s.errores].join("\n") + JSON.stringify(s.alertarEquipo.mock.calls);
   for (const prohibido of [API_KEY, EMAIL, "Materia de prueba A", "85.5", "backend.test"]) {
     assert.ok(!todo.includes(prohibido), `no debe aparecer: ${prohibido}`);
   }
@@ -166,7 +169,7 @@ describe("entregarResultados", () => {
     assert.equal(s.sleep.mock.callCount(), 0);
     assert.equal(s.alertarEquipo.mock.callCount(), 1);
     assert.match(s.alertarEquipo.mock.calls[0].arguments[0], /status 401/);
-    assert.ok(s.lineas.some((l) => l.includes("status=401 intento=1")));
+    assert.ok(s.errores.some((l) => l.includes("status=401 intento=1")));
     sinDatosSensibles(s);
   });
 
@@ -212,7 +215,7 @@ describe("entregarResultados", () => {
 
     assert.deepEqual(r, { ok: false, runId: RUN_ID, status: "TimeoutError", intentos: 2 });
     assert.equal(s.fetchFn.mock.callCount(), 2);
-    assert.ok(s.lineas.some((l) => l.includes("status=TimeoutError intento=2")));
+    assert.ok(s.errores.some((l) => l.includes("status=TimeoutError intento=2")));
     assert.equal(s.alertarEquipo.mock.callCount(), 1);
   });
 
@@ -224,7 +227,7 @@ describe("entregarResultados", () => {
 
     assert.equal(r.ok, true);
     assert.equal(s.fetchFn.mock.callCount(), 2);
-    assert.ok(s.lineas.some((l) => l.includes("status=TypeError intento=1")));
+    assert.ok(s.errores.some((l) => l.includes("status=TypeError intento=1")));
     sinDatosSensibles(s);
   });
 
@@ -242,5 +245,66 @@ describe("entregarResultados", () => {
 
     assert.deepEqual(r, { ok: true, omitido: true });
     assert.equal(s.fetchFn.mock.callCount(), 0);
+  });
+
+  test("canales: el éxito sale por log y no toca logError", async (t) => {
+    const s = simular(t, [respuesta(200, RESPUESTA_200)]);
+
+    await s.correr();
+
+    assert.equal(s.lineas.length, 1);
+    assert.match(s.lineas[0], /^Entrega al backend correcta: /);
+    assert.deepEqual(s.errores, []);
+  });
+
+  test("canales: cada intento fallido sale por logError y el éxito final por log", async (t) => {
+    const s = simular(t, [respuesta(503), respuesta(200, RESPUESTA_200)]);
+
+    await s.correr();
+
+    assert.equal(s.errores.length, 1);
+    assert.match(s.errores[0], /^Entrega al backend fallida: .*status=503 intento=1$/);
+    assert.equal(s.lineas.length, 1);
+    assert.match(s.lineas[0], /^Entrega al backend correcta: .*intento=2 /);
+  });
+
+  test("canales: la alerta al equipo recibe logError como su log", async (t) => {
+    const s = simular(t, [respuesta(401)]);
+    let logDeAlerta;
+
+    await entregarResultados(RESULTADO, {
+      config: CONFIG,
+      log: (l) => s.lineas.push(l),
+      logError: (l) => s.errores.push(l),
+      fetchFn: s.fetchFn,
+      randomUUID: () => RUN_ID,
+      alertarEquipo: async (_texto, { log }) => {
+        logDeAlerta = log;
+        log("falla al alertar");
+      },
+    });
+
+    assert.equal(typeof logDeAlerta, "function");
+    assert.deepEqual(s.lineas, []);
+    assert.ok(s.errores.includes("falla al alertar"));
+  });
+
+  test("por defecto la entrega usa console.log y console.error", async (t) => {
+    const stdout = t.mock.method(console, "log", () => {});
+    const stderr = t.mock.method(console, "error", () => {});
+    let paso = 0;
+    const fetchFn = async () => (paso++ === 0 ? respuesta(503) : respuesta(200, RESPUESTA_200));
+
+    await entregarResultados(RESULTADO, {
+      config: CONFIG,
+      fetchFn,
+      randomUUID: () => RUN_ID,
+      sleep: async () => {},
+    });
+
+    assert.equal(stderr.mock.callCount(), 1);
+    assert.match(stderr.mock.calls[0].arguments[0], /^Entrega al backend fallida/);
+    assert.equal(stdout.mock.callCount(), 1);
+    assert.match(stdout.mock.calls[0].arguments[0], /^Entrega al backend correcta/);
   });
 });
