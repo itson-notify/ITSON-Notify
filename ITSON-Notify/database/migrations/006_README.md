@@ -10,9 +10,10 @@
 - Índices `classroom_courses(user_id)`, `classroom_coursework(user_id, first_seen_at desc)` y
   `classroom_coursework(course_id)`.
 - RLS activado y sin políticas en ambas tablas, como en la 002.
-- Permisos solo para `service_role`, como en la 005. Además, un `revoke` explícito quita a `anon` y
-  `authenticated` los permisos que las tablas nuevas pueden heredar en proyectos creados antes del 30 de octubre
-  de 2026, como `itson-notify-dev`.
+- Permisos `select`, `insert`, `update` y `delete` solo para `service_role`, como en la 005. Además, un `revoke`
+  explícito quita los permisos que las tablas nuevas pueden heredar en proyectos creados antes del 30 de octubre
+  de 2026, como `itson-notify-dev`: todos los de `anon` y `authenticated`, y `truncate`, `references` y `trigger`
+  de `service_role`.
 - No hay trigger de `updated_at`, porque el repo no los usa (001 a 005). La app actualiza la columna.
 - Todo corre en una transacción con `lock_timeout = '5s'`. Si falla una parte, no queda nada aplicado.
 - Si la 001 no está aplicada, la migración se detiene con un error.

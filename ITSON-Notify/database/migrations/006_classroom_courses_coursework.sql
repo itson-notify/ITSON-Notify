@@ -39,8 +39,9 @@
 --
 -- Permisos: grants explicitos solo a service_role (patron 005). El revoke es
 -- necesario: en proyectos creados antes del 30 de octubre de 2026, como
--- itson-notify-dev, las tablas nuevas pueden heredar permisos para anon y
--- authenticated (ver 005).
+-- itson-notify-dev, las tablas nuevas pueden heredar permisos por defecto (ver
+-- 005): anon y authenticated no deben conservarlos, y service_role heredaria
+-- tambien truncate, references y trigger, que el backend no necesita.
 --
 -- Requiere 001. Idempotente: se puede ejecutar mas de una vez sin error ni efectos
 -- extra. Todo corre en una sola transaccion.
@@ -135,7 +136,7 @@ alter table classroom_coursework enable row level security;
 
 -- 5) Permisos: solo service_role
 revoke all on public.classroom_courses, public.classroom_coursework
-  from anon, authenticated;
+  from anon, authenticated, service_role;
 
 grant select, insert, update, delete on public.classroom_courses    to service_role;
 grant select, insert, update, delete on public.classroom_coursework to service_role;
