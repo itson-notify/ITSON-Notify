@@ -28,6 +28,10 @@ const CAMPOS_PERMITIDOS = new Set([
   "retried",
   "notified",
   "failed",
+  // ITN-36: valores de lista cerrada y la versión de la llave, nunca el secreto.
+  "portal",
+  "kind",
+  "key_version",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.
