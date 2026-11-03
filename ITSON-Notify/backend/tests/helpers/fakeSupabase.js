@@ -1,7 +1,7 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
 // usa el backend del query builder de supabase-js (select, upsert, update,
 // delete, eq/neq/lt/in/not is null, order, limit, range, single, maybeSingle) y
-// las reglas de las migraciones 001 a 004 que importan aquí:
+// las reglas de las migraciones 001 a 004 y 006 que importan aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
 //     escritas;
@@ -29,9 +29,20 @@ const TABLES = {
     notNull: ["user_id", "channel", "status", "attempts"],
     defaults: { status: "pending", attempts: 0, error: null, sent_at: null, payload: null },
   },
+  // 006: defaultNow son las columnas con default now(), que solo aplica al insertar.
+  classroom_courses: {
+    uniques: [["user_id", "external_course_id"]],
+    notNull: ["user_id", "external_course_id", "name"],
+    defaultNow: ["first_seen_at", "last_seen_at", "updated_at"],
+  },
+  classroom_coursework: {
+    uniques: [["course_id", "external_coursework_id"]],
+    notNull: ["user_id", "course_id", "external_coursework_id", "title"],
+    defaultNow: ["first_seen_at", "last_seen_at", "updated_at"],
+  },
 };
 
-const TIMESTAMPS = new Set(["captured_at", "created_at"]);
+const TIMESTAMPS = new Set(["captured_at", "created_at", "first_seen_at", "last_seen_at"]);
 
 const norm = (v) => (v === undefined ? null : v);
 const keyOf = (row, cols) => JSON.stringify(cols.map((c) => norm(row[c])));
@@ -213,6 +224,7 @@ class Query {
       }
       const nueva = {
         ...(def.defaults ?? {}),
+        ...Object.fromEntries((def.defaultNow ?? []).map((c) => [c, new Date().toISOString()])),
         id: row.id ?? crypto.randomUUID(),
         created_at: new Date().toISOString(),
         ...row,
