@@ -58,9 +58,6 @@ function createCredentialCrypto({ keys, currentVersion = CURRENT_KEY_VERSION }) 
   function decryptSecret(record, context) {
     try {
       const { ciphertext, nonce, authTag, keyVersion } = record;
-      if (nonce.length !== NONCE_BYTES || authTag.length !== TAG_BYTES) {
-        throw new Error("largo inválido");
-      }
       const decipher = crypto.createDecipheriv(ALGORITHM, llaves.get(keyVersion), nonce, {
         authTagLength: TAG_BYTES,
       });
