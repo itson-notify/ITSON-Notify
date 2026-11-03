@@ -45,7 +45,7 @@
 --
 -- Requiere 001. Idempotente: se puede ejecutar mas de una vez sin error ni efectos
 -- extra. Todo corre en una sola transaccion.
--- Pendiente de aplicar en itson-notify-dev (ver 006_README.md).
+-- Aplicada en itson-notify-dev el 03/11/2026 (pruebas en 006_README.md).
 
 begin;
 
