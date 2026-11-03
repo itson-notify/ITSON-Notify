@@ -4,6 +4,9 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 
 const { ejecutar } = require("../extraccion-cron");
+const { entregarResultados } = require("../entrega-backend");
+const { notificarFalloCritico } = require("../../monitors/alertas");
+const { sendTeamAlert } = require("../../monitors/telegram");
 
 const ENV = {
   Id_User: "00000000000",
@@ -16,12 +19,15 @@ const CURSOS = [{ items: [{}, {}] }, { items: [{}] }];
 
 function simular(t, resultado, env = ENV, envio = { ok: true }) {
   const lineas = [];
+  const errores = [];
   const extract = t.mock.fn(async () => resultado);
   const alertar = t.mock.fn(async () => {});
   const entregar = t.mock.fn(async () => envio);
   const log = (linea) => lineas.push(linea);
-  const correr = () => ejecutar({ env, extract, alertar, entregar, log });
-  return { correr, extract, alertar, entregar, lineas };
+  const logError = (linea) => errores.push(linea);
+  const correr = (extra = {}) =>
+    ejecutar({ env, extract, alertar, entregar, log, logError, ...extra });
+  return { correr, extract, alertar, entregar, lineas, errores };
 }
 
 describe("cron de extracción", () => {
@@ -50,7 +56,7 @@ describe("cron de extracción", () => {
 
     assert.equal(await s.correr(), 1);
     assert.equal(s.extract.mock.callCount(), 0);
-    const todo = s.lineas.join("\n");
+    const todo = s.errores.join("\n");
     assert.match(todo, /BACKEND_URL, ALUMNO_EMAIL/);
     assert.ok(!todo.includes(ENV.INTERNAL_API_KEY));
   });
@@ -99,8 +105,114 @@ describe("cron de extracción", () => {
     const s = simular(t, { status: "cambio_password", courses: [] });
     await s.correr();
 
-    const todo = s.lineas.join("\n") + JSON.stringify(s.alertar.mock.calls);
+    const todo = [...s.lineas, ...s.errores].join("\n") + JSON.stringify(s.alertar.mock.calls);
     assert.ok(!todo.includes(ENV.Id_User));
     assert.ok(!todo.includes(ENV.P_User));
+  });
+});
+
+// Railway marca como error todo lo que sale por stderr.
+describe("canales de log del cron", () => {
+  const RESPUESTA_OK = {
+    ok: true,
+    status: 200,
+    json: async () => ({ baseline: false, changes_detected: 0 }),
+  };
+
+  function entregaReal(respuesta) {
+    return (result, opciones) =>
+      entregarResultados(result, {
+        ...opciones,
+        fetchFn: async () => respuesta,
+        // Telegram sin configurar: no sale a la red y deja su falla en opciones.log.
+        alertarEquipo: (texto, { log }) => sendTeamAlert(texto, { env: {}, log }),
+        sleep: async () => {},
+        maxReintentos: 0,
+      });
+  }
+
+  test("éxito completo: todo por stdout, nada por stderr", async (t) => {
+    const s = simular(t, { status: "ok", courses: CURSOS });
+
+    assert.equal(await s.correr({ entregar: entregaReal(RESPUESTA_OK) }), 0);
+
+    assert.deepEqual(s.errores, []);
+    assert.match(s.lineas[0], /^Consultando iVirtual/);
+    assert.match(s.lineas[1], /^Extracción correcta: 2 curso\(s\), 3 ítem\(s\)\.$/);
+    assert.match(s.lineas[2], /^Entrega al backend correcta: run_id=/);
+  });
+
+  test("extracción sin cursos: el aviso va por stdout", async (t) => {
+    const s = simular(t, { status: "ok", courses: [] });
+
+    assert.equal(await s.correr({ entregar: entregaReal(RESPUESTA_OK) }), 0);
+
+    assert.deepEqual(s.errores, []);
+    assert.ok(s.lineas.includes("Extracción sin cursos: no se envía al backend."));
+  });
+
+  test("RPA_PAUSADO: el aviso va por stdout", async (t) => {
+    const s = simular(t, { status: "ok", courses: [] }, { ...ENV, RPA_PAUSADO: "true" });
+
+    await s.correr();
+
+    assert.deepEqual(s.errores, []);
+    assert.equal(s.lineas.length, 1);
+    assert.match(s.lineas[0], /^RPA pausado/);
+  });
+
+  test("configuración incompleta: las fallas van por stderr", async (t) => {
+    const sinCredenciales = simular(t, { status: "ok", courses: [] }, {});
+    await sinCredenciales.correr();
+    assert.deepEqual(sinCredenciales.lineas, []);
+    assert.match(sinCredenciales.errores[0], /^Faltan Id_User o P_User/);
+
+    const { BACKEND_URL, ...sinBackend } = ENV;
+    const s = simular(t, { status: "ok", courses: [] }, sinBackend);
+    await s.correr();
+    assert.deepEqual(s.lineas, []);
+    assert.match(s.errores[0], /BACKEND_URL/);
+  });
+
+  test("fallo crítico: Extracción detenida y ALERTA_RPA van por stderr", async (t) => {
+    const s = simular(t, { status: "credenciales", courses: [] });
+
+    assert.equal(await s.correr({ alertar: notificarFalloCritico }), 1);
+
+    assert.deepEqual(s.lineas, ["Consultando iVirtual (API de Moodle)..."]);
+    assert.match(s.errores[0], /^Extracción detenida: credenciales\./);
+    assert.match(s.errores[1], /^ALERTA_RPA /);
+  });
+
+  test("falla pasajera: Extracción fallida va por stderr", async (t) => {
+    const s = simular(t, { status: "error", courses: [], error: "HTTP 503" });
+
+    await s.correr();
+
+    assert.deepEqual(s.errores, ["Extracción fallida: HTTP 503"]);
+  });
+
+  test("entrega fallida: la falla y el aviso de Telegram van por stderr", async (t) => {
+    const s = simular(t, { status: "ok", courses: CURSOS });
+    const respuesta = { ok: false, status: 500, json: async () => ({}) };
+
+    assert.equal(await s.correr({ entregar: entregaReal(respuesta) }), 1);
+
+    assert.ok(s.lineas.every((l) => !l.includes("fallida") && !l.includes("Telegram")));
+    assert.match(s.errores[0], /^Entrega al backend fallida: run_id=.* status=500 intento=1$/);
+    assert.match(s.errores[1], /^Alerta de Telegram no enviada/);
+  });
+
+  test("por defecto log es console.log y logError es console.error", async (t) => {
+    const stdout = t.mock.method(console, "log", () => {});
+    const stderr = t.mock.method(console, "error", () => {});
+
+    await ejecutar({ env: { RPA_PAUSADO: "true" } });
+    assert.equal(stdout.mock.callCount(), 1);
+    assert.equal(stderr.mock.callCount(), 0);
+
+    await ejecutar({ env: {} });
+    assert.equal(stdout.mock.callCount(), 1);
+    assert.equal(stderr.mock.callCount(), 1);
   });
 });
