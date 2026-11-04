@@ -4,6 +4,7 @@ import { Button, PasswordField, Spinner, SuccessCard, TextField, TypeIcon } from
 import { CategoryRows } from '@/components/CategoryRows'
 import { WatchEditor } from '@/components/WatchEditor'
 import { ITSON_RECOVERY_URL, STUDENT } from '@/services/mockData'
+import { connectGoogle as startGoogleAuth } from '@/services/googleAuth'
 import { TYPE_CFG, TYPES } from '@/utils/notifTypes'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { SetSettings, Settings } from '@/types'
@@ -11,7 +12,8 @@ import type { SetSettings, Settings } from '@/types'
 export function Onboarding({ settings, setSettings, onFinish, onHelp }: {
   settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void
 }) {
-  const [step, setStep] = useState(0)
+  const [step, setStep] = useState(() =>
+    new URLSearchParams(window.location.search).get('from') === 'onboarding' ? 2 : 0)
   const [pw, setPw] = useState('')
   const [consent, setConsent] = useState(false)
   const [idTouched, setIdTouched] = useState(false)
@@ -30,8 +32,7 @@ export function Onboarding({ settings, setSettings, onFinish, onHelp }: {
   }
   const connectGoogle = () => {
     setGoogleState('loading')
-    // TODO real: OAuth de Google con scopes de solo lectura de Classroom
-    setTimeout(() => { patch({ classroomConnected: true }); setGoogleState('idle') }, 1100)
+    startGoogleAuth('onboarding')
   }
   const enablePush = () => {
     // TODO real: Notification.requestPermission() + getToken() de Firebase Cloud Messaging

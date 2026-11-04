@@ -4,6 +4,7 @@ import { CategoryRows } from '@/components/CategoryRows'
 import { PageTitle } from '@/components/PageTitle'
 import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
+import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
 export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify }: {
@@ -21,7 +22,13 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
     title: '¿Desconectar Google Classroom?',
     body: 'Dejarás de recibir avisos de tareas. Puedes volver a conectarlo cuando quieras.',
     label: 'Desconectar', danger: true,
-    onConfirm: () => { setSettings(s => ({ ...s, classroomConnected: false })); notify('Google Classroom desconectado') },
+    onConfirm: async () => {
+      try {
+        await disconnectGoogle()
+        setSettings(s => ({ ...s, classroomConnected: false }))
+        notify('Google Classroom desconectado')
+      } catch { notify('No se pudo desconectar Google Classroom') }
+    },
   })
 
   // [H5] No se permite apagar el último canal: así nunca te quedas sin avisos por accidente
@@ -53,7 +60,7 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
                 </div>
               : 'Sin conectar'}>
             {!settings.classroomConnected && (
-              <Button onClick={() => { setSettings(s => ({ ...s, classroomConnected: true, categories: { ...s.categories, tareas: true } })); notify('Google Classroom conectado') }}>Conectar</Button>
+              <Button onClick={() => connectGoogle('settings')}>Conectar</Button>
             )}
           </SettingRow>
         </Section>
