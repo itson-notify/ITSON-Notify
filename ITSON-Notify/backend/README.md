@@ -301,6 +301,29 @@ descifrado; en ese caso, cámbiala también en el worker.
    el administrador de Moodle cómo invalidarlos, porque cambiar la contraseña podría no bastar.
 4. Pide a cada estudiante que vuelva a vincular su cuenta. `PUT` cifra con la llave nueva y reactiva la fila.
 
+## Autorización de Google Classroom (ITN-41)
+
+### Variables
+
+| Variable                  | Uso                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `GOOGLE_AUTH_SECRET`      | Solo backend. Mínimo 32 caracteres. Debe mantenerse estable y fuera del repo      |
+| `FRONTEND_URL`            | URL de retorno del frontend. Su origen autoriza CORS y los cambios de sesión      |
+| `GOOGLE_COOKIE_SAME_SITE` | `lax` o `none`. `none` exige HTTPS en backend y frontend                          |
+| `VITE_BACKEND_URL`        | Solo frontend. Origen del backend, sin `/auth/google`                             |
+
+`GOOGLE_AUTH_SECRET` es distinta de `CREDENTIALS_ENCRYPTION_KEY` (ITN-36), y ambas van solo en el backend.
+
+### Migración
+
+`008_google_classroom_authorization.sql` crea `google_authorizations` y `google_app_sessions`. Hay que aplicarla
+manualmente en dev, después de `007_student_credentials.sql` (ITN-36).
+
+### Con OAuth desactivado
+
+Con `GOOGLE_OAUTH_ENABLED=false`, `GET /auth/google` responde 503 (`{"error":"google_oauth_no_configurado"}`). Es lo
+esperado.
+
 ## Privacidad de los logs
 
 Los eventos de credenciales solo llevan `user_id`, `portal`, `kind`, `key_version`, `status`, `reason` y códigos de
