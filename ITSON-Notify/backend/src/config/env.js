@@ -1,8 +1,14 @@
-// ITN-27 / ITN-40 - Configuración del backend leída de variables de entorno.
+// ITN-27 / ITN-40 / ITN-36 - Configuración del backend leída de variables de entorno.
 // Si falta alguna o es inválida, el arranque falla con un mensaje que nombra
 // la variable, nunca su valor.
 
-const REQUERIDAS = ["PORT", "INTERNAL_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
+const REQUERIDAS = [
+  "PORT",
+  "INTERNAL_API_KEY",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "CREDENTIALS_ENCRYPTION_KEY",
+];
 
 const GOOGLE_OAUTH_VARIABLES = [
   "GOOGLE_CLIENT_ID",
@@ -18,6 +24,18 @@ const ALLOWED_GOOGLE_OAUTH_ENABLED_VALUES = Object.freeze(["true", "false", "1",
 // La llave compartida con el worker debe ser difícil de adivinar
 // (p. ej. `openssl rand -hex 32`).
 const MIN_API_KEY_LENGTH = 32;
+
+// Llave maestra de las credenciales (AES-256): `openssl rand -base64 32`.
+const CREDENTIALS_KEY_BYTES = 32;
+
+// Buffer.from(texto, "base64") acepta casi cualquier texto sin fallar, así que
+// se exige la forma exacta de 32 bytes en base64: 43 caracteres más un "=".
+// Devuelve null si el valor no la cumple.
+function decodeCredentialsKey(raw) {
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(raw)) return null;
+  const key = Buffer.from(raw, "base64");
+  return key.length === CREDENTIALS_KEY_BYTES && key.toString("base64") === raw ? key : null;
+}
 
 function isValidRedirectUri(rawUri) {
   let parsed;
@@ -175,6 +193,11 @@ function loadConfig(env = process.env) {
     invalidas.push("SUPABASE_URL (URL http o https)");
   }
 
+  const credentialsKey = decodeCredentialsKey(valor("CREDENTIALS_ENCRYPTION_KEY"));
+  if (!credentialsKey) {
+    invalidas.push(`CREDENTIALS_ENCRYPTION_KEY (${CREDENTIALS_KEY_BYTES} bytes en base64)`);
+  }
+
   invalidas.push(...oauthResult.invalidas);
 
   const frontendUrl = valor("FRONTEND_URL") || "http://localhost:5173";
@@ -207,7 +230,16 @@ function loadConfig(env = process.env) {
     supabaseServiceRoleKey: valor("SUPABASE_SERVICE_ROLE_KEY"),
     googleOAuth: oauthResult.config,
   };
+
+  // No son enumerables para evitar exposición accidental en logs o serialización JSON.
+  Object.defineProperty(config, "credentialsEncryptionKey", {
+    value: credentialsKey,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
   Object.defineProperty(config, "googleAuthSecret", { value: googleAuthSecret, enumerable: false });
+
   return config;
 }
 
@@ -215,6 +247,7 @@ module.exports = {
   loadConfig,
   REQUERIDAS,
   MIN_API_KEY_LENGTH,
+  CREDENTIALS_KEY_BYTES,
   GOOGLE_OAUTH_VARIABLES,
   ALLOWED_GOOGLE_OAUTH_SCOPE,
   ALLOWED_GOOGLE_OAUTH_SCOPES,

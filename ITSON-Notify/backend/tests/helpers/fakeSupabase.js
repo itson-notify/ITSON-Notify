@@ -1,15 +1,29 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
 // usa el backend del query builder de supabase-js (select, upsert, update,
 // delete, eq/neq/lt/in/not is null, order, limit, range, single, maybeSingle) y
-// las reglas de las migraciones 001 a 004 y 006 que importan aquí:
+// las reglas de las migraciones 001 a 004, 006 y 007 que importan aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
 //     escritas;
 //   - unique nulls not distinct (NULL = NULL al comparar llaves);
 //   - external_item_id NOT NULL en snapshot_grades;
-//   - borrar un grade_snapshot borra sus snapshot_grades (cascade).
+//   - borrar un grade_snapshot borra sus snapshot_grades (cascade);
+//   - student_credentials: checks de la 007, llave foránea a app_users y borrado
+//     en cascada. Los bytea solo se aceptan como texto `\x...`, igual que los
+//     devuelve PostgREST.
 // Nunca se conecta a nada.
 const crypto = require("crypto");
+
+// Texto hexadecimal `\x...` y, si se pide, con un largo exacto en bytes.
+const esBytea = (bytes) => (v) =>
+  typeof v === "string" &&
+  /^\\x([0-9a-f]{2})+$/.test(v) &&
+  (bytes === undefined || (v.length - 2) / 2 === bytes);
+
+const KINDS_POR_PORTAL = {
+  ivirtual: ["ivirtual_token", "ivirtual_password"],
+  google_classroom: ["google_refresh_token"],
+};
 
 const TABLES = {
   app_users: { uniques: [["email"]] },
@@ -40,7 +54,31 @@ const TABLES = {
     notNull: ["user_id", "course_id", "external_coursework_id", "title"],
     defaultNow: ["first_seen_at", "last_seen_at", "updated_at"],
   },
+  // 007: checks por columna y el que amarra kind con portal.
+  student_credentials: {
+    uniques: [["user_id", "portal", "kind"]],
+    notNull: ["user_id", "portal", "kind", "ciphertext", "nonce", "auth_tag"],
+    defaults: { key_version: 1, status: "active", last_validated_at: null },
+    defaultNow: ["updated_at"],
+    checks: {
+      portal: (v) => v in KINDS_POR_PORTAL,
+      kind: (v) => Object.values(KINDS_POR_PORTAL).flat().includes(v),
+      status: (v) => ["active", "needs_relink"].includes(v),
+      ciphertext: esBytea(),
+      nonce: esBytea(12),
+      auth_tag: esBytea(16),
+    },
+    rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
+  },
 };
+
+// Primer check que la fila (o el cambio de un update) no cumple.
+function checkViolado(def, row) {
+  for (const [columna, cumple] of Object.entries(def.checks ?? {})) {
+    if (columna in row && !cumple(row[columna])) return columna;
+  }
+  return null;
+}
 
 const TIMESTAMPS = new Set(["captured_at", "created_at", "first_seen_at", "last_seen_at"]);
 
@@ -205,8 +243,15 @@ class Query {
       for (const c of def.notNull ?? []) {
         if (norm(row[c]) === null) return pgError("23502", `null en ${c}`);
       }
+      const violado = checkViolado(def, row);
+      if (violado || (def.rowCheck && !def.rowCheck(row))) {
+        return pgError("23514", `check violado${violado ? ` en ${violado}` : ""}`);
+      }
       if (this.table === "snapshot_grades" && !this.db.tables.grade_snapshots.some((s) => s.id === row.snapshot_id)) {
         return pgError("23503", "snapshot inexistente");
+      }
+      if (this.table === "student_credentials" && !this.db.tables.app_users.some((u) => u.id === row.user_id)) {
+        return pgError("23503", "usuario inexistente");
       }
       const key = keyOf(row, conflict);
       if (vistas.has(key)) {
@@ -247,6 +292,8 @@ class Query {
     for (const c of def.notNull ?? []) {
       if (c in this.patch && norm(this.patch[c]) === null) return pgError("23502", `null en ${c}`);
     }
+    const violado = checkViolado(def, this.patch);
+    if (violado) return pgError("23514", `check violado en ${violado}`);
     for (const r of cambiadas) Object.assign(r, this.patch);
     return { data: cambiadas.map((r) => project(r, this.columns)), error: null };
   }
@@ -262,6 +309,10 @@ class Query {
         if (ids.has(gc.previous_snapshot_id)) gc.previous_snapshot_id = null;
         if (ids.has(gc.current_snapshot_id)) gc.current_snapshot_id = null;
       }
+    }
+    if (this.table === "app_users") {
+      const ids = new Set(borradas.map((r) => r.id));
+      this.db.tables.student_credentials = this.db.tables.student_credentials.filter((c) => !ids.has(c.user_id));
     }
     return { data: borradas.map((r) => project(r, this.columns)), error: null };
   }

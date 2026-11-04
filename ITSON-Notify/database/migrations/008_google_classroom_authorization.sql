@@ -1,4 +1,4 @@
--- ITN-41 - Autorización de Google Classroom, vinculada a app_users.
+-- 008 - ITN-41 - Autorización de Google Classroom, vinculada a app_users.
 -- El equipo aplica las migraciones manualmente; no ejecutar en Supabase compartido.
 -- El refresh_token se cifra en backend antes de persistirlo.
 begin;

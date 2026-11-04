@@ -6,8 +6,10 @@ const express = require("express");
 const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
+const { credentialsRouter } = require("./routes/credentials");
 const { authGoogleRouter } = require("./routes/authGoogle");
 const { buildChannels } = require("./services/notificationChannels");
+const { credentialCryptoFromConfig } = require("./services/credentialCrypto");
 
 function createApp({
   config,
@@ -17,6 +19,7 @@ function createApp({
   channels = buildChannels({ env: {}, logger }),
 }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
+  if (!config?.credentialsEncryptionKey) throw new Error("createApp requiere config.credentialsEncryptionKey");
   if (!supabase) throw new Error("createApp requiere un cliente de Supabase");
 
   const app = express();
@@ -30,6 +33,10 @@ function createApp({
   // Rutas del worker. La llave se revisa ANTES de parsear el body.
   app.use("/internal", requireApiKey(config.internalApiKey), express.json({ limit: "1mb" }));
   app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now, channels }));
+  app.use(
+    "/internal/credentials",
+    credentialsRouter({ supabase, logger, now, credentialCrypto: credentialCryptoFromConfig(config) }),
+  );
 
   // Autenticación y autorización con Google Classroom (ITN-41)
   app.use("/auth/google", (req, res, next) => {

@@ -21,10 +21,41 @@ class SnapshotOwnershipError extends Error {
   }
 }
 
+// ITN-36: mensaje fijo. Nunca lleva el texto, la llave, el ciphertext ni la causa
+// original.
+class CredentialDecryptError extends Error {
+  constructor() {
+    super("No se pudo descifrar la credencial");
+    this.name = "CredentialDecryptError";
+  }
+}
+
+class CredentialNotFoundError extends Error {
+  constructor() {
+    super("La credencial no existe");
+    this.name = "CredentialNotFoundError";
+  }
+}
+
+// El portal rechazó la credencial: hay que volver a vincular la cuenta.
+class CredentialNeedsRelinkError extends Error {
+  constructor() {
+    super("La credencial requiere volver a vincular la cuenta");
+    this.name = "CredentialNeedsRelinkError";
+  }
+}
+
 // Lanza PersistenceError si la respuesta de supabase-js trae error.
 function check(step, { data, error }) {
   if (error) throw new PersistenceError(step, error);
   return data;
 }
 
-module.exports = { PersistenceError, SnapshotOwnershipError, check };
+module.exports = {
+  PersistenceError,
+  SnapshotOwnershipError,
+  CredentialDecryptError,
+  CredentialNotFoundError,
+  CredentialNeedsRelinkError,
+  check,
+};
