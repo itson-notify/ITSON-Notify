@@ -87,7 +87,7 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
 
 5. En el dashboard, en **worker-rpa → Variables**, captura `Id_User`, `P_User` e `INTERNAL_API_KEY` (márcalas
    como *sealed*), `BACKEND_URL`, `ALUMNO_EMAIL` y `RPA_PAUSADO=false`. `INTERNAL_API_KEY` debe ser la misma
-   que la del backend. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` en este servicio.
+   que la del backend. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` ni `CREDENTIALS_ENCRYPTION_KEY` en este servicio.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.
 7. Prueba una corrida y revisa los logs:
 

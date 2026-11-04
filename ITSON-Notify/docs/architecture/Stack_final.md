@@ -15,6 +15,12 @@
 - Incluye **Auth listo** para un futuro login institucional de alumnos.  
 - PostgreSQL soporta **schemas separados**, ideal para organizar notificaciones por fuente (portal académico, Moodle, correo, etc.).
 
+##  Credenciales de estudiantes (ITN-36)
+- **Flujo:** captura → cifrado en el backend (AES-256-GCM) → `student_credentials` en Supabase → el worker pide el secreto a `POST /internal/credentials/get`.
+- Se guarda el token de iVirtual y el refresh token de Classroom, no contraseñas. `ivirtual_password` es solo un último recurso previsto en el esquema.
+- La llave maestra (`CREDENTIALS_ENCRYPTION_KEY`) vive **solo en el backend**. El worker nunca recibe la llave ni accede a la base.
+- Generación, rotación con `key_version` y procedimiento si la llave se compromete: [backend/README.md](../../backend/README.md#credenciales-de-los-estudiantes-itn-36).
+
 ---
 
 ##  Justificación General

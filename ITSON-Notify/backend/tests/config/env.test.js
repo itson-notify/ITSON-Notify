@@ -2,6 +2,8 @@
 // valores. Valores inventados y armados en tiempo de ejecución.
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
+const util = require("util");
 
 const {
   loadConfig,
@@ -10,6 +12,7 @@ const {
 
 const LLAVE = ["llave", "interna", "z".repeat(32)].join("-");
 const SERVICE_ROLE = ["rol", "de", "servicio", "w".repeat(20)].join("-");
+const LLAVE_CREDENCIALES = crypto.randomBytes(32).toString("base64");
 const SYNTHETIC_CLIENT_ID = ["client", "id", "sintetico", "12345.apps.googleusercontent.test"].join("-");
 const SYNTHETIC_CLIENT_SECRET = ["secret", "oauth", "sintetico", "x".repeat(24)].join("-");
 const SYNTHETIC_REDIRECT_URI = "http://localhost:3000/v1/auth/google/callback";
@@ -19,6 +22,7 @@ const valido = () => ({
   INTERNAL_API_KEY: LLAVE,
   SUPABASE_URL: "https://proyecto-inventado.supabase.test",
   SUPABASE_SERVICE_ROLE_KEY: SERVICE_ROLE,
+  CREDENTIALS_ENCRYPTION_KEY: LLAVE_CREDENCIALES,
 });
 
 const validoConOAuth = () => ({
@@ -44,7 +48,8 @@ describe("loadConfig", () => {
 
   test("nombra todas las variables que faltan", () => {
     assert.throws(() => loadConfig({}), {
-      message: "Faltan variables de entorno: PORT, INTERNAL_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY",
+      message:
+        "Faltan variables de entorno: PORT, INTERNAL_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, CREDENTIALS_ENCRYPTION_KEY",
     });
     const env = valido();
     env.SUPABASE_SERVICE_ROLE_KEY = "   ";
@@ -65,6 +70,63 @@ describe("loadConfig", () => {
         return true;
       },
     );
+  });
+
+  describe("CREDENTIALS_ENCRYPTION_KEY (ITN-36)", () => {
+    test("decodifica la llave de 32 bytes sin exponerla al enumerar ni serializar la config", () => {
+      const config = loadConfig(valido());
+      const esperada = Buffer.from(LLAVE_CREDENCIALES, "base64");
+      assert.ok(config.credentialsEncryptionKey.equals(esperada));
+
+      assert.ok(!Object.keys(config).includes("credentialsEncryptionKey"));
+      assert.equal({ ...config }.credentialsEncryptionKey, undefined);
+      for (const texto of [JSON.stringify(config), util.inspect(config, { depth: null })]) {
+        assert.ok(!texto.includes(LLAVE_CREDENCIALES));
+        assert.ok(!texto.includes("credentialsEncryptionKey"));
+      }
+    });
+
+    test("si falta, el error nombra solo la variable", () => {
+      for (const ausente of [undefined, "", "   "]) {
+        const env = { ...valido(), CREDENTIALS_ENCRYPTION_KEY: ausente };
+        assert.throws(() => loadConfig(env), {
+          message: "Faltan variables de entorno: CREDENTIALS_ENCRYPTION_KEY",
+        });
+      }
+    });
+
+    test("rechaza lo que no decodifica a 32 bytes, sin repetir el valor", () => {
+      const invalidas = {
+        de_16_bytes: crypto.randomBytes(16).toString("base64"),
+        de_31_bytes: crypto.randomBytes(31).toString("base64"),
+        de_33_bytes: crypto.randomBytes(33).toString("base64"),
+        en_hex: crypto.randomBytes(32).toString("hex"),
+        no_base64: `valor-que-no-es-base64-${"!".repeat(21)}=`,
+        base64url: `${"-_".repeat(21)}A=`,
+        // Bits sobrantes en el último carácter: decodifica, pero no es canónico.
+        no_canonica: `${"A".repeat(42)}B=`,
+      };
+      for (const [nombre, invalida] of Object.entries(invalidas)) {
+        assert.throws(
+          () => loadConfig({ ...valido(), CREDENTIALS_ENCRYPTION_KEY: invalida }),
+          (error) => {
+            assert.match(error.message, /Variables de entorno inválidas: CREDENTIALS_ENCRYPTION_KEY/, nombre);
+            assert.ok(!error.message.includes(invalida), nombre);
+            return true;
+          },
+        );
+      }
+    });
+
+    test("otro error de configuración tampoco revela la llave válida", () => {
+      assert.throws(
+        () => loadConfig({ ...valido(), PORT: "puerto" }),
+        (error) => {
+          assert.ok(!error.message.includes(LLAVE_CREDENCIALES));
+          return true;
+        },
+      );
+    });
   });
 
   describe("Google OAuth 2.0 (ITN-40)", () => {

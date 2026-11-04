@@ -7,7 +7,7 @@ const request = require("supertest");
 const { createApp } = require("../../src/app");
 const { createLogger } = require("../../src/utils/logger");
 const { createFakeSupabase } = require("../helpers/fakeSupabase");
-const { API_KEY, OTRA_API_KEY, EMAIL, OTRO_EMAIL, payload, SENSIBLES } = require("../helpers/payloads");
+const { API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL, payload, SENSIBLES } = require("../helpers/payloads");
 
 const RUTA = "/internal/grade-snapshots";
 
@@ -15,7 +15,7 @@ function setup({ now } = {}) {
   const db = createFakeSupabase();
   const logs = [];
   const app = createApp({
-    config: { internalApiKey: API_KEY },
+    config: { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY },
     supabase: db.client,
     logger: createLogger((line) => logs.push(line)),
     ...(now ? { now } : {}),
