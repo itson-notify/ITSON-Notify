@@ -231,6 +231,7 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
   const baseEnv = {
     PORT: '3000', INTERNAL_API_KEY: 'interna-de-pruebas-'.repeat(3),
     SUPABASE_URL: 'https://supabase.test', SUPABASE_SERVICE_ROLE_KEY: 'rol-sintetico',
+    CREDENTIALS_ENCRYPTION_KEY: crypto.randomBytes(32).toString('base64'),
     GOOGLE_OAUTH_ENABLED: 'true', GOOGLE_CLIENT_ID: 'test-client', GOOGLE_CLIENT_SECRET: 'test-secret',
     GOOGLE_REDIRECT_URI: config.googleOAuth.redirectUri, GOOGLE_OAUTH_SCOPES: CLASSROOM_SCOPE,
     GOOGLE_AUTH_SECRET: SECRET, FRONTEND_URL: frontend,
