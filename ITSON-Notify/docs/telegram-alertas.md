@@ -1,13 +1,15 @@
-# Alertas del equipo por Telegram (ITN-38)
+# Alertas del equipo por Telegram (ITN-38, ITN-39)
 
-Un bot de Telegram manda avisos **técnicos** a un grupo privado del equipo, por ejemplo cuando falla una corrida
-del RPA (ITN-39). No es el canal de notificaciones a alumnos: aquí nunca van calificaciones ni datos personales.
+Un bot de Telegram manda avisos **técnicos** a un grupo privado del equipo cuando falla una corrida del RPA
+(ITN-39, ver la sección 7). No es el canal de notificaciones a alumnos: aquí nunca van calificaciones ni datos
+personales.
 
 | Pieza | Archivo |
 |-------|---------|
 | Módulo `sendTeamAlert(texto)` | [`automation/monitors/telegram.js`](../automation/monitors/telegram.js) |
+| Fallos del RPA `notificarFalloCritico(evento)` | [`automation/monitors/alertas.js`](../automation/monitors/alertas.js) |
 | Script de prueba | [`automation/scripts/enviar-alerta-prueba.js`](../automation/scripts/enviar-alerta-prueba.js) |
-| Pruebas | [`automation/monitors/test/telegram.test.js`](../automation/monitors/test/telegram.test.js) |
+| Pruebas | [`automation/monitors/test/`](../automation/monitors/test/) |
 | Nombres de variables | [`.env.example`](../.env.example) |
 
 El módulo está en `automation/` porque el servicio `worker-rpa` de Railway solo despliega esa carpeta
@@ -109,7 +111,34 @@ los mensajes se arman solo con datos técnicos (tipo de fallo, fuente, fecha, c�
 `Extracción detenida: cambio_password (ivirtual-api)`. No incluyas nombres de alumnos ni de materias: el filtro
 no puede detectarlos.
 
+## 7. Qué fallos del RPA alertan
+
+Cada fallo deja una línea `ALERTA_RPA` en los logs de `worker-rpa` y manda este texto al grupo:
+
+| Fallo | Código de salida | Texto |
+|-------|------------------|-------|
+| iVirtual pide cambio de contraseña | 2 | `ITSON Notify: extracción detenida por cambio_password (ivirtual-api). Requiere intervención manual.` |
+| Credenciales rechazadas | 1 | `ITSON Notify: credenciales de iVirtual rechazadas (ivirtual-api). Pausa el worker con RPA_PAUSADO=true y revisa.` |
+| Falla pasajera tras los reintentos | 1 | `ITSON Notify: extracción fallida tras los reintentos (ivirtual-api, código invalidtoken). Se intentará en la siguiente corrida; revisa los logs de worker-rpa.` El código solo aparece si Moodle lo mandó. |
+| Excepción no controlada | 1 | `ITSON Notify: excepción no controlada en la corrida (worker-rpa, error TypeError). Revisa los logs de worker-rpa en Railway.` |
+| Falta configuración o es inválida | 1 | `ITSON Notify: corrida cancelada, falta configuración o es inválida (worker-rpa). Revisa las variables del servicio en Railway.` |
+| Entrega al backend fallida | 1 | `ITSON Notify: el worker no pudo entregar la extracción al backend (status 503). Revisa los logs de worker-rpa en Railway.` La manda `entrega-backend.js`, sin línea `ALERTA_RPA`. |
+
+**No alertan:** la extracción correcta y `RPA_PAUSADO=true`.
+
+Los mensajes se arman solo con el tipo de fallo, la fuente y, si aplica, un código corto (`errorcode` de Moodle
+con la forma `^[a-z_]{1,40}$`) o el nombre de la clase del error. Lo demás se descarta aunque venga en el evento,
+incluido el texto libre de los errores. El detalle se busca en los logs de Railway; una excepción no controlada
+solo deja ahí el nombre del error.
+
+**Un fallo que persiste alerta en cada corrida** (hasta 9 al día con el horario actual). El worker no guarda
+estado entre corridas, así que no hay deduplicación. Para detener los avisos mientras se atiende, pon
+`RPA_PAUSADO=true` en **worker-rpa → Variables** y regrésalo a `false` al terminar. Los pasos completos están en
+[`deployment/cron-railway.md`](deployment/cron-railway.md).
+
+Si faltan las variables de la sección 4, los fallos solo quedan en los logs. La alerta nunca cambia el código de
+salida de la corrida.
+
 ## Pendiente
 
-- **ITN-39:** llamar a `sendTeamAlert` desde `notificarFalloCritico` en
-  [`automation/monitors/alertas.js`](../automation/monitors/alertas.js) y capturar las variables en Railway.
+- Capturar `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` en Railway. Hasta entonces no llega ninguna alerta al grupo.

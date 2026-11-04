@@ -9,7 +9,7 @@ corridas no hay contenedor encendido, así que tampoco hay consumo.
 | Servicio, horario y política de reinicio | [`.railway/railway.ts`](../../../.railway/railway.ts) (raíz del repo) |
 | Punto de entrada del cron | [`automation/schedulers/extraccion-cron.js`](../../automation/schedulers/extraccion-cron.js) |
 | Entrega al backend (ITN-27) | [`automation/schedulers/entrega-backend.js`](../../automation/schedulers/entrega-backend.js) |
-| Enganche de alertas (Telegram en ITN-38/39) | [`automation/monitors/alertas.js`](../../automation/monitors/alertas.js) |
+| Alertas de fallos por Telegram (ITN-39) | [`automation/monitors/alertas.js`](../../automation/monitors/alertas.js) |
 | Nombres de variables | [`.env.example`](../../.env.example) |
 
 > **Por qué no `railway.json`:** Railway deprecó Config as Code (`railway.json` / `railway.toml`). Los
@@ -36,10 +36,14 @@ anterior sigue activa se salta la siguiente.
 | Código | Significado | Qué pasa |
 |--------|-------------|----------|
 | 0 | Extracción correcta, o `RPA_PAUSADO=true` | Nada. |
-| 1 | Error pasajero (red, 5xx, Moodle) o falta configuración | Se registra. La siguiente corrida lo vuelve a intentar. |
+| 1 | Error pasajero (red, 5xx, Moodle), excepción no controlada o falta configuración | Se registra `ALERTA_RPA` y se manda alerta al equipo por Telegram. La siguiente corrida lo vuelve a intentar. |
 | 1 | Entrega al backend fallida tras los reintentos | Se registra con `run_id` y se manda alerta al equipo por Telegram. |
-| 1 | Credenciales rechazadas | Se registra `ALERTA_RPA` y se llama al enganche de alertas. |
-| 2 | iVirtual pide **cambio de contraseña** | Se registra `ALERTA_RPA` y se llama al enganche de alertas. |
+| 1 | Credenciales rechazadas | Se registra `ALERTA_RPA` y se manda alerta al equipo por Telegram. |
+| 2 | iVirtual pide **cambio de contraseña** | Se registra `ALERTA_RPA` y se manda alerta al equipo por Telegram. |
+
+Un fallo que persiste alerta en **cada** corrida: el worker no guarda estado para deduplicar. Para detener los
+avisos, pon `RPA_PAUSADO=true`. La tabla con cada texto está en
+[`telegram-alertas.md`](../telegram-alertas.md#7-qué-fallos-del-rpa-alertan).
 
 El servicio usa `restartPolicyType: "NEVER"`, así que **ningún** código distinto de 0 provoca reintentos: la
 corrida queda marcada como fallida en Railway y espera al siguiente horario. Los logs solo traen conteos, nunca
@@ -88,6 +92,8 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
 5. En el dashboard, en **worker-rpa → Variables**, captura `Id_User`, `P_User` e `INTERNAL_API_KEY` (márcalas
    como *sealed*), `BACKEND_URL`, `ALUMNO_EMAIL` y `RPA_PAUSADO=false`. `INTERNAL_API_KEY` debe ser la misma
    que la del backend. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` ni `CREDENTIALS_ENCRYPTION_KEY` en este servicio.
+   Para recibir alertas, captura también `TELEGRAM_BOT_TOKEN` (*sealed*) y `TELEGRAM_CHAT_ID`
+   ([`telegram-alertas.md`](../telegram-alertas.md)); sin ellas los fallos solo quedan en los logs.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.
 7. Prueba una corrida y revisa los logs:
 
@@ -169,5 +175,3 @@ workspace:
 
 - **Backend en `railway.ts`:** el backend Express (ITN-27) todavía no está en `railway.ts` ni en un partial
   propio.
-- **ITN-38/ITN-39 (Telegram):** reemplazar el log de `notificarFalloCritico` en `automation/monitors/alertas.js`
-  por el envío real.
