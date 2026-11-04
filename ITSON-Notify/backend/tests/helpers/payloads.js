@@ -6,6 +6,7 @@ const crypto = require("crypto");
 // Armadas en tiempo de ejecución para que no parezcan secretos en el repo.
 const API_KEY = ["llave", "de", "prueba", "x".repeat(32)].join("-");
 const OTRA_API_KEY = ["llave", "de", "prueba", "y".repeat(32)].join("-");
+const CREDENTIALS_KEY = crypto.randomBytes(32);
 
 const EMAIL = "alumna.prueba@example.test";
 const OTRO_EMAIL = "otro.alumno@example.test";
@@ -49,4 +50,4 @@ function payload({ runId = crypto.randomUUID(), capturedAt, email = EMAIL, tarea
 // Textos que nunca deben aparecer en logs.
 const SENSIBLES = [EMAIL, OTRO_EMAIL, MATERIA_A, MATERIA_B, "Tarea 1", "Proyecto final", "85.5", "78.25", "95.00", API_KEY, OTRA_API_KEY];
 
-module.exports = { API_KEY, OTRA_API_KEY, EMAIL, OTRO_EMAIL, MATERIA_A, payload, SENSIBLES };
+module.exports = { API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL, MATERIA_A, payload, SENSIBLES };

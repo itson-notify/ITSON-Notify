@@ -160,4 +160,4 @@ async function saveSnapshot(supabase, payload) {
   return { snapshotId, userId, created, courses: payload.courses.length, items: rows.length };
 }
 
-module.exports = { saveSnapshot, ON_CONFLICT };
+module.exports = { saveSnapshot, upsertUser, ON_CONFLICT };

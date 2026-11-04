@@ -14,17 +14,19 @@ npm test               # node:test, con Supabase simulado
 Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo). En Railway se usa `npm start` y las variables del servicio, sin archivo `.env`.
 
 **Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
-`004_grade_changes_unique.sql` (llave natural de `grade_changes`) y `005_service_role_grants.sql` (grants
-explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026).
+`004_grade_changes_unique.sql` (llave natural de `grade_changes`), `005_service_role_grants.sql` (grants
+explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026) y `007_student_credentials.sql`
+(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales).
 
 ## Variables
 
-| Variable                    | Uso                                                              |
-| --------------------------- | ---------------------------------------------------------------- |
-| `PORT`                      | Puerto HTTP                                                      |
-| `INTERNAL_API_KEY`          | Llave compartida con el worker (`x-api-key`), mínimo 32 caracteres |
-| `SUPABASE_URL`              | URL del proyecto                                                 |
-| `SUPABASE_SERVICE_ROLE_KEY` | Llave `service_role`. **Solo en el backend**                     |
+| Variable                     | Uso                                                              |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `PORT`                       | Puerto HTTP                                                      |
+| `INTERNAL_API_KEY`           | Llave compartida con el worker (`x-api-key`), mínimo 32 caracteres |
+| `SUPABASE_URL`               | URL del proyecto                                                 |
+| `SUPABASE_SERVICE_ROLE_KEY`  | Llave `service_role`. **Solo en el backend**                     |
+| `CREDENTIALS_ENCRYPTION_KEY` | Llave maestra de las credenciales, 32 bytes en base64. **Solo en el backend** |
 
 Si falta alguna o es inválida, el servidor no arranca y el mensaje nombra la variable (nunca su valor).
 
@@ -53,6 +55,11 @@ el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca rec
 | `src/services/notificationService.js`        | Agrupa cambios por ítem, envía y reintenta pendientes        |
 | `src/services/notificationChannels.js`       | Canales `log` y `email` (Resend)                             |
 | `src/routes/gradeSnapshots.js`               | `POST /internal/grade-snapshots`                             |
+| `src/routes/credentials.js`                  | `/internal/credentials` (ITN-36)                             |
+| `src/models/credentialPayload.js`            | Esquemas zod de los bodies de credenciales                   |
+| `src/services/credentialCrypto.js`           | Cifrado AES-256-GCM con AAD y versiones de llave             |
+| `src/services/credentialService.js`          | Cifra y guarda, lee y descifra                               |
+| `src/repositories/credentialRepository.js`   | Repo de `student_credentials` (solo datos cifrados)          |
 | `src/utils/logger.js`                        | Logs JSON con lista blanca de campos                         |
 
 ## Endpoints
@@ -207,7 +214,97 @@ Todo esto corre dentro de `try/catch`: el snapshot y los cambios ya están guard
 o de Supabase solo se refleja en `failed` y en el log, y la fila queda `failed` (o `pending`) para la siguiente
 corrida.
 
+## Credenciales de los estudiantes (ITN-36)
+
+Se guarda el **token** del servicio `moodle_mobile_app` de iVirtual y el **refresh token** de Classroom, no
+contraseñas. `ivirtual_password` solo existe en el esquema como último recurso para el fallback de Playwright, y
+la API lo rechaza.
+
+### Flujo
+
+1. **Captura:** el estudiante da sus datos. El formulario y su autenticación todavía no existen.
+2. **Cifrado:** `PUT /internal/credentials` cifra con AES-256-GCM, con un nonce aleatorio de 12 bytes por cifrado y
+   AAD `user_id:portal:kind`. Una fila copiada a otro estudiante o tipo no se puede descifrar.
+3. **Almacenamiento:** `student_credentials` (migración 007) guarda `ciphertext`, `nonce`, `auth_tag` y
+   `key_version`. Tiene RLS sin políticas y permisos solo para `service_role`.
+4. **Uso por el worker:** `POST /internal/credentials/get` devuelve el secreto descifrado por HTTPS. Si el portal lo
+   rechaza, el worker llama a `POST /internal/credentials/needs-relink` y deja de reintentar. El worker todavía no
+   consume estos endpoints.
+
+### Endpoints
+
+Todos van detrás de `x-api-key` y responden con `Cache-Control: no-store`. El cuerpo base es:
+
+```json
+{ "user": { "email": "alumno@example.test" }, "portal": "ivirtual", "kind": "ivirtual_token" }
+```
+
+Las combinaciones válidas son `ivirtual` con `ivirtual_token` y `google_classroom` con `google_refresh_token`.
+
+| Ruta                                      | Body extra                                 | Respuesta `200`                              |
+| ----------------------------------------- | ------------------------------------------ | -------------------------------------------- |
+| `PUT /internal/credentials`               | `secret` (hasta 4096 caracteres)           | `{ portal, kind, status: "active" }`         |
+| `POST /internal/credentials/get`          | Ninguno                                    | `{ portal, kind, secret }`                   |
+| `POST /internal/credentials/needs-relink` | `reason` opcional: `credenciales` o `cambio_password` | `{ portal, kind, status: "needs_relink" }` |
+| `DELETE /internal/credentials`            | Ninguno                                    | `{ portal, kind, status: "borrada" }`        |
+
+`PUT` da de alta al estudiante si no existe y, al volver a vincular, reactiva la cuenta. Las demás rutas nunca crean
+estudiantes.
+
+| Código | Body                                 | Cuándo                                                   |
+| ------ | ------------------------------------ | -------------------------------------------------------- |
+| 400    | `{"error":"cuerpo_invalido", ...}`   | Body inválido. `detalles` solo trae ruta y código        |
+| 401    | `{"error":"no_autorizado"}`          | Sin `x-api-key` o incorrecta                             |
+| 404    | `{"error":"no_encontrado"}`          | No existe el estudiante o la credencial                  |
+| 409    | `{"error":"requiere_revinculacion"}` | `get` de una cuenta en `needs_relink`. No reintentar     |
+| 413    | `{"error":"cuerpo_demasiado_grande"}` | Más de 1 MB                                             |
+| 500    | `{"error":"error_interno"}`          | Falló Supabase o el descifrado                           |
+
+Si falla el descifrado no se marca `needs_relink`: una llave mal configurada marcaría a todos los estudiantes. El
+log registra `credencial_no_descifrable`.
+
+### La llave maestra
+
+Vive solo en `CREDENTIALS_ENCRYPTION_KEY`, en las Variables del servicio backend de Railway (márcala como *sealed*).
+El worker nunca la recibe ni accede a la base. Usa una distinta por entorno y guarda una copia en un gestor de
+secretos: si se pierde, todos los estudiantes deben volver a vincular sus cuentas.
+
+```bash
+openssl rand -base64 32
+```
+
+El backend no arranca sin ella. **Captúrala en Railway antes de desplegar esta versión.**
+
+### Rotar la llave
+
+La versión de cada fila está en `key_version`, y el código ya descifra con la llave de esa versión.
+
+1. Genera una llave nueva y agrégala como `CREDENTIALS_ENCRYPTION_KEY_V2`, con su validación y exposición no
+   enumerable en `config/env.js`.
+2. En `services/credentialCrypto.js`, agrégala al mapa de `credentialCryptoFromConfig` y sube `CURRENT_KEY_VERSION`
+   a 2. Despliega: lo nuevo se cifra con la v2 y lo anterior se sigue leyendo con la v1.
+3. Migra las filas viejas: pide volver a vincular o vuelve a cifrarlas. El script para hacerlo todavía no existe.
+4. Cuando `select count(*) from student_credentials where key_version < 2` dé 0, quita la v1.
+
+### Si la llave se compromete
+
+Una llave filtrada junto con una copia de la base revela todos los tokens. Rotar no basta: siguen siendo válidos en
+cada portal hasta revocarlos. Lo mismo aplica si se filtra `INTERNAL_API_KEY`, porque permite pedir cualquier secreto
+descifrado; en ese caso, cámbiala también en el worker.
+
+1. Invalida todas las credenciales. Desde ese momento, `get` responde 409:
+   ```sql
+   update student_credentials set status = 'needs_relink', updated_at = now();
+   ```
+2. Reemplaza `CREDENTIALS_ENCRYPTION_KEY` por una nueva y vuelve a desplegar. No reutilices la anterior.
+3. Revoca lo que se pueda en el origen: los refresh tokens en Google y los tokens en iVirtual. Hay que confirmar con
+   el administrador de Moodle cómo invalidarlos, porque cambiar la contraseña podría no bastar.
+4. Pide a cada estudiante que vuelva a vincular su cuenta. `PUT` cifra con la llave nueva y reactiva la fila.
+
 ## Privacidad de los logs
+
+Los eventos de credenciales solo llevan `user_id`, `portal`, `kind`, `key_version`, `status`, `reason` y códigos de
+error. Nunca el secreto, el correo, el body ni los datos cifrados.
 
 Los logs son una línea JSON por evento y solo llevan ids (`snapshot_id`, `user_id`), conteos y códigos de error
 (`step`, `error_code`). El logger descarta cualquier otro campo. Nunca se registran calificaciones, nombres de
@@ -240,6 +337,10 @@ Los eventos de notificación (`notificacion_enviada`, `notificacion_fallida`,
   `notifications_log`.
 - **Corridas simultáneas del mismo alumno.** Dos peticiones al mismo tiempo podrían reintentar la misma fila
   `pending` y enviarla dos veces. El worker corre una vez por intervalo, así que no se esperan.
+- **`INTERNAL_API_KEY` protege las credenciales.** Quien tenga esa llave puede leer los secretos descifrados de
+  cualquier estudiante por `POST /internal/credentials/get`, y también guardar o borrar los de cualquiera. Cifrar en
+  la base protege contra una fuga de la base, no contra una fuga del worker. Antes de exponer la captura a
+  estudiantes hace falta autenticarlos y separar permisos.
 - **Pendiente: alertas al equipo desde el backend.** `sendTeamAlert` (Telegram) vive en
   `automation/monitors/telegram.js` y el backend no puede importarlo. Para avisar al equipo de notificaciones
   fallidas hay que sacar ese módulo a algo compartido. **Ticket aparte.** Mientras tanto, los fallos solo
