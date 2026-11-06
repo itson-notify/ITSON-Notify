@@ -3,65 +3,7 @@
 // no sustituye una prueba de navegador ni una autorización real con Google.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const ts = require('typescript');
-
-function compile(file, requireImpl, env = {}) {
-  const source = fs.readFileSync(path.join(__dirname, '../src', file), 'utf8')
-    .replace(/import\.meta\.env/g, JSON.stringify(env));
-  const output = ts.transpileModule(source, { compilerOptions: {
-    module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
-  } }).outputText;
-  const module = { exports: {} };
-  new Function('require', 'module', 'exports', output)(requireImpl, module, module.exports);
-  return module.exports;
-}
-
-function harness(search, fetchImpl) {
-  const originals = { window: global.window, fetch: global.fetch, setTimeout: global.setTimeout };
-  const assigned = [];
-  const history = [];
-  global.window = { location: { search, pathname: '/app', assign: url => assigned.push(url) },
-    history: { replaceState: (...args) => history.push(args) },
-    addEventListener() {}, removeEventListener() {}, scrollTo() {} };
-  global.fetch = fetchImpl;
-  global.setTimeout = () => 1;
-  global.document = { title: 'ITSON Notify' };
-  const client = compile('services/googleAuth.ts', require, { VITE_BACKEND_URL: 'https://api.test/' });
-  const states = []; const effects = []; let cursor = 0; let mounted = false;
-  const hooks = {
-    useState(initial) {
-      const index = cursor++;
-      if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial;
-      return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
-    },
-    useEffect(effect) { if (!mounted) effects.push(effect); },
-  };
-  const jsx = (type, props) => ({ type, props });
-  const App = compile('App.tsx', id => {
-    if (id === 'react') return hooks;
-    if (id === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
-    if (id === '@/services/googleAuth') return client;
-    if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
-      categories: {}, classroomConnected: false, itsonStatus: 'ok',
-    }, INITIAL_NOTIFS: [] };
-    return new Proxy({}, { get: (_, key) => key });
-  }).default;
-  return {
-    client, assigned, history,
-    render() { cursor = 0; const tree = App(); mounted = true; return tree; },
-    async start() { const tree = this.render(); effects.forEach(effect => effect()); await new Promise(setImmediate); return tree; },
-    restore() { global.window = originals.window; global.fetch = originals.fetch; global.setTimeout = originals.setTimeout; delete global.document; },
-  };
-}
-function find(node, type) {
-  if (!node || typeof node !== 'object') return null;
-  if (node.type === type) return node;
-  const children = [node.props?.children].flat(Infinity);
-  for (const child of children) { const found = find(child, type); if (found) return found; }
-  return null;
-}
+const { harness, find } = require('./harness.cjs');
 
 test('cancelar Google desde Configuración vuelve a Configuración con sesión ausente o error de red', async () => {
   for (const fetchImpl of [async () => ({ status: 401 }), async () => { throw new Error('sin red'); }]) {
