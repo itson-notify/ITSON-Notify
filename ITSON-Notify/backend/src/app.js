@@ -7,6 +7,7 @@ const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
+const { authGoogleRouter } = require("./routes/authGoogle");
 const { buildChannels } = require("./services/notificationChannels");
 const { credentialCryptoFromConfig } = require("./services/credentialCrypto");
 
@@ -36,6 +37,16 @@ function createApp({
     "/internal/credentials",
     credentialsRouter({ supabase, logger, now, credentialCrypto: credentialCryptoFromConfig(config) }),
   );
+
+  // Autenticación y autorización con Google Classroom (ITN-41)
+  app.use("/auth/google", (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", new URL(config.frontendUrl || "http://localhost:5173").origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  }, authGoogleRouter({ config, supabase, logger, now }));
 
   app.use((req, res) => {
     res.status(404).json({ error: "no_encontrado" });

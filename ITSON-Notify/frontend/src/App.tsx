@@ -7,6 +7,7 @@ import { NotificationsPage } from '@/pages/NotificationsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { DEFAULT_SETTINGS, INITIAL_NOTIFS } from '@/services/mockData'
+import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import type { ConfirmReq, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -48,6 +49,36 @@ export default function App() {
     return () => window.removeEventListener('keydown', h)
   }, [selectedId, pwOpen, confirmReq, helpQuery])
 
+  // ITN-41 - La conexión se consulta en el backend; los parámetros de retorno
+  // solo sirven para mostrar el resultado, nunca para autenticar al alumno.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const result = params.get('classroom')
+    const from = params.get('from')
+    // La procedencia restaura la navegación, nunca autentica al estudiante.
+    // También al cancelar o fallar la consulta de sesión se vuelve a Configuración.
+    if (result && from === 'settings') { setOnboarded(true); setPage('configuracion') }
+    googleSession()
+      .then(session => {
+        if (session.connected && session.email) {
+          setSettings(s => ({
+            ...s, classroomConnected: true, classroomEmail: session.email!,
+            categories: { ...s.categories, tareas: true },
+          }))
+          if (result === 'auth_success') {
+            notify('Google Classroom conectado con éxito')
+          }
+        } else if (result === 'auth_success') {
+          notify('No se pudo verificar la autorización de Classroom')
+        }
+        if (result === 'error') notify('No se pudo conectar Google Classroom')
+      })
+      .catch(() => { if (result) notify('Error al verificar autorización de Classroom') })
+      .finally(() => {
+        if (result) window.history.replaceState({}, document.title, window.location.pathname)
+      })
+  }, [])
+
   const visible = notifs.filter(n => settings.categories[n.type] && (n.type !== 'tareas' || settings.classroomConnected))
   const unread = visible.filter(n => n.unread).length
 
@@ -83,7 +114,9 @@ export default function App() {
     title: '¿Cerrar sesión?',
     body: 'Dejarás de recibir avisos en este dispositivo hasta que vuelvas a entrar.',
     label: 'Cerrar sesión', danger: true,
-    onConfirm: () => {
+    onConfirm: async () => {
+      try { await logoutGoogle() }
+      catch { notify('No se pudo cerrar la sesión. Intenta de nuevo.'); return }
       setOnboarded(false); setSettings(DEFAULT_SETTINGS); setNotifs(INITIAL_NOTIFS)
       setPage('inicio'); setFilter('todas'); setSelectedId(null); setPromptDismissed(false)
     },

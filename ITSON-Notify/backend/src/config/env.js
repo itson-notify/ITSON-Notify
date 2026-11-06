@@ -200,11 +200,30 @@ function loadConfig(env = process.env) {
 
   invalidas.push(...oauthResult.invalidas);
 
+  const frontendUrl = valor("FRONTEND_URL") || "http://localhost:5173";
+  if (!isValidRedirectUri(frontendUrl) || new URL(frontendUrl).search) {
+    invalidas.push("FRONTEND_URL (URL https o loopback local, sin query ni fragmentos)");
+  }
+  const googleCookieSameSite = valor("GOOGLE_COOKIE_SAME_SITE") || "lax";
+  if (!["lax", "none"].includes(googleCookieSameSite)) {
+    invalidas.push("GOOGLE_COOKIE_SAME_SITE (lax o none)");
+  }
+  if (googleCookieSameSite === "none" && oauthResult.config.enabled &&
+      (!oauthResult.config.redirectUri.startsWith("https:") || !frontendUrl.startsWith("https:"))) {
+    invalidas.push("GOOGLE_COOKIE_SAME_SITE (none requiere HTTPS en backend y frontend)");
+  }
+  const googleAuthSecret = valor("GOOGLE_AUTH_SECRET");
+  if (googleAuthSecret && googleAuthSecret.length < 32) {
+    invalidas.push("GOOGLE_AUTH_SECRET (mínimo 32 caracteres)");
+  }
+
   if (invalidas.length > 0) {
     throw new Error(`Variables de entorno inválidas: ${invalidas.join(", ")}`);
   }
 
   const config = {
+    frontendUrl,
+    googleCookieSameSite,
     port,
     internalApiKey: valor("INTERNAL_API_KEY"),
     supabaseUrl: valor("SUPABASE_URL"),
@@ -212,13 +231,14 @@ function loadConfig(env = process.env) {
     googleOAuth: oauthResult.config,
   };
 
-  // No es enumerable para evitar exposición accidental en logs o serialización JSON.
+  // No son enumerables para evitar exposición accidental en logs o serialización JSON.
   Object.defineProperty(config, "credentialsEncryptionKey", {
     value: credentialsKey,
     writable: false,
     enumerable: false,
     configurable: false,
   });
+  Object.defineProperty(config, "googleAuthSecret", { value: googleAuthSecret, enumerable: false });
 
   return config;
 }
