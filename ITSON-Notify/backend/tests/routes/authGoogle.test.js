@@ -103,6 +103,9 @@ function sessionCookie({ userId = 'u1', googleId = 'g1', exp = Date.now() + 6000
   return `itn41_google_session=${encrypt({ userId, googleId, exp, sessionId: 'test-session' }, SECRET, 'google-session')}`;
 }
 
+// El atributo Path de la cookie `name` en una lista de Set-Cookie.
+const cookiePaths = (headers, name) => headers.filter(c => c.startsWith(`${name}=`)).map(c => /Path=([^;]+)/i.exec(c)[1]);
+
 describe('Rutas /auth/google', () => {
   it('rechaza empezar OAuth si falta configuración real', async () => {
     const { app } = appFor({ cfg: { ...config, googleOAuth: { ...config.googleOAuth, clientId: '' } } });
@@ -178,6 +181,7 @@ describe('Rutas /auth/google', () => {
     assert.equal(db.grants.size, 0);
     assert.equal(db.deletions, 1);
     assert.match(res.headers['set-cookie'].join(';'), /itn41_google_session=/);
+    assert.ok(cookiePaths(res.headers['set-cookie'], 'itn41_google_session').includes('/'));
   });
   it('completa OAuth con ID token firmado y almacena refresh token cifrado', async () => {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -216,6 +220,10 @@ describe('Rutas /auth/google', () => {
     assert.ok(exchangeBody.get('code_verifier'));
     assert.equal(crypto.createHash('sha256').update(exchangeBody.get('code_verifier')).digest('base64url'), params.get('code_challenge'));
     assert.equal(db.grants.size, 1);
+    // La sesión viaja a /api; el state del flujo OAuth se queda bajo /auth/google.
+    const emitida = callback.headers['set-cookie'].find(c => c.startsWith('itn41_google_session=') && !/Expires=Thu, 01 Jan 1970/.test(c));
+    assert.match(emitida, /Path=\/(;|$)/);
+    assert.deepEqual(cookiePaths(started.headers['set-cookie'], 'itn41_google_state'), ['/auth/google']);
     const row = db.grants.get('google-id');
     assert.deepEqual(decrypt(row.refresh_token, SECRET, 'google-refresh'), { token: 'refresh-secreto' });
     const session = await agent.get('/auth/google/session');
@@ -316,6 +324,8 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
     assert.equal(db.grants.get('g1').refresh_token, 'cifrado');
     assert.equal(db.sessions.size, 0);
     assert.match(logout.headers['set-cookie'].join(';'), /Max-Age=0|Expires=Thu, 01 Jan 1970/);
+    // Se borra con el path actual y con el anterior a ITN-53.
+    assert.deepEqual(cookiePaths(logout.headers['set-cookie'], 'itn41_google_session').sort(), ['/', '/auth/google']);
     assert.equal((await request(second).get('/auth/google/session').set('Cookie', cookie)).status, 401);
     assert.equal((await request(first).post('/auth/google/logout').set('Origin', frontend).set('Cookie', cookie)).status, 204);
   });

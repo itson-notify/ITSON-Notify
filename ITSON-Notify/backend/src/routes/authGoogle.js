@@ -2,13 +2,13 @@
 const express = require("express");
 const crypto = require("crypto");
 const { encrypt, decrypt } = require("../utils/secureToken");
+const { SESSION_COOKIE, sessionHash, cookieValue, createSessionReader } = require("../middleware/studentSession");
 const {
   createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization,
 } = require("../services/googleAuthService");
 
 const STATE_COOKIE = "itn41_google_state";
-const SESSION_COOKIE = "itn41_google_session";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -18,8 +18,18 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
   const secret = config.googleAuthSecret;
   const secure = new URL(oauth.redirectUri || "http://localhost:3000/auth/google/callback").protocol === "https:";
   const frontend = new URL(config.frontendUrl || "http://localhost:5173");
-  const cookieOptions = { httpOnly: true, secure, sameSite: config.googleCookieSameSite || "lax", path: "/auth/google" };
-  const sessionHash = id => crypto.createHash("sha256").update(id).digest("hex");
+  const baseCookie = { httpOnly: true, secure, sameSite: config.googleCookieSameSite || "lax" };
+  const stateCookieOptions = { ...baseCookie, path: "/auth/google" };
+  // La sesión también debe viajar a /api. Para borrarla hay que repetir este path.
+  const sessionCookieOptions = { ...baseCookie, path: "/" };
+  // Antes de ITN-53 la sesión vivía bajo /auth/google. Esa cookie se enviaría
+  // primero y taparía a la nueva, así que se borra al entrar y al salir.
+  const clearLegacySessionCookie = res => res.clearCookie(SESSION_COOKIE, stateCookieOptions);
+  const clearSessionCookies = res => {
+    res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
+    clearLegacySessionCookie(res);
+  };
+  const currentSession = createSessionReader({ secret, supabase, now });
   // Las respuestas de sesión y los redirects no se deben almacenar en cachés.
   router.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -35,17 +45,6 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     return url.toString();
   }
 
-  async function currentSession(req) {
-    const session = decrypt(cookieValue(req, SESSION_COOKIE), secret, "google-session");
-    if (!session || !Number.isFinite(session.exp) || session.exp <= now() ||
-        !session.userId || !session.googleId || typeof session.sessionId !== "string") return null;
-    const { data, error } = await supabase.from("google_app_sessions")
-      .select("user_id, google_id, expires_at").eq("id", sessionHash(session.sessionId)).maybeSingle();
-    if (error) throw error;
-    return data && data.user_id === session.userId && data.google_id === session.googleId &&
-      Date.parse(data.expires_at) > now() ? session : null;
-  }
-
   router.get("/", (req, res) => {
     if (!oauth.enabled || !oauth.clientId || !oauth.clientSecret || !secret || secret.length < 32) {
       return res.status(503).json({ error: "google_oauth_no_configurado" });
@@ -54,13 +53,13 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     const state = crypto.randomBytes(24).toString("base64url");
     const from = req.query.from === "settings" ? "settings" : "onboarding";
     const pending = encrypt({ state, verifier, from, exp: now() + STATE_TTL_MS }, secret, "google-state");
-    res.cookie(STATE_COOKIE, pending, { ...cookieOptions, maxAge: STATE_TTL_MS });
+    res.cookie(STATE_COOKIE, pending, { ...stateCookieOptions, maxAge: STATE_TTL_MS });
     res.redirect(generateAuthUrl({ clientId: oauth.clientId, redirectUri: oauth.redirectUri, state, challenge, scopes: oauth.scopes }));
   });
 
   router.get("/callback", async (req, res) => {
     const pending = decrypt(cookieValue(req, STATE_COOKIE), secret, "google-state");
-    res.clearCookie(STATE_COOKIE, cookieOptions);
+    res.clearCookie(STATE_COOKIE, stateCookieOptions);
     if (!pending || !pending.state || !Number.isFinite(pending.exp) || pending.exp <= now() || req.query.state !== pending.state) {
       return res.status(400).json({ error: "oauth_state_invalido" });
     }
@@ -89,7 +88,8 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       });
       if (sessionError) throw sessionError;
       const session = encrypt({ userId, googleId, sessionId, exp }, secret, "google-session");
-      res.cookie(SESSION_COOKIE, session, { ...cookieOptions, maxAge: SESSION_TTL_MS });
+      clearLegacySessionCookie(res);
+      res.cookie(SESSION_COOKIE, session, { ...sessionCookieOptions, maxAge: SESSION_TTL_MS });
       logger.info("google_classroom_autorizado", { user_id: userId });
       return res.redirect(returnToFrontend("auth_success", pending.from));
     } catch (error) {
@@ -124,7 +124,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       const { error: sessionsError } = await supabase.from("google_app_sessions")
         .delete().eq("user_id", session.userId).eq("google_id", session.googleId);
       if (sessionsError) throw sessionsError;
-      res.clearCookie(SESSION_COOKIE, cookieOptions);
+      clearSessionCookies(res);
       return res.sendStatus(204);
     } catch {
       return res.status(500).json({ error: "error_interno" });
@@ -141,8 +141,8 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
           .eq("id", sessionHash(session.sessionId)).eq("user_id", session.userId);
         if (error) throw error;
       }
-      res.clearCookie(SESSION_COOKIE, cookieOptions);
-      res.clearCookie(STATE_COOKIE, cookieOptions);
+      clearSessionCookies(res);
+      res.clearCookie(STATE_COOKIE, stateCookieOptions);
       return res.sendStatus(204);
     } catch {
       return res.status(500).json({ error: "error_interno" });
@@ -150,13 +150,6 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
   });
 
   return router;
-}
-
-// Express no instala cookie-parser; basta leer las dos cookies propias.
-function cookieValue(req, name) {
-  const item = (req.headers.cookie || "").split(";").map(value => value.trim())
-    .find(value => value.startsWith(`${name}=`));
-  return item ? item.slice(name.length + 1) : null;
 }
 
 module.exports = { authGoogleRouter };
