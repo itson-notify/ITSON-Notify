@@ -6,7 +6,7 @@ export type Filter = 'todas' | NotifType
 export type SourceStatus = 'ok' | 'error'
 
 export interface Notif {
-  id: number
+  id: string
   type: NotifType
   title: string
   subject: string
@@ -44,6 +44,7 @@ export interface ConfirmReq {
 export interface SyncProps {
   syncing: boolean
   firstRun: boolean
+  loading: boolean
   onSync: () => void
   onFix: () => void
   onHelp: (q: string) => void

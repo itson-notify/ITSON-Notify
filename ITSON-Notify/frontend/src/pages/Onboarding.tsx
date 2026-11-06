@@ -9,8 +9,8 @@ import { TYPE_CFG, TYPES } from '@/utils/notifTypes'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { SetSettings, Settings } from '@/types'
 
-export function Onboarding({ settings, setSettings, onFinish, onHelp }: {
-  settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void
+export function Onboarding({ settings, setSettings, onFinish, onHelp, requireGoogle = false }: {
+  settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void; requireGoogle?: boolean
 }) {
   const [step, setStep] = useState(() =>
     new URLSearchParams(window.location.search).get('from') === 'onboarding' ? 2 : 0)
@@ -164,7 +164,7 @@ export function Onboarding({ settings, setSettings, onFinish, onHelp }: {
           <Button full onClick={connectGoogle} disabled={googleState === 'loading'}>
             {googleState === 'loading' ? <><Spinner />Conectando…</> : 'Continuar con Google'}
           </Button>
-          <Button full variant="ghost" onClick={next}>Omitir por ahora</Button>
+          {!requireGoogle && <Button full variant="ghost" onClick={next}>Omitir por ahora</Button>}
         </div>
   }
 

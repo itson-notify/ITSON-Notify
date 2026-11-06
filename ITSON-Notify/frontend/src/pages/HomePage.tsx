@@ -11,7 +11,7 @@ import type { Filter, Notif, Page, Settings, SyncProps } from '@/types'
 
 export function HomePage({ notifs, settings, sync, onOpen, onFilter, onGo, showClassroomPrompt, onDismissPrompt }: {
   notifs: Notif[]; settings: Settings; sync: SyncProps
-  onOpen: (id: number) => void; onFilter: (f: Filter) => void; onGo: (p: Page) => void; showClassroomPrompt: boolean; onDismissPrompt: () => void
+  onOpen: (id: string) => void; onFilter: (f: Filter) => void; onGo: (p: Page) => void; showClassroomPrompt: boolean; onDismissPrompt: () => void
 }) {
   const enabled = activeCategories(settings)
   return (
@@ -55,7 +55,7 @@ export function HomePage({ notifs, settings, sync, onOpen, onFilter, onGo, showC
         <button onClick={() => { onFilter('todas'); onGo('notificaciones') }} className={`${linkCls} font-medium px-2 -mr-2 text-[#2563EB]`}>Ver todas</button>
       </div>
       <div className="bg-white border-y md:border md:rounded-lg border-[#E5E7EB] overflow-hidden">
-        {sync.firstRun ? <SkeletonList /> : <NotifList items={notifs.slice(0, 5)} onOpen={onOpen} />}
+        {sync.firstRun || sync.loading ? <SkeletonList /> : <NotifList items={notifs.slice(0, 5)} onOpen={onOpen} />}
       </div>
     </div>
   )

@@ -7,8 +7,8 @@ import { linkCls } from '@/utils/styles'
 import type { Filter, Notif, Settings, SyncProps } from '@/types'
 
 export function NotificationsPage({ notifs, settings, filter, setFilter, selectedId, onOpen, onClose, onMarkAll, onMarkUnread, sync }: {
-  notifs: Notif[]; settings: Settings; filter: Filter; setFilter: (f: Filter) => void; selectedId: number | null
-  onOpen: (id: number) => void; onClose: () => void; onMarkAll: () => void; onMarkUnread: (id: number) => void; sync: SyncProps
+  notifs: Notif[]; settings: Settings; filter: Filter; setFilter: (f: Filter) => void; selectedId: string | null
+  onOpen: (id: string) => void; onClose: () => void; onMarkAll: () => void; onMarkUnread: (id: string) => void; sync: SyncProps
 }) {
   const enabled = activeCategories(settings)
   const filtered = filter === 'todas' ? notifs : notifs.filter(n => n.type === filter)
@@ -34,7 +34,7 @@ export function NotificationsPage({ notifs, settings, filter, setFilter, selecte
           <FilterChips value={filter} onChange={setFilter} types={enabled} items={notifs} />
         </div>
         <div className="bg-white border-y md:border md:mx-8 md:rounded-lg lg:mx-0 lg:border-0 lg:border-t lg:rounded-none border-[#E5E7EB] lg:flex-1 lg:overflow-y-auto">
-          {sync.firstRun
+          {sync.firstRun || sync.loading
             ? <SkeletonList rows={6} />
             : <NotifList items={filtered} selectedId={selectedId} onOpen={onOpen}
                 emptyText={filter === 'todas' ? undefined : `No tienes notificaciones de ${TYPE_CFG[filter].label.toLowerCase()} por ahora.`} />}
