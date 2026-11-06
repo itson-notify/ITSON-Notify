@@ -15,8 +15,9 @@ Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo
 
 **Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
 `004_grade_changes_unique.sql` (llave natural de `grade_changes`), `005_service_role_grants.sql` (grants
-explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026) y `007_student_credentials.sql`
-(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales).
+explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `007_student_credentials.sql`
+(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales) y `009_notifications_read_at.sql`
+(estado de lectura; sin ella, fallan las notificaciones de `/api`).
 
 ## Variables
 
@@ -323,6 +324,32 @@ manualmente en dev, después de `007_student_credentials.sql` (ITN-36).
 
 Con `GOOGLE_OAUTH_ENABLED=false`, `GET /auth/google` responde 503 (`{"error":"google_oauth_no_configurado"}`). Es lo
 esperado.
+
+## API del alumno (ITN-53)
+
+Rutas que usa el frontend con la cookie de sesión de Google (`itn41_google_session`, con `Path=/`). Todo se filtra por el
+`user_id` de la sesión, nunca por un id del cliente. Las respuestas llevan `Cache-Control: no-store` y CORS solo para el
+origen exacto de `FRONTEND_URL`.
+
+| Ruta                                   | Respuesta                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /api/me`                          | `{ email, classroomConnected, itsonStatus }`                                |
+| `GET /api/notifications`               | Hasta 100 notificaciones con forma `Notif`, de la más reciente a la más antigua |
+| `POST /api/notifications/:id/read`     | 204. 400 `id_invalido` si no es uuid; 404 si no existe o es de otro alumno  |
+| `POST /api/notifications/read-all`     | 204                                                                         |
+
+Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. Los POST exigen que `Origin` sea exactamente el del
+frontend; si no, responden 403 `{"error":"origen_no_permitido"}`.
+
+- **Origen de los datos:** `notifications_log` con `channel = 'log'`, que da una fila por aviso; `read_at` (migración
+  009) indica si está leída. Materia y valores salen de `grade_changes` y `subjects`.
+- **`itsonStatus`:** sale de `student_credentials` del portal `ivirtual`: `needs_relink` es `error`; `active` o sin
+  registro es `ok`.
+- **`type`:** siempre `calificaciones`, porque `notifications_log` solo registra cambios de calificación y no tiene
+  columna de tipo.
+- **No hay endpoint para marcar como no leída.**
+
+Con una cookie emitida antes de ITN-53 (`Path=/auth/google`), `/api` responde 401 hasta volver a entrar con Google.
 
 ## Privacidad de los logs
 
