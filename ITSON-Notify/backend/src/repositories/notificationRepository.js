@@ -1,11 +1,14 @@
 // ITN-28 - Repo real de notificationService sobre Supabase (notifications_log,
-// migración 002). Contrato en backend/src/services/README.md.
+// migración 002, y push_subscriptions, migración 009). Contrato en
+// backend/src/services/README.md.
 const { check } = require("../utils/errors");
 
 // unique (grade_change_id, channel) de la migración 002.
 const NOTIFICATIONS_ON_CONFLICT = "grade_change_id,channel";
+const PUSH_SUBSCRIPTIONS_ON_CONFLICT = "user_id,endpoint";
 
 const LOG_COLUMNS = "id,user_id,grade_change_id,channel,payload,status,attempts";
+const PUSH_COLUMNS = "id,user_id,endpoint,p256dh,auth,user_agent";
 
 // Tope de pendientes que se reintentan por corrida; el resto queda para la
 // siguiente.
@@ -109,7 +112,57 @@ function createNotificationRepository(supabase) {
     return context;
   }
 
-  return { claimNotification, updateNotification, listPendingNotifications, getItemContext };
+  // Guarda o actualiza la suscripción Web Push de un dispositivo del alumno.
+  async function savePushSubscription({ userId, endpoint, p256dh, auth, userAgent = null }) {
+    const rows = check(
+      "push_subscriptions",
+      await supabase
+        .from("push_subscriptions")
+        .upsert(
+          {
+            user_id: userId,
+            endpoint,
+            p256dh,
+            auth,
+            user_agent: userAgent,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: PUSH_SUBSCRIPTIONS_ON_CONFLICT },
+        )
+        .select(PUSH_COLUMNS),
+    );
+    return rows[0] ?? null;
+  }
+
+  async function listPushSubscriptions(userId) {
+    return check(
+      "push_subscriptions",
+      await supabase.from("push_subscriptions").select(PUSH_COLUMNS).eq("user_id", userId),
+    );
+  }
+
+  async function deletePushSubscription(userId, endpoint) {
+    check(
+      "push_subscriptions",
+      await supabase.from("push_subscriptions").delete().eq("user_id", userId).eq("endpoint", endpoint),
+    );
+  }
+
+  return {
+    claimNotification,
+    updateNotification,
+    listPendingNotifications,
+    getItemContext,
+    savePushSubscription,
+    listPushSubscriptions,
+    deletePushSubscription,
+  };
 }
 
-module.exports = { createNotificationRepository, contextKey, NOTIFICATIONS_ON_CONFLICT, PENDING_LIMIT };
+module.exports = {
+  createNotificationRepository,
+  contextKey,
+  NOTIFICATIONS_ON_CONFLICT,
+  PUSH_SUBSCRIPTIONS_ON_CONFLICT,
+  PENDING_LIMIT,
+};

@@ -7,6 +7,59 @@ import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = window.atob(base64)
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)))
+}
+
+// Pide permiso en el navegador, registra el Service Worker y guarda la suscripción en el backend.
+async function subscribeBrowserPush(userId: string) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    throw new Error('push_no_soportado')
+  }
+  const permission = await Notification.requestPermission()
+  if (permission !== 'granted') throw new Error('permiso_denegado')
+
+  const keyRes = await fetch(`${API_BASE}/push/vapid-public-key`, { credentials: 'include' })
+  if (!keyRes.ok) throw new Error('sin_llave_vapid')
+  const { publicKey } = await keyRes.json()
+
+  const registration = await navigator.serviceWorker.register('/sw.js')
+  await navigator.serviceWorker.ready
+
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  })
+
+  const subRes = await fetch(`${API_BASE}/push/subscriptions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ userId, subscription: subscription.toJSON() }),
+  })
+  if (!subRes.ok) throw new Error('error_guardando_suscripcion')
+}
+
+async function unsubscribeBrowserPush(userId: string) {
+  if (!('serviceWorker' in navigator)) return
+  const registration = await navigator.serviceWorker.getRegistration('/sw.js')
+  const subscription = await registration?.pushManager.getSubscription()
+  if (!subscription) return
+
+  await fetch(`${API_BASE}/push/subscriptions`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ userId, endpoint: subscription.endpoint }),
+  })
+  await subscription.unsubscribe()
+}
+
 export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify }: {
   settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify
 }) {
@@ -34,6 +87,25 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
   // [H5] No se permite apagar el último canal: así nunca te quedas sin avisos por accidente
   const onlyPush = settings.pushOn && !settings.emailOn
   const onlyEmail = settings.emailOn && !settings.pushOn
+
+  const togglePush = async (v: boolean) => {
+    const userId = settings.itsonId || 'default-student'
+    if (v) {
+      try {
+        await subscribeBrowserPush(userId)
+        setSettings(s => ({ ...s, pushOn: true, pushPermission: 'granted' }))
+        notify('Notificaciones activadas en este dispositivo')
+      } catch {
+        const denied = typeof Notification !== 'undefined' && Notification.permission === 'denied'
+        setSettings(s => ({ ...s, pushOn: false, pushPermission: denied ? 'denied' : s.pushPermission }))
+        notify(denied ? 'Permiso bloqueado en el navegador' : 'No se pudieron activar las notificaciones push')
+      }
+    } else {
+      try { await unsubscribeBrowserPush(userId) } catch { /* ignorar error de red */ }
+      setSettings(s => ({ ...s, pushOn: false }))
+      notify('Notificaciones desactivadas en este dispositivo')
+    }
+  }
 
   return (
     <div className="py-5 md:px-8 md:py-8 lg:px-10 max-w-2xl">
@@ -81,10 +153,7 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
           <SettingRow icon={<SmallIcon>{I.phone(18)}</SmallIcon>} title="En este dispositivo"
             subtitle={onlyPush ? 'Debe quedar al menos un canal activo' : settings.pushPermission === 'granted' ? 'Notificaciones push' : 'Te pediremos permiso al activarlo'}>
             <Toggle label="Notificaciones push" on={settings.pushOn} disabled={onlyPush}
-              onChange={v => {
-                setSettings(s => ({ ...s, pushOn: v, pushPermission: v ? 'granted' : s.pushPermission }))
-                if (v) notify('Notificaciones activadas en este dispositivo')
-              }} />
+              onChange={togglePush} />
           </SettingRow>
           <SettingRow icon={<SmallIcon>{I.mail(18)}</SmallIcon>} title="Por correo"
             subtitle={onlyEmail ? 'Debe quedar al menos un canal activo' : <span className="block truncate">{settings.email}</span>}>

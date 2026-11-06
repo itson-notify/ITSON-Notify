@@ -1,7 +1,6 @@
-// ITN-28 - Canales de notificación de prueba.
-// "log" siempre está disponible. "email" (Resend) solo se arma si existe
-// RESEND_API_KEY; si falta, el canal se omite sin fallar.
-// FCM y Telegram quedan fuera de alcance de ITN-28.
+// ITN-28 - Canales de notificación.
+// "log" siempre está disponible. "email" (Resend) y "web_push" (VAPID) solo se
+// arman si existen sus llaves en el entorno; si faltan, se omiten sin fallar.
 
 const RESEND_URL = "https://api.resend.com/emails";
 const RESEND_TIMEOUT_MS = 10_000;
@@ -49,31 +48,105 @@ function emailChannel({ apiKey, from, to, fetchImpl = fetch }) {
   };
 }
 
+// Envía el aviso por Web Push a los dispositivos suscritos del usuario.
+// Si un endpoint responde 404 o 410 (suscripción vencida o revocada), se borra.
+function webPushChannel({
+  vapidPublicKey,
+  vapidPrivateKey,
+  vapidSubject = "mailto:notificaciones@itson.edu.mx",
+  pushRepo,
+  webpushImpl,
+}) {
+  const wp = webpushImpl ?? require("web-push");
+  wp.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+
+  return {
+    name: "web_push",
+    async send(message, { userId, gradeChangeId } = {}) {
+      if (!userId) throw new Error("webPushChannel requiere userId");
+      const subs = await pushRepo.listPushSubscriptions(userId);
+      if (!subs || subs.length === 0) {
+        throw new Error("Usuario sin suscripciones Web Push");
+      }
+
+      const payload = JSON.stringify({
+        title: message.subject,
+        body: message.text,
+        tag: gradeChangeId ? `itson-change-${gradeChangeId}` : "itson-notify",
+        url: "/notifications",
+      });
+
+      let enviados = 0;
+      let ultimoError = null;
+
+      for (const sub of subs) {
+        try {
+          await wp.sendNotification(
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            payload,
+          );
+          enviados += 1;
+        } catch (err) {
+          if (err?.statusCode === 404 || err?.statusCode === 410) {
+            try {
+              await pushRepo.deletePushSubscription(userId, sub.endpoint);
+            } catch {
+              // Si falla el borrado, se limpia en el siguiente intento.
+            }
+          }
+          ultimoError = err;
+        }
+      }
+
+      if (enviados === 0 && ultimoError) {
+        throw new Error(`Web Push respondió ${ultimoError.statusCode ?? "error"}`);
+      }
+    },
+  };
+}
+
 // Arma los canales disponibles según el entorno.
 //   env.RESEND_API_KEY     sin ella no hay canal email
 //   env.NOTIFY_EMAIL_TO    destinatario de prueba (obligatorio para email)
 //   env.NOTIFY_EMAIL_FROM  remitente; por defecto el de pruebas de Resend
-function buildChannels({ env = process.env, logger = console, fetchImpl } = {}) {
+//   env.VAPID_PUBLIC_KEY / env.VAPID_PRIVATE_KEY + pushRepo  activan web_push
+function buildChannels({
+  env = process.env,
+  logger = console,
+  fetchImpl,
+  pushRepo,
+  webpushImpl,
+} = {}) {
   const channels = [logChannel(logger)];
 
   if (!env.RESEND_API_KEY) {
     logger.info("canal_email_omitido", { reason: "sin_resend_api_key" });
-    return channels;
-  }
-  if (!env.NOTIFY_EMAIL_TO) {
+  } else if (!env.NOTIFY_EMAIL_TO) {
     logger.warn("canal_email_omitido", { reason: "sin_notify_email_to" });
-    return channels;
+  } else {
+    channels.push(
+      emailChannel({
+        apiKey: env.RESEND_API_KEY,
+        from: env.NOTIFY_EMAIL_FROM || "ITSON Notify <onboarding@resend.dev>",
+        to: env.NOTIFY_EMAIL_TO,
+        fetchImpl,
+      }),
+    );
   }
 
-  channels.push(
-    emailChannel({
-      apiKey: env.RESEND_API_KEY,
-      from: env.NOTIFY_EMAIL_FROM || "ITSON Notify <onboarding@resend.dev>",
-      to: env.NOTIFY_EMAIL_TO,
-      fetchImpl,
-    }),
-  );
+  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && pushRepo) {
+    channels.push(
+      webPushChannel({
+        vapidPublicKey: env.VAPID_PUBLIC_KEY,
+        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+        vapidSubject: env.VAPID_SUBJECT || "mailto:notificaciones@itson.edu.mx",
+        pushRepo,
+        webpushImpl,
+      }),
+    );
+  }
+
   return channels;
 }
 
-module.exports = { buildChannels, logChannel, emailChannel, RESEND_URL };
+module.exports = { buildChannels, logChannel, emailChannel, webPushChannel, RESEND_URL };

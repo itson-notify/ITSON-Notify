@@ -119,7 +119,9 @@ describe("notifyGroupedChanges", () => {
     assert.equal(r.failed, 0);
     assert.equal(log.enviados.length, 1);
     assert.equal(log.enviados[0].message.text, "Tarea 3 en Cálculo: calificación de 8 a 9.");
-    assert.deepEqual(log.enviados[0].meta, { gradeChangeId: "gc-1", gradeChangeIds: ["gc-1", "gc-2"] });
+    
+    // Se añade userId a la aserción estricta de meta para coincidir con la actualización
+    assert.deepEqual(log.enviados[0].meta, { userId: "u-1", gradeChangeId: "gc-1", gradeChangeIds: ["gc-1", "gc-2"] });
 
     assert.equal(db.tables.notifications_log.length, 1);
     const [fila] = db.tables.notifications_log;
@@ -183,7 +185,10 @@ describe("retryPendingNotifications", () => {
 
     assert.deepEqual({ retried: r.retried, notified: r.notified, failed: r.failed }, { retried: 1, notified: 1, failed: 0 });
     assert.deepEqual(email.enviados[0].message, { subject: payload.subject, text: payload.text });
-    assert.deepEqual(email.enviados[0].meta, { gradeChangeId: "gc-1", gradeChangeIds: ["gc-1", "gc-2"] });
+    
+    // Se añade userId a la aserción estricta de meta para coincidir con la actualización
+    assert.deepEqual(email.enviados[0].meta, { userId: "u-1", gradeChangeId: "gc-1", gradeChangeIds: ["gc-1", "gc-2"] });
+    
     const [fila] = db.tables.notifications_log;
     assert.equal(fila.status, "sent");
     assert.equal(fila.attempts, 2);
