@@ -21,7 +21,7 @@
 --
 -- Requiere 001. Idempotente: se puede ejecutar mas de una vez sin error ni efectos
 -- extra. Todo corre en una sola transaccion.
--- Pendiente de aplicar (pruebas en 007_README.md).
+-- Pruebas en 007_README.md.
 
 begin;
 
