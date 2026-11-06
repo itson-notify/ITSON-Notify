@@ -351,6 +351,19 @@ frontend; si no, responden 403 `{"error":"origen_no_permitido"}`.
 
 Con una cookie emitida antes de ITN-53 (`Path=/auth/google`), `/api` responde 401 hasta volver a entrar con Google.
 
+### Notificaciones de ejemplo en dev
+
+Una corrida real no genera avisos hasta que cambia una calificación. Para probar el frontend antes de eso:
+
+```bash
+SEED_ALUMNO_EMAIL=<correo-del-alumno> npm run seed:dev
+```
+
+Lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `backend/.env` y se niega a correr con `NODE_ENV=production`. Ese
+candado depende de la variable: antes de correrlo, revisa que `SUPABASE_URL` sea el proyecto de dev. El alumno debe existir
+en `app_users` y la migración 009 debe estar aplicada. Para borrar lo sembrado, usa el SQL del encabezado de
+`scripts/seed-dev-notifications.js`.
+
 ## Privacidad de los logs
 
 Los eventos de credenciales solo llevan `user_id`, `portal`, `kind`, `key_version`, `status`, `reason` y códigos de

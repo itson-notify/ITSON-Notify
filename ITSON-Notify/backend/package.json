@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --env-file=.env src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "seed:dev": "node --env-file=.env scripts/seed-dev-notifications.js"
   },
   "engines": {
     "node": ">=22"
