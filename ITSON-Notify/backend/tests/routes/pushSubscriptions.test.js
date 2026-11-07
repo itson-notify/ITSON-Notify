@@ -12,12 +12,18 @@ const { notifyGroupedChanges } = require("../../src/services/notificationService
 
 const vapidKeys = webPush.generateVAPIDKeys();
 
-function crearSesion(db, secret, { email = "alumno@potros.itson.edu.mx", googleId = "g12345" } = {}) {
-  const userId = crypto.randomUUID();
+function crearSesion(
+  db,
+  secret,
+  { userId: existingUserId, email = "alumno@potros.itson.edu.mx", googleId = "g12345" } = {},
+) {
+  const userId = existingUserId ?? crypto.randomUUID();
   const sessionId = crypto.randomBytes(16).toString("hex");
   const exp = Date.now() + 1000 * 60 * 60;
 
-  db.tables.app_users.push({ id: userId, email });
+  if (!db.tables.app_users.some((u) => u.id === userId)) {
+    db.tables.app_users.push({ id: userId, email });
+  }
   db.tables.google_app_sessions.push({
     id: crypto.createHash("sha256").update(sessionId).digest("hex"),
     user_id: userId,
@@ -151,7 +157,7 @@ describe("Rutas y ciclo de vida de Suscripciones Web Push", () => {
     assert.strictEqual(db.tables.push_subscriptions[0].user_id, otroUserId);
   });
 
-  test("Cierre de sesión con notificaciones activas revoca las suscripciones del alumno en servidor", async () => {
+  test("Cierre de sesión con notificaciones activas revoca la suscripción del dispositivo actual", async () => {
     const subRes = await request(app)
       .post("/push/subscriptions")
       .set("Origin", "http://localhost:5173")
@@ -185,6 +191,118 @@ describe("Rutas y ciclo de vida de Suscripciones Web Push", () => {
       /Usuario sin suscripciones Web Push/,
     );
     assert.strictEqual(enviados.length, 0);
+  });
+
+  test("Multidispositivo: mismo alumno con laptop y telefono cierra sesión en laptop y telefono sigue recibiendo Push", async () => {
+    const sesionTelefono = crearSesion(db, secret, { userId, googleId });
+
+    // 1. El alumno activa Web Push en su laptop (validCookie) y en su teléfono (sesionTelefono.cookie)
+    const resLaptop = await request(app)
+      .post("/push/subscriptions")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", validCookie)
+      .send({
+        subscription: { endpoint: "https://fcm.test/laptop", keys: { p256dh: "pub-lap", auth: "auth-lap" } },
+      });
+    assert.strictEqual(resLaptop.status, 201);
+
+    const resTelefono = await request(app)
+      .post("/push/subscriptions")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", sesionTelefono.cookie)
+      .send({
+        subscription: { endpoint: "https://fcm.test/telefono", keys: { p256dh: "pub-tel", auth: "auth-tel" } },
+      });
+    assert.strictEqual(resTelefono.status, 201);
+    assert.strictEqual(db.tables.push_subscriptions.length, 2);
+
+    // 2. El alumno cierra sesión únicamente en su laptop
+    const logoutLaptop = await request(app)
+      .post("/auth/google/logout")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", validCookie);
+    assert.strictEqual(logoutLaptop.status, 204);
+
+    // 3. El endpoint de laptop se eliminó, pero el del teléfono permanece activo
+    assert.strictEqual(db.tables.push_subscriptions.length, 1);
+    assert.strictEqual(db.tables.push_subscriptions[0].endpoint, "https://fcm.test/telefono");
+
+    // 4. Al enviarse una notificación al alumno, el teléfono la recibe y la laptop no
+    const entregas = [];
+    const channel = webPushChannel({
+      vapidPublicKey: vapidKeys.publicKey,
+      vapidPrivateKey: vapidKeys.privateKey,
+      pushRepo,
+      webpushImpl: {
+        setVapidDetails: () => {},
+        sendNotification: async (sub, payload) => entregas.push({ sub, payload: JSON.parse(payload) }),
+      },
+    });
+
+    await channel.send(
+      { subject: "ITSON Notify: cambio de calificación", text: "Cálculo: 90 a 95." },
+      { userId, gradeChangeId: "gc-multi" },
+    );
+    assert.strictEqual(entregas.length, 1);
+    assert.strictEqual(entregas[0].sub.endpoint, "https://fcm.test/telefono");
+    assert.strictEqual(entregas[0].payload.body, "Cálculo: 90 a 95.");
+  });
+
+  test("Desconectar Google Classroom (DELETE /auth/google/session) no desactiva Push de calificaciones ni de otros dispositivos", async () => {
+    db.tables.google_authorizations.push({
+      user_id: userId,
+      google_id: googleId,
+      email: "alumno@potros.itson.edu.mx",
+      scope: "classroom",
+      refresh_token: "token-cifrado",
+    });
+
+    const sesionTelefono = crearSesion(db, secret, { userId, googleId });
+
+    await request(app)
+      .post("/push/subscriptions")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", validCookie)
+      .send({
+        subscription: { endpoint: "https://fcm.test/laptop", keys: { p256dh: "pub-lap", auth: "auth-lap" } },
+      });
+
+    await request(app)
+      .post("/push/subscriptions")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", sesionTelefono.cookie)
+      .send({
+        subscription: { endpoint: "https://fcm.test/telefono", keys: { p256dh: "pub-tel", auth: "auth-tel" } },
+      });
+    assert.strictEqual(db.tables.push_subscriptions.length, 2);
+
+    // El alumno pulsa «Desconectar Google Classroom»
+    const disconnectRes = await request(app)
+      .delete("/auth/google/session")
+      .set("Origin", "http://localhost:5173")
+      .set("Cookie", validCookie);
+    assert.strictEqual(disconnectRes.status, 204);
+    assert.strictEqual(db.tables.google_authorizations.length, 0);
+
+    // Las suscripciones Web Push en laptop y teléfono siguen activas para calificaciones
+    assert.strictEqual(db.tables.push_subscriptions.length, 2);
+
+    const entregas = [];
+    const channel = webPushChannel({
+      vapidPublicKey: vapidKeys.publicKey,
+      vapidPrivateKey: vapidKeys.privateKey,
+      pushRepo,
+      webpushImpl: {
+        setVapidDetails: () => {},
+        sendNotification: async (sub, payload) => entregas.push({ sub, payload: JSON.parse(payload) }),
+      },
+    });
+
+    await channel.send(
+      { subject: "ITSON Notify: cambio de calificación", text: "Base de Datos: 85 a 92." },
+      { userId, gradeChangeId: "gc-calif" },
+    );
+    assert.strictEqual(entregas.length, 2);
   });
 
   test("Flujo A -> logout -> B en el mismo navegador: B no recibe alertas privadas del alumno A", async () => {

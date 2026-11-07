@@ -122,7 +122,8 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
-  // El botón «Desconectar» existente también debe borrar la autorización real.
+  // El botón «Desconectar» borra solo la autorización de Classroom, sin
+  // desactivar las suscripciones Web Push de calificaciones ni de otros dispositivos.
   router.delete("/session", async (req, res) => {
     if (req.get("origin") !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
     try {
@@ -134,9 +135,6 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       const { error: sessionsError } = await supabase.from("google_app_sessions")
         .delete().eq("user_id", session.userId).eq("google_id", session.googleId);
       if (sessionsError) throw sessionsError;
-      const { error: pushError } = await supabase.from("push_subscriptions")
-        .delete().eq("user_id", session.userId);
-      if (pushError) throw pushError;
       res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
       return res.sendStatus(204);
     } catch {
@@ -144,19 +142,29 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
-  // Cierre real de sesión: invalidación en servidor y baja de suscripciones Push
-  // para impedir que sigan llegando avisos privados tras el logout.
-  router.post("/logout", async (req, res) => {
+  // Cierre real de sesión en este dispositivo: invalida únicamente la sesión
+  // actual y revoca solo la suscripción Push vinculada a esta sesión (o endpoint
+  // indicado), conservando intactas las suscripciones de otros dispositivos del alumno.
+  router.post("/logout", express.json({ limit: "16kb" }), async (req, res) => {
     if (req.get("origin") !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
     try {
       const session = await currentSession(req);
       if (session) {
+        const currentSessionHash = sessionHash(session.sessionId);
         const { error } = await supabase.from("google_app_sessions").delete()
-          .eq("id", sessionHash(session.sessionId)).eq("user_id", session.userId);
+          .eq("id", currentSessionHash).eq("user_id", session.userId);
         if (error) throw error;
-        const { error: pushError } = await supabase.from("push_subscriptions")
-          .delete().eq("user_id", session.userId);
-        if (pushError) throw pushError;
+
+        const { error: pushSessionError } = await supabase.from("push_subscriptions")
+          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash);
+        if (pushSessionError) throw pushSessionError;
+
+        const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
+        if (bodyEndpoint) {
+          const { error: pushEndpointError } = await supabase.from("push_subscriptions")
+            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint);
+          if (pushEndpointError) throw pushEndpointError;
+        }
       }
       res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
       res.clearCookie(STATE_COOKIE, stateCookieOptions);
@@ -176,4 +184,4 @@ function cookieValue(req, name) {
   return item ? item.slice(name.length + 1) : null;
 }
 
-module.exports = { authGoogleRouter, getGoogleSession, SESSION_COOKIE };
+module.exports = { authGoogleRouter, getGoogleSession, sessionHash, SESSION_COOKIE };

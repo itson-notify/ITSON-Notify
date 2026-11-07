@@ -9,7 +9,7 @@ const NOTIFICATIONS_ON_CONFLICT = "grade_change_id,channel";
 const PUSH_SUBSCRIPTIONS_ON_CONFLICT = "endpoint";
 
 const LOG_COLUMNS = "id,user_id,grade_change_id,channel,payload,status,attempts";
-const PUSH_COLUMNS = "id,user_id,endpoint,p256dh,auth,user_agent";
+const PUSH_COLUMNS = "id,user_id,session_id,endpoint,p256dh,auth,user_agent";
 
 // Tope de pendientes que se reintentan por corrida; el resto queda para la
 // siguiente.
@@ -113,8 +113,16 @@ function createNotificationRepository(supabase) {
     return context;
   }
 
-  // Guarda o reasigna exclusivamente la suscripción Web Push de un dispositivo al alumno actual.
-  async function savePushSubscription({ userId, endpoint, p256dh, auth, userAgent = null }) {
+  // Guarda o reasigna exclusivamente la suscripción Web Push de un dispositivo
+  // vinculándola a la sesión actual del dispositivo.
+  async function savePushSubscription({
+    userId,
+    sessionId = null,
+    endpoint,
+    p256dh,
+    auth,
+    userAgent = null,
+  }) {
     const rows = check(
       "push_subscriptions",
       await supabase
@@ -122,6 +130,7 @@ function createNotificationRepository(supabase) {
         .upsert(
           {
             user_id: userId,
+            session_id: sessionId,
             endpoint,
             p256dh,
             auth,
@@ -149,10 +158,14 @@ function createNotificationRepository(supabase) {
     );
   }
 
-  async function deleteAllUserPushSubscriptions(userId) {
+  async function deleteSessionPushSubscriptions(userId, sessionId) {
     check(
       "push_subscriptions",
-      await supabase.from("push_subscriptions").delete().eq("user_id", userId),
+      await supabase
+        .from("push_subscriptions")
+        .delete()
+        .eq("user_id", userId)
+        .eq("session_id", sessionId),
     );
   }
 
@@ -164,7 +177,7 @@ function createNotificationRepository(supabase) {
     savePushSubscription,
     listPushSubscriptions,
     deletePushSubscription,
-    deleteAllUserPushSubscriptions,
+    deleteSessionPushSubscriptions,
   };
 }
 

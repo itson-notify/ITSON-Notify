@@ -7,7 +7,7 @@ const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
-const { authGoogleRouter, getGoogleSession } = require("./routes/authGoogle");
+const { authGoogleRouter, getGoogleSession, sessionHash } = require("./routes/authGoogle");
 const { buildChannels } = require("./services/notificationChannels");
 const { createNotificationRepository } = require("./repositories/notificationRepository");
 const { credentialCryptoFromConfig } = require("./services/credentialCrypto");
@@ -96,6 +96,7 @@ function createApp({
 
       const result = await notificationRepo.savePushSubscription({
         userId: session.userId,
+        sessionId: sessionHash(session.sessionId),
         endpoint,
         p256dh,
         auth,
