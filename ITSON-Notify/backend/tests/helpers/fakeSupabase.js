@@ -70,6 +70,19 @@ const TABLES = {
     },
     rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
   },
+  // 008 y 009: Autorización con Google Classroom y Suscripciones Web Push.
+  push_subscriptions: {
+    uniques: [["user_id", "endpoint"]],
+    notNull: ["user_id", "endpoint", "p256dh", "auth"]
+  },
+  google_app_sessions: {
+    uniques: [["id"]],
+    notNull: ["user_id", "google_id", "expires_at"]
+  },
+  google_authorizations: {
+    uniques: [["user_id", "google_id"]],
+    notNull: ["user_id", "google_id", "email"]
+  }
 };
 
 // Primer check que la fila (o el cambio de un update) no cumple.
