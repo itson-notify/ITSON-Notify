@@ -17,7 +17,7 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 // Pide permiso en el navegador, registra el Service Worker y guarda la suscripción en el backend.
-async function subscribeBrowserPush(userId: string) {
+async function subscribeBrowserPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     throw new Error('push_no_soportado')
   }
@@ -40,12 +40,12 @@ async function subscribeBrowserPush(userId: string) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ userId, subscription: subscription.toJSON() }),
+    body: JSON.stringify({ subscription: subscription.toJSON() }),
   })
   if (!subRes.ok) throw new Error('error_guardando_suscripcion')
 }
 
-async function unsubscribeBrowserPush(userId: string) {
+async function unsubscribeBrowserPush() {
   if (!('serviceWorker' in navigator)) return
   const registration = await navigator.serviceWorker.getRegistration('/sw.js')
   const subscription = await registration?.pushManager.getSubscription()
@@ -55,7 +55,7 @@ async function unsubscribeBrowserPush(userId: string) {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ userId, endpoint: subscription.endpoint }),
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
   })
   await subscription.unsubscribe()
 }
@@ -89,10 +89,9 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
   const onlyEmail = settings.emailOn && !settings.pushOn
 
   const togglePush = async (v: boolean) => {
-    const userId = settings.itsonId || 'default-student'
     if (v) {
       try {
-        await subscribeBrowserPush(userId)
+        await subscribeBrowserPush()
         setSettings(s => ({ ...s, pushOn: true, pushPermission: 'granted' }))
         notify('Notificaciones activadas en este dispositivo')
       } catch {
@@ -101,7 +100,7 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
         notify(denied ? 'Permiso bloqueado en el navegador' : 'No se pudieron activar las notificaciones push')
       }
     } else {
-      try { await unsubscribeBrowserPush(userId) } catch { /* ignorar error de red */ }
+      try { await unsubscribeBrowserPush() } catch { /* ignorar error de red */ }
       setSettings(s => ({ ...s, pushOn: false }))
       notify('Notificaciones desactivadas en este dispositivo')
     }

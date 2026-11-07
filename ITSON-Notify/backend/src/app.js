@@ -7,7 +7,7 @@ const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
-const { authGoogleRouter } = require("./routes/authGoogle");
+const { authGoogleRouter, getGoogleSession } = require("./routes/authGoogle");
 const { buildChannels } = require("./services/notificationChannels");
 const { createNotificationRepository } = require("./repositories/notificationRepository");
 const { credentialCryptoFromConfig } = require("./services/credentialCrypto");
@@ -39,8 +39,10 @@ function createApp({
   const app = express();
   app.disable("x-powered-by");
 
+  const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
+
   const setCors = (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", new URL(config.frontendUrl || "http://localhost:5173").origin);
+    res.setHeader("Access-Control-Allow-Origin", frontendOrigin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -73,21 +75,35 @@ function createApp({
   });
 
   app.post("/push/subscriptions", async (req, res, next) => {
+    if (req.get("origin") !== frontendOrigin) {
+      return res.status(403).json({ error: "origen_no_permitido" });
+    }
     try {
-      const { userId, subscription } = req.body ?? {};
+      const session = await getGoogleSession(req, { config, supabase, now });
+      if (!session) return res.status(401).json({ error: "no_autenticado" });
+
+      const { userId: bodyUserId, subscription } = req.body ?? {};
+      if (bodyUserId !== undefined && bodyUserId !== session.userId) {
+        return res.status(403).json({ error: "no_autorizado" });
+      }
+
       const endpoint = subscription?.endpoint;
       const p256dh = subscription?.keys?.p256dh;
       const auth = subscription?.keys?.auth;
-      if (!userId || !endpoint || !p256dh || !auth) {
+      if (!endpoint || !p256dh || !auth) {
         return res.status(400).json({ error: "suscripcion_invalida" });
       }
-      await notificationRepo.savePushSubscription({
-        userId,
+
+      const result = await notificationRepo.savePushSubscription({
+        userId: session.userId,
         endpoint,
         p256dh,
         auth,
         userAgent: req.headers["user-agent"] ?? null,
       });
+      if (result?.forbidden) {
+        return res.status(403).json({ error: "no_autorizado" });
+      }
       res.status(201).json({ status: "subscribed" });
     } catch (err) {
       next(err);
@@ -95,10 +111,23 @@ function createApp({
   });
 
   app.delete("/push/subscriptions", async (req, res, next) => {
+    if (req.get("origin") !== frontendOrigin) {
+      return res.status(403).json({ error: "origen_no_permitido" });
+    }
     try {
-      const { userId, endpoint } = req.body ?? {};
-      if (!userId || !endpoint) return res.status(400).json({ error: "datos_incompletos" });
-      await notificationRepo.deletePushSubscription(userId, endpoint);
+      const session = await getGoogleSession(req, { config, supabase, now });
+      if (!session) return res.status(401).json({ error: "no_autenticado" });
+
+      const { userId: bodyUserId, endpoint } = req.body ?? {};
+      if (bodyUserId !== undefined && bodyUserId !== session.userId) {
+        return res.status(403).json({ error: "no_autorizado" });
+      }
+      if (!endpoint) return res.status(400).json({ error: "datos_incompletos" });
+
+      const result = await notificationRepo.deletePushSubscription(session.userId, endpoint);
+      if (result?.forbidden) {
+        return res.status(403).json({ error: "no_autorizado" });
+      }
       res.status(204).end();
     } catch (err) {
       next(err);
