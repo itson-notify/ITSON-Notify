@@ -5,6 +5,7 @@ import { PageTitle } from '@/components/PageTitle'
 import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
+import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
 export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify }: {
@@ -34,6 +35,29 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
   // [H5] No se permite apagar el último canal: así nunca te quedas sin avisos por accidente
   const onlyPush = settings.pushOn && !settings.emailOn
   const onlyEmail = settings.emailOn && !settings.pushOn
+
+  const togglePush = async (v: boolean) => {
+    if (v) {
+      try {
+        await subscribeBrowserPush()
+        setSettings(s => ({ ...s, pushOn: true, pushPermission: 'granted' }))
+        notify('Notificaciones activadas en este dispositivo')
+      } catch {
+        const denied = typeof Notification !== 'undefined' && Notification.permission === 'denied'
+        setSettings(s => ({ ...s, pushOn: false, pushPermission: denied ? 'denied' : s.pushPermission }))
+        notify(denied ? 'Permiso bloqueado en el navegador' : 'No se pudieron activar las notificaciones push')
+      }
+    } else {
+      try {
+        await unsubscribeBrowserPush()
+        setSettings(s => ({ ...s, pushOn: false }))
+        notify('Notificaciones desactivadas en este dispositivo')
+      } catch {
+        setSettings(s => ({ ...s, pushOn: true }))
+        notify('No se pudieron desactivar las notificaciones push')
+      }
+    }
+  }
 
   return (
     <div className="py-5 md:px-8 md:py-8 lg:px-10 max-w-2xl">
@@ -81,10 +105,7 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
           <SettingRow icon={<SmallIcon>{I.phone(18)}</SmallIcon>} title="En este dispositivo"
             subtitle={onlyPush ? 'Debe quedar al menos un canal activo' : settings.pushPermission === 'granted' ? 'Notificaciones push' : 'Te pediremos permiso al activarlo'}>
             <Toggle label="Notificaciones push" on={settings.pushOn} disabled={onlyPush}
-              onChange={v => {
-                setSettings(s => ({ ...s, pushOn: v, pushPermission: v ? 'granted' : s.pushPermission }))
-                if (v) notify('Notificaciones activadas en este dispositivo')
-              }} />
+              onChange={togglePush} />
           </SettingRow>
           <SettingRow icon={<SmallIcon>{I.mail(18)}</SmallIcon>} title="Por correo"
             subtitle={onlyEmail ? 'Debe quedar al menos un canal activo' : <span className="block truncate">{settings.email}</span>}>

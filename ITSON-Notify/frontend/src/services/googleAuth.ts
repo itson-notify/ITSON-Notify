@@ -1,5 +1,5 @@
 // ITN-41 - Acceso compartido al flujo OAuth desde Onboarding y Configuración.
-const backendUrl = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000').replace(/\/$/, '')
+import { backendUrl } from '@/services/backend'
 
 export function connectGoogle(from: 'onboarding' | 'settings') {
   window.location.assign(`${backendUrl}/auth/google?from=${from}`)
