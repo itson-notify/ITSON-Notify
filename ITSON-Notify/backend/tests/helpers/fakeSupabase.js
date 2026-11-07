@@ -71,8 +71,9 @@ const TABLES = {
     rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
   },
   // 008 y 009: Autorización con Google Classroom y Suscripciones Web Push.
+  // 009 exige UNIQUE(endpoint) para garantizar propiedad exclusiva por dispositivo.
   push_subscriptions: {
-    uniques: [["user_id", "endpoint"]],
+    uniques: [["endpoint"]],
     notNull: ["user_id", "endpoint", "p256dh", "auth"]
   },
   google_app_sessions: {
@@ -326,6 +327,7 @@ class Query {
     if (this.table === "app_users") {
       const ids = new Set(borradas.map((r) => r.id));
       this.db.tables.student_credentials = this.db.tables.student_credentials.filter((c) => !ids.has(c.user_id));
+      this.db.tables.push_subscriptions = this.db.tables.push_subscriptions.filter((s) => !ids.has(s.user_id));
     }
     return { data: borradas.map((r) => project(r, this.columns)), error: null };
   }

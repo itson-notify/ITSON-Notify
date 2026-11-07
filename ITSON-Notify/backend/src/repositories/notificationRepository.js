@@ -5,7 +5,8 @@ const { check } = require("../utils/errors");
 
 // unique (grade_change_id, channel) de la migración 002.
 const NOTIFICATIONS_ON_CONFLICT = "grade_change_id,channel";
-const PUSH_SUBSCRIPTIONS_ON_CONFLICT = "user_id,endpoint";
+// unique (endpoint) de la migración 009: propiedad exclusiva por navegador/dispositivo.
+const PUSH_SUBSCRIPTIONS_ON_CONFLICT = "endpoint";
 
 const LOG_COLUMNS = "id,user_id,grade_change_id,channel,payload,status,attempts";
 const PUSH_COLUMNS = "id,user_id,endpoint,p256dh,auth,user_agent";
@@ -112,7 +113,7 @@ function createNotificationRepository(supabase) {
     return context;
   }
 
-  // Guarda o actualiza la suscripción Web Push de un dispositivo del alumno.
+  // Guarda o reasigna exclusivamente la suscripción Web Push de un dispositivo al alumno actual.
   async function savePushSubscription({ userId, endpoint, p256dh, auth, userAgent = null }) {
     const rows = check(
       "push_subscriptions",
@@ -148,6 +149,13 @@ function createNotificationRepository(supabase) {
     );
   }
 
+  async function deleteAllUserPushSubscriptions(userId) {
+    check(
+      "push_subscriptions",
+      await supabase.from("push_subscriptions").delete().eq("user_id", userId),
+    );
+  }
+
   return {
     claimNotification,
     updateNotification,
@@ -156,6 +164,7 @@ function createNotificationRepository(supabase) {
     savePushSubscription,
     listPushSubscriptions,
     deletePushSubscription,
+    deleteAllUserPushSubscriptions,
   };
 }
 

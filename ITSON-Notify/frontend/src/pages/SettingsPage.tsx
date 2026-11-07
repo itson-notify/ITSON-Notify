@@ -5,64 +5,8 @@ import { PageTitle } from '@/components/PageTitle'
 import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
+import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
-
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
-  const rawData = window.atob(base64)
-  const outputArray = new Uint8Array(rawData.length)
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i)
-  }
-  return outputArray
-}
-
-// Pide permiso en el navegador, registra el Service Worker y guarda la suscripción en el backend.
-async function subscribeBrowserPush() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    throw new Error('push_no_soportado')
-  }
-  const permission = await Notification.requestPermission()
-  if (permission !== 'granted') throw new Error('permiso_denegado')
-
-  const keyRes = await fetch(`${API_BASE}/push/vapid-public-key`, { credentials: 'include' })
-  if (!keyRes.ok) throw new Error('sin_llave_vapid')
-  const { publicKey } = await keyRes.json()
-
-  const registration = await navigator.serviceWorker.register('/sw.js')
-  await navigator.serviceWorker.ready
-
-  const subscription = await registration.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
-  })
-
-  const subRes = await fetch(`${API_BASE}/push/subscriptions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ subscription: subscription.toJSON() }),
-  })
-  if (!subRes.ok) throw new Error('error_guardando_suscripcion')
-}
-
-async function unsubscribeBrowserPush() {
-  if (!('serviceWorker' in navigator)) return
-  const registration = await navigator.serviceWorker.getRegistration('/sw.js')
-  const subscription = await registration?.pushManager.getSubscription()
-  if (!subscription) return
-
-  await fetch(`${API_BASE}/push/subscriptions`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({ endpoint: subscription.endpoint }),
-  })
-  await subscription.unsubscribe()
-}
 
 export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify }: {
   settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify
@@ -104,9 +48,14 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
         notify(denied ? 'Permiso bloqueado en el navegador' : 'No se pudieron activar las notificaciones push')
       }
     } else {
-      try { await unsubscribeBrowserPush() } catch { /* ignorar error de red */ }
-      setSettings(s => ({ ...s, pushOn: false }))
-      notify('Notificaciones desactivadas en este dispositivo')
+      try {
+        await unsubscribeBrowserPush()
+        setSettings(s => ({ ...s, pushOn: false }))
+        notify('Notificaciones desactivadas en este dispositivo')
+      } catch {
+        setSettings(s => ({ ...s, pushOn: true }))
+        notify('No se pudieron desactivar las notificaciones push')
+      }
     }
   }
 

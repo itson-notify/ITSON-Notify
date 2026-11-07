@@ -134,6 +134,9 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       const { error: sessionsError } = await supabase.from("google_app_sessions")
         .delete().eq("user_id", session.userId).eq("google_id", session.googleId);
       if (sessionsError) throw sessionsError;
+      const { error: pushError } = await supabase.from("push_subscriptions")
+        .delete().eq("user_id", session.userId);
+      if (pushError) throw pushError;
       res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
       return res.sendStatus(204);
     } catch {
@@ -141,7 +144,8 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
-  // Cierre real de sesión: invalidación en servidor, sin borrar la autorización.
+  // Cierre real de sesión: invalidación en servidor y baja de suscripciones Push
+  // para impedir que sigan llegando avisos privados tras el logout.
   router.post("/logout", async (req, res) => {
     if (req.get("origin") !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
     try {
@@ -150,6 +154,9 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
         const { error } = await supabase.from("google_app_sessions").delete()
           .eq("id", sessionHash(session.sessionId)).eq("user_id", session.userId);
         if (error) throw error;
+        const { error: pushError } = await supabase.from("push_subscriptions")
+          .delete().eq("user_id", session.userId);
+        if (pushError) throw pushError;
       }
       res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
       res.clearCookie(STATE_COOKIE, stateCookieOptions);
