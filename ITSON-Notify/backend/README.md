@@ -16,7 +16,7 @@ Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo
 **Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
 `004_grade_changes_unique.sql` (llave natural de `grade_changes`), `005_service_role_grants.sql` (grants
 explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `007_student_credentials.sql`
-(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales) y `009_notifications_read_at.sql`
+(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales) y `010_notifications_read_at.sql`
 (estado de lectura; sin ella, fallan las notificaciones de `/api`).
 
 ## Variables
@@ -342,7 +342,7 @@ Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. Los POST exigen 
 frontend; si no, responden 403 `{"error":"origen_no_permitido"}`.
 
 - **Origen de los datos:** `notifications_log` con `channel = 'log'`, que da una fila por aviso; `read_at` (migración
-  009) indica si está leída. Materia y valores salen de `grade_changes` y `subjects`.
+  010) indica si está leída. Materia y valores salen de `grade_changes` y `subjects`.
 - **`itsonStatus`:** sale de `student_credentials` del portal `ivirtual`: `needs_relink` es `error`; `active` o sin
   registro es `ok`.
 - **`type`:** siempre `calificaciones`, porque `notifications_log` solo registra cambios de calificación y no tiene
@@ -361,7 +361,7 @@ SEED_ALUMNO_EMAIL=<correo-del-alumno> npm run seed:dev
 
 Lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `backend/.env` y se niega a correr con `NODE_ENV=production`. Ese
 candado depende de la variable: antes de correrlo, revisa que `SUPABASE_URL` sea el proyecto de dev. El alumno debe existir
-en `app_users` y la migración 009 debe estar aplicada. Para borrar lo sembrado, usa el SQL del encabezado de
+en `app_users` y la migración 010 debe estar aplicada. Para borrar lo sembrado, usa el SQL del encabezado de
 `scripts/seed-dev-notifications.js`.
 
 ## Privacidad de los logs

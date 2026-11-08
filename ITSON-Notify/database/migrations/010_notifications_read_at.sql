@@ -1,4 +1,4 @@
--- 009 - ITN-53 - Estado de lectura de las notificaciones
+-- 010 - ITN-53 - Estado de lectura de las notificaciones
 -- Supabase / PostgreSQL 15+
 -- notifications_log tiene una fila por aviso y canal. La API del alumno lista solo
 -- las filas de channel = 'log' (ese canal siempre existe, ver buildChannels), asi

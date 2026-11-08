@@ -3,7 +3,7 @@
 //   SEED_ALUMNO_EMAIL=<correo> npm run seed:dev
 //
 // El alumno debe existir en app_users (entrar una vez con Google lo crea) y la
-// migración 009 debe estar aplicada. Se puede repetir: no duplica filas y vuelve
+// migración 010 debe estar aplicada. Se puede repetir: no duplica filas y vuelve
 // a dejar las notificaciones como al inicio. Las filas quedan en 'sent' y solo en
 // el canal log, así que el reintento del backend nunca las envía a nadie.
 //

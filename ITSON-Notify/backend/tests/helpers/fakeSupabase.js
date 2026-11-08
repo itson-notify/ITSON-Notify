@@ -1,7 +1,7 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
 // usa el backend del query builder de supabase-js (select, upsert, update,
 // delete, eq/neq/lt/in/is null/not is null, order, limit, range, single,
-// maybeSingle) y las reglas de las migraciones 001 a 004 y 006 a 009 que importan
+// maybeSingle) y las reglas de las migraciones 001 a 004 y 006 a 010 que importan
 // aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
@@ -38,7 +38,7 @@ const TABLES = {
     uniques: [["previous_snapshot_id", "current_snapshot_id", "subject_id", "external_item_id", "field_name"]],
     notNull: ["user_id", "field_name", "change_type"],
   },
-  // 002: unique (grade_change_id, channel); status y attempts con default. 009: read_at.
+  // 002: unique (grade_change_id, channel); status y attempts con default. 010: read_at.
   notifications_log: {
     uniques: [["grade_change_id", "channel"]],
     notNull: ["user_id", "channel", "status", "attempts"],

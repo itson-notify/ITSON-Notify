@@ -21,7 +21,7 @@ Para cambiarlas hay que reiniciar `npm run dev` y volver a generar el build.
 
 ## Probar contra el backend real
 
-1. Aplica en Supabase las migraciones hasta `009_notifications_read_at.sql`.
+1. Aplica en Supabase las migraciones hasta `010_notifications_read_at.sql`.
 2. Levanta el backend con `GOOGLE_OAUTH_ENABLED=true` y `FRONTEND_URL=http://localhost:5173` (ver `backend/README.md`).
 3. Crea `frontend/.env` con `VITE_BACKEND_URL=http://localhost:3000` y corre `npm run dev`.
 4. Entra con Google por el Onboarding. Sin sesión no se puede pasar de ese paso.
