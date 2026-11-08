@@ -20,17 +20,19 @@ const config = {
 };
 const logger = { info() {}, warn() {}, error() {} };
 const b64 = data => Buffer.from(JSON.stringify(data)).toString('base64url');
+const testSessionHash = crypto.createHash('sha256').update('test-session').digest('hex');
 
 function makeDb() {
   const users = new Map();
   const grants = new Map();
-  const sessions = new Map([[crypto.createHash('sha256').update('test-session').digest('hex'), {
+  const sessions = new Map([[testSessionHash, {
     user_id: 'u1', google_id: 'g1', expires_at: new Date(Date.now() + 60000).toISOString(),
   }]]);
+  const pushSubscriptions = new Map();
   let next = 0;
   let deletions = 0;
   return {
-    users, grants, sessions, get deletions() { return deletions; },
+    users, grants, sessions, pushSubscriptions, get deletions() { return deletions; },
     from(table) {
       if (table === 'google_app_sessions') return {
         select() { return { eq(field, value) { return { async maybeSingle() {
@@ -44,6 +46,21 @@ function makeDb() {
             then(resolve, reject) {
               for (const [id, row] of sessions) {
                 if (Object.entries(filters).every(([key, value]) => (key === 'id' ? id : row[key]) === value)) sessions.delete(id);
+              }
+              return Promise.resolve({ error: null }).then(resolve, reject);
+            },
+          };
+          return query;
+        },
+      };
+      if (table === 'push_subscriptions') return {
+        delete() {
+          const filters = {};
+          const query = {
+            eq(key, value) { filters[key] = value; return query; },
+            then(resolve, reject) {
+              for (const [endpoint, row] of pushSubscriptions) {
+                if (Object.entries(filters).every(([key, value]) => row[key] === value)) pushSubscriptions.delete(endpoint);
               }
               return Promise.resolve({ error: null }).then(resolve, reject);
             },
@@ -168,15 +185,19 @@ describe('Rutas /auth/google', () => {
     assert.equal(res.status, 403);
     assert.equal(db.grants.size, 1);
   });
-  it('elimina la autorización al desconectar desde el origen permitido', async () => {
+  it('elimina la autorización al desconectar Classroom sin desactivar suscripciones Push', async () => {
     const db = makeDb();
     db.grants.set('g1', { google_id: 'g1', user_id: 'u1', email: 'a@gmail.com' });
+    db.pushSubscriptions.set('https://fcm.test/telefono', {
+      user_id: 'u1', session_id: 'otra-sesion', endpoint: 'https://fcm.test/telefono',
+    });
     const { app } = appFor({ db });
     const res = await request(app).delete('/auth/google/session')
       .set('Origin', frontend).set('Cookie', sessionCookie());
     assert.equal(res.status, 204);
     assert.equal(db.grants.size, 0);
     assert.equal(db.deletions, 1);
+    assert.equal(db.pushSubscriptions.size, 1);
     assert.match(res.headers['set-cookie'].join(';'), /itn41_google_session=/);
   });
   it('completa OAuth con ID token firmado y almacena refresh token cifrado', async () => {
@@ -303,9 +324,15 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
       assert.equal(result.status, 400);
     }
   });
-  it('logout invalida la cookie copiada en otra instancia y conserva el consentimiento', async () => {
+  it('logout invalida la cookie copiada en otra instancia, elimina solo el Push de esa sesión y conserva otros dispositivos', async () => {
     const db = makeDb();
     db.grants.set('g1', { user_id: 'u1', google_id: 'g1', email: 'alumno@gmail.com', refresh_token: 'cifrado' });
+    db.pushSubscriptions.set('https://fcm.test/laptop', {
+      user_id: 'u1', session_id: testSessionHash, endpoint: 'https://fcm.test/laptop',
+    });
+    db.pushSubscriptions.set('https://fcm.test/telefono', {
+      user_id: 'u1', session_id: 'sesion-telefono', endpoint: 'https://fcm.test/telefono',
+    });
     const first = appFor({ db }).app;
     const second = appFor({ db }).app;
     const cookie = sessionCookie();
@@ -315,6 +342,8 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
     assert.equal(db.grants.size, 1);
     assert.equal(db.grants.get('g1').refresh_token, 'cifrado');
     assert.equal(db.sessions.size, 0);
+    assert.equal(db.pushSubscriptions.size, 1);
+    assert.equal(db.pushSubscriptions.has('https://fcm.test/telefono'), true);
     assert.match(logout.headers['set-cookie'].join(';'), /Max-Age=0|Expires=Thu, 01 Jan 1970/);
     assert.equal((await request(second).get('/auth/google/session').set('Cookie', cookie)).status, 401);
     assert.equal((await request(first).post('/auth/google/logout').set('Origin', frontend).set('Cookie', cookie)).status, 204);

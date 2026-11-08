@@ -1,6 +1,5 @@
-// ITN-41: regresiones de navegación y cierre de sesión sin dependencias nuevas.
-// Se ejercita App y el cliente HTTP reales con hooks/JSX y red controlados;
-// no sustituye una prueba de navegador ni una autorización real con Google.
+// ITN-41 y Web Push: regresiones de navegación, cierre de sesión, revocación Push
+// y configuración centralizada del backend sin dependencias nuevas.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -18,17 +17,42 @@ function compile(file, requireImpl, env = {}) {
   return module.exports;
 }
 
-function harness(search, fetchImpl) {
-  const originals = { window: global.window, fetch: global.fetch, setTimeout: global.setTimeout };
+function harness(search, fetchImpl, { navigatorImpl } = {}) {
+  const originals = {
+    window: global.window,
+    fetch: global.fetch,
+    setTimeout: global.setTimeout,
+    navigator: Object.getOwnPropertyDescriptor(global, 'navigator'),
+  };
   const assigned = [];
   const history = [];
-  global.window = { location: { search, pathname: '/app', assign: url => assigned.push(url) },
+  global.window = {
+    location: { search, pathname: '/app', assign: url => assigned.push(url) },
     history: { replaceState: (...args) => history.push(args) },
-    addEventListener() {}, removeEventListener() {}, scrollTo() {} };
+    addEventListener() {},
+    removeEventListener() {},
+    scrollTo() {},
+    atob: str => Buffer.from(str, 'base64').toString('binary'),
+    PushManager: function PushManager() {},
+  };
   global.fetch = fetchImpl;
   global.setTimeout = () => 1;
   global.document = { title: 'ITSON Notify' };
-  const client = compile('services/googleAuth.ts', require, { VITE_BACKEND_URL: 'https://api.test/' });
+  if (navigatorImpl !== undefined) {
+    Object.defineProperty(global, 'navigator', { value: navigatorImpl, configurable: true, writable: true });
+  } else {
+    Object.defineProperty(global, 'navigator', { value: {}, configurable: true, writable: true });
+  }
+
+  const env = { VITE_BACKEND_URL: 'https://api.test/' };
+  const backendMod = compile('services/backend.ts', require, env);
+  const resolveModule = id => {
+    if (id === '@/services/backend') return backendMod;
+    return require(id);
+  };
+  const client = compile('services/googleAuth.ts', resolveModule, env);
+  const pushMod = compile('services/pushNotifications.ts', resolveModule, env);
+
   const states = []; const effects = []; let cursor = 0; let mounted = false;
   const hooks = {
     useState(initial) {
@@ -42,17 +66,26 @@ function harness(search, fetchImpl) {
   const App = compile('App.tsx', id => {
     if (id === 'react') return hooks;
     if (id === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
+    if (id === '@/services/backend') return backendMod;
     if (id === '@/services/googleAuth') return client;
+    if (id === '@/services/pushNotifications') return pushMod;
     if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
       categories: {}, classroomConnected: false, itsonStatus: 'ok',
     }, INITIAL_NOTIFS: [] };
     return new Proxy({}, { get: (_, key) => key });
   }).default;
   return {
-    client, assigned, history,
+    backendMod, client, pushMod, assigned, history,
     render() { cursor = 0; const tree = App(); mounted = true; return tree; },
     async start() { const tree = this.render(); effects.forEach(effect => effect()); await new Promise(setImmediate); return tree; },
-    restore() { global.window = originals.window; global.fetch = originals.fetch; global.setTimeout = originals.setTimeout; delete global.document; },
+    restore() {
+      global.window = originals.window;
+      global.fetch = originals.fetch;
+      global.setTimeout = originals.setTimeout;
+      delete global.document;
+      if (originals.navigator) Object.defineProperty(global, 'navigator', originals.navigator);
+      else delete global.navigator;
+    },
   };
 }
 function find(node, type) {
@@ -111,6 +144,59 @@ test('cerrar sesión llama al backend y solo cambia a onboarding si la invalidac
   }
 });
 
+test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y aborta si falla', async () => {
+  for (const deleteOk of [true, false]) {
+    const calls = [];
+    let browserUnsubscribed = 0;
+    const navigatorImpl = {
+      serviceWorker: {
+        async getRegistration() {
+          return {
+            pushManager: {
+              async getSubscription() {
+                return {
+                  endpoint: 'https://fcm.test/sub-activa',
+                  async unsubscribe() {
+                    browserUnsubscribed++;
+                    return true;
+                  },
+                };
+              },
+            },
+          };
+        },
+      },
+    };
+    const h = harness('?classroom=error&from=settings', async (url, options = {}) => {
+      calls.push({ url, options });
+      if (options.method === 'DELETE') return { ok: deleteOk };
+      if (options.method === 'POST') return { ok: true };
+      return { status: 401 };
+    }, { navigatorImpl });
+    try {
+      await h.start();
+      find(h.render(), 'AppLayout').props.onLogout();
+      await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+      const tree = h.render();
+      assert.equal(calls[1].url, 'https://api.test/push/subscriptions');
+      assert.equal(calls[1].options.method, 'DELETE');
+      assert.deepEqual(JSON.parse(calls[1].options.body), { endpoint: 'https://fcm.test/sub-activa' });
+      if (deleteOk) {
+        assert.equal(browserUnsubscribed, 1);
+        assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
+        assert.ok(find(tree, 'Onboarding'));
+      } else {
+        assert.equal(browserUnsubscribed, 0);
+        assert.equal(calls.some(call => call.url.endsWith('/auth/google/logout')), false);
+        assert.ok(find(tree, 'AppLayout'));
+        assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
+      }
+    } finally {
+      h.restore();
+    }
+  }
+});
+
 test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización', async () => {
   const calls = [];
   const h = harness('', async (url, options) => { calls.push({ url, options }); return { ok: true }; });
@@ -122,4 +208,21 @@ test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización'
     assert.equal(calls[0].options.method, 'DELETE');
     assert.equal(calls[0].options.credentials, 'include');
   } finally { h.restore(); }
+});
+
+test('resolveBackendUrl centraliza VITE_BACKEND_URL y valida el entorno de producción', () => {
+  const { resolveBackendUrl } = compile('services/backend.ts', require, {});
+  assert.equal(resolveBackendUrl({}), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+  assert.equal(resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+
+  assert.throws(() => resolveBackendUrl({ PROD: true }), /VITE_BACKEND_URL es obligatoria/);
+  assert.throws(
+    () => resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'http://localhost:3000' }),
+    /HTTPS y un dominio público/,
+  );
+  assert.throws(
+    () => resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'http://api.itson.mx' }),
+    /HTTPS y un dominio público/,
+  );
 });

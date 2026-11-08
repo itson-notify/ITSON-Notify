@@ -2,6 +2,7 @@
 // anterior del mismo alumno. La persistencia va detrás de un repo inyectado
 // (contrato en README.md) para conectarlo al backend de ITN-27 sin tocar esto.
 const { diffSnapshots } = require("./gradeDiff");
+const { notifyGroupedChanges } = require("./notificationService");
 
 // Prefijo de los ids sintéticos que la migración 003 asigna a filas viejas sin
 // id de Moodle. Un snapshot con esos ítems no sirve como base de comparación:
@@ -36,11 +37,12 @@ function toRow(change, { userId, previousSnapshotId, currentSnapshotId }) {
 }
 
 // Compara el snapshot currentSnapshotId contra el anterior del alumno y
-// guarda los cambios en grade_changes.
+// guarda los cambios en grade_changes. Si se pasa `notifyDeps` ({ repo, channels }),
+// notifica `inserted` al terminar.
 //
 // Devuelve:
 //   { baseline: true,  reason, changes: [], inserted: [] }   sin comparación
-//   { baseline: false, reason: null, changes, inserted }      con comparación
+//   { baseline: false, reason: null, changes, inserted, notification? }
 // `changes` son todos los cambios calculados; `inserted` son solo las filas
 // que se insertaron en esta llamada. El servicio de notificación debe usar
 // `inserted`: así una segunda corrida sobre el mismo par no notifica dos veces.
@@ -48,7 +50,7 @@ function toRow(change, { userId, previousSnapshotId, currentSnapshotId }) {
 // Idempotencia: el diff es determinista y insertGradeChanges debe ignorar
 // filas que ya existan con la misma llave (ver README.md), así que correr esto
 // dos veces sobre el mismo par de snapshots no duplica cambios.
-async function detectChanges({ userId, currentSnapshotId }, repo) {
+async function detectChanges({ userId, currentSnapshotId }, repo, notifyDeps = null) {
   assertRepo(repo);
   if (!userId || !currentSnapshotId) {
     throw new Error("detectChanges requiere userId y currentSnapshotId");
@@ -73,8 +75,14 @@ async function detectChanges({ userId, currentSnapshotId }, repo) {
   }
 
   const ctx = { userId, previousSnapshotId: previous.snapshotId, currentSnapshotId };
-  const inserted = await repo.insertGradeChanges(changes.map((c) => toRow(c, ctx)));
-  return { baseline: false, reason: null, changes, inserted: inserted ?? [] };
+  const inserted = (await repo.insertGradeChanges(changes.map((c) => toRow(c, ctx)))) ?? [];
+
+  if (inserted.length > 0 && notifyDeps?.repo && notifyDeps?.channels?.length > 0) {
+    const notification = await notifyGroupedChanges(inserted, notifyDeps);
+    return { baseline: false, reason: null, changes, inserted, notification };
+  }
+
+  return { baseline: false, reason: null, changes, inserted };
 }
 
 // Llave natural de una fila de grade_changes. El repo real debe tener un
