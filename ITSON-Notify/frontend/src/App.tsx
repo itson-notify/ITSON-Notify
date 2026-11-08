@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS, INITIAL_NOTIFS } from '@/services/mockData'
 import { ApiError, getMe, getNotifications, markAllRead, markRead } from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { googleSession, logoutGoogle } from '@/services/googleAuth'
+import { unsubscribeBrowserPush } from '@/services/pushNotifications'
 import type { ConfirmReq, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -179,8 +180,13 @@ export default function App() {
     body: 'Dejarás de recibir avisos en este dispositivo hasta que vuelvas a entrar.',
     label: 'Cerrar sesión', danger: true,
     onConfirm: async () => {
-      try { await logoutGoogle() }
-      catch { notify('No se pudo cerrar la sesión. Intenta de nuevo.'); return }
+      try {
+        await unsubscribeBrowserPush()
+        await logoutGoogle()
+      } catch {
+        notify('No se pudo cerrar la sesión. Intenta de nuevo.')
+        return
+      }
       endSession()
     },
   })

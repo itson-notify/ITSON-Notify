@@ -1,4 +1,4 @@
-// ITN-28 - Notificación al detectar cambios de calificación.
+// ITN-28 - Notificación al detectar cambios de calificación y tareas nuevas.
 // Recibe filas de grade_changes (de `inserted` en detectChanges, ITN-24), las
 // agrupa por ítem, envía un aviso por cada canal disponible y registra cada
 // envío en notifications_log. La persistencia va detrás de un repo inyectado
@@ -13,6 +13,7 @@ const GROUPED_REPO_METHODS = [...REPO_METHODS, "getItemContext"];
 const RETRY_REPO_METHODS = ["listPendingNotifications", "updateNotification"];
 
 const SUBJECT = "ITSON Notify: cambio de calificación";
+const NEW_TASK_SUBJECT = "ITSON Notify: nueva tarea";
 
 const FIELD_LABELS = {
   grade_value: "calificación",
@@ -38,6 +39,17 @@ const show = (value) => (value === null || value === undefined ? "sin valor" : v
 const actividadDe = (context) =>
   context.itemLabel === null ? "Total del curso" : context.itemLabel || "Una actividad";
 
+// Un ítem creado sin calificación numérica (solo grade_label o grade_value null)
+// es una tarea recién publicada.
+function esTareaNuevaRow(gradeChange) {
+  if (gradeChange.change_type !== "created") return false;
+  if (gradeChange.field_name === "grade_label") return true;
+  return (
+    gradeChange.field_name === "grade_value" &&
+    (gradeChange.current_value === null || gradeChange.current_value === undefined)
+  );
+}
+
 // Arma el mensaje. Solo usa la materia, la actividad y los valores: nunca
 // email, nombre, matrícula, ids de usuario ni credenciales.
 //   context.subjectName  nombre de la materia (opcional)
@@ -45,6 +57,14 @@ const actividadDe = (context) =>
 function buildMessage(gradeChange, context = {}) {
   const campo = FIELD_LABELS[gradeChange.field_name] ?? gradeChange.field_name;
   const donde = context.subjectName ? ` en ${context.subjectName}` : "";
+
+  if (esTareaNuevaRow(gradeChange)) {
+    const ctx =
+      context.itemLabel === undefined && gradeChange.field_name === "grade_label" && gradeChange.current_value
+        ? { ...context, itemLabel: gradeChange.current_value }
+        : context;
+    return { subject: NEW_TASK_SUBJECT, text: `Nueva tarea publicada: ${actividadDe(ctx)}${donde}.` };
+  }
 
   let detalle;
   switch (gradeChange.change_type) {
@@ -75,6 +95,7 @@ function describirCampo(row, campo) {
 
 // Mensaje de un grupo de filas del mismo ítem, p. ej.
 // "Tarea 3 en Cálculo: calificación de 8 a 9."
+// Si el ítem es nuevo ('created') y aún no tiene nota, se avisa como tarea nueva.
 // grade_value y grade_text describen la misma nota: si cambiaron los dos, solo
 // se muestra grade_value; si solo cambió grade_text, se muestra ese como
 // "calificación". El cambio de grade_label solo se menciona si es un renombre
@@ -84,9 +105,21 @@ function buildGroupedMessage(rows, context = {}) {
   const porCampo = new Map(rows.map((r) => [r.field_name, r]));
   const partes = [];
   const nota = porCampo.get("grade_value") ?? porCampo.get("grade_text");
+  const labelRow = porCampo.get("grade_label");
+
+  const sinNota = !nota || nota.current_value === null || nota.current_value === undefined;
+  if (rows.length > 0 && rows.every((r) => r.change_type === "created") && sinNota) {
+    const ctx =
+      context.itemLabel === undefined && labelRow?.current_value
+        ? { ...context, itemLabel: labelRow.current_value }
+        : context;
+    const donde = ctx.subjectName ? ` en ${ctx.subjectName}` : "";
+    return { subject: NEW_TASK_SUBJECT, text: `Nueva tarea publicada: ${actividadDe(ctx)}${donde}.` };
+  }
+
   if (nota) partes.push(describirCampo(nota, "calificación"));
-  if (porCampo.get("grade_label")?.change_type === "updated") {
-    partes.push(describirCampo(porCampo.get("grade_label"), FIELD_LABELS.grade_label));
+  if (labelRow?.change_type === "updated") {
+    partes.push(describirCampo(labelRow, FIELD_LABELS.grade_label));
   }
   for (const row of rows) {
     if (!FIELD_LABELS[row.field_name]) partes.push(describirCampo(row, row.field_name));
@@ -156,9 +189,9 @@ async function entregar(row, channel, message, meta, repo) {
 
 // Envía el aviso de un grade_change por cada canal.
 //   gradeChange  fila de grade_changes con id y user_id
-//   deps.repo     repo de notifications_log (ver README.md)
+//   deps.repo    repo de notifications_log (ver README.md)
 //   deps.channels canales de buildChannels()
-//   deps.context  { subjectName, itemLabel } para el texto (opcional)
+//   deps.context { subjectName, itemLabel } para el texto (opcional)
 //
 // Devuelve un resultado por canal:
 //   { channel, status: 'sent' | 'duplicate' | 'failed' | 'max_attempts', attempts, error? }
@@ -176,6 +209,7 @@ async function notifyGradeChange(gradeChange, { repo, channels, context } = {}) 
 
   const message = buildMessage(gradeChange, context);
   const results = [];
+  const meta = { userId: gradeChange.user_id, gradeChangeId: gradeChange.id };
 
   for (const channel of channels) {
     const row = await repo.claimNotification({
@@ -184,7 +218,7 @@ async function notifyGradeChange(gradeChange, { repo, channels, context } = {}) 
       channel: channel.name,
       payload: message,
     });
-    results.push(await entregar(row, channel, message, { gradeChangeId: gradeChange.id }, repo));
+    results.push(await entregar(row, channel, message, meta, repo));
   }
 
   return results;
@@ -226,7 +260,7 @@ async function notifyGroupedChanges(inserted, { repo, channels } = {}) {
   for (const grupo of grupos) {
     const ctx = contexto.get(`${grupo.subjectId}\u0000${grupo.externalItemId}`) ?? {};
     const message = buildGroupedMessage(grupo.rows, ctx);
-    const meta = { gradeChangeId: grupo.claimId, gradeChangeIds: grupo.ids };
+    const meta = { userId: grupo.userId, gradeChangeId: grupo.claimId, gradeChangeIds: grupo.ids };
 
     for (const channel of channels) {
       let resultado;
@@ -268,6 +302,7 @@ async function retryPendingNotifications(userId, { repo, channels } = {}) {
     const channel = porNombre.get(row.channel);
     if (!channel || !row.payload?.text) continue;
     const meta = {
+      userId: row.user_id ?? userId,
       gradeChangeId: row.grade_change_id,
       gradeChangeIds: row.payload.grade_change_ids ?? [row.grade_change_id],
     };
@@ -289,4 +324,6 @@ module.exports = {
   GROUPED_REPO_METHODS,
   RETRY_REPO_METHODS,
   MAX_ATTEMPTS,
+  SUBJECT,
+  NEW_TASK_SUBJECT,
 };

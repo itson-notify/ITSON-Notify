@@ -74,6 +74,12 @@ const TABLES = {
   // 008
   google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"] },
   google_app_sessions: { uniques: [], notNull: ["user_id", "google_id", "expires_at"] },
+  // 009: Suscripciones Web Push.
+  // 009 exige UNIQUE(endpoint) para garantizar propiedad exclusiva por dispositivo.
+  push_subscriptions: {
+    uniques: [["endpoint"]],
+    notNull: ["user_id", "endpoint", "p256dh", "auth"]
+  },
 };
 
 // Primer check que la fila (o el cambio de un update) no cumple.
@@ -323,6 +329,7 @@ class Query {
     if (this.table === "app_users") {
       const ids = new Set(borradas.map((r) => r.id));
       this.db.tables.student_credentials = this.db.tables.student_credentials.filter((c) => !ids.has(c.user_id));
+      this.db.tables.push_subscriptions = this.db.tables.push_subscriptions.filter((s) => !ids.has(s.user_id));
     }
     return { data: borradas.map((r) => project(r, this.columns)), error: null };
   }

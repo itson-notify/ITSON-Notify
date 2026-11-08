@@ -1,9 +1,9 @@
-// ITN-41: regresiones de navegación y cierre de sesión sin dependencias nuevas.
-// Se ejercita App y el cliente HTTP reales con hooks/JSX y red controlados;
-// no sustituye una prueba de navegador ni una autorización real con Google.
+// ITN-41 y Web Push: regresiones de navegación, cierre de sesión, revocación Push
+// y configuración centralizada del backend sin dependencias nuevas. El harness
+// (tests/harness.cjs) no sustituye una prueba de navegador ni una autorización real.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { harness, find } = require('./harness.cjs');
+const { compile, harness, find } = require('./harness.cjs');
 
 test('cancelar Google desde Configuración vuelve a Configuración con sesión ausente o error de red', async () => {
   for (const fetchImpl of [async () => ({ status: 401 }), async () => { throw new Error('sin red'); }]) {
@@ -53,6 +53,59 @@ test('cerrar sesión llama al backend y solo cambia a onboarding si la invalidac
   }
 });
 
+test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y aborta si falla', async () => {
+  for (const deleteOk of [true, false]) {
+    const calls = [];
+    let browserUnsubscribed = 0;
+    const navigatorImpl = {
+      serviceWorker: {
+        async getRegistration() {
+          return {
+            pushManager: {
+              async getSubscription() {
+                return {
+                  endpoint: 'https://fcm.test/sub-activa',
+                  async unsubscribe() {
+                    browserUnsubscribed++;
+                    return true;
+                  },
+                };
+              },
+            },
+          };
+        },
+      },
+    };
+    const h = harness('?classroom=error&from=settings', async (url, options = {}) => {
+      calls.push({ url, options });
+      if (options.method === 'DELETE') return { ok: deleteOk };
+      if (options.method === 'POST') return { ok: true };
+      return { status: 401 };
+    }, { navigatorImpl });
+    try {
+      await h.start();
+      find(h.render(), 'AppLayout').props.onLogout();
+      await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+      const tree = h.render();
+      assert.equal(calls[1].url, 'https://api.test/push/subscriptions');
+      assert.equal(calls[1].options.method, 'DELETE');
+      assert.deepEqual(JSON.parse(calls[1].options.body), { endpoint: 'https://fcm.test/sub-activa' });
+      if (deleteOk) {
+        assert.equal(browserUnsubscribed, 1);
+        assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
+        assert.ok(find(tree, 'Onboarding'));
+      } else {
+        assert.equal(browserUnsubscribed, 0);
+        assert.equal(calls.some(call => call.url.endsWith('/auth/google/logout')), false);
+        assert.ok(find(tree, 'AppLayout'));
+        assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
+      }
+    } finally {
+      h.restore();
+    }
+  }
+});
+
 test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización', async () => {
   const calls = [];
   const h = harness('', async (url, options) => { calls.push({ url, options }); return { ok: true }; });
@@ -64,4 +117,37 @@ test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización'
     assert.equal(calls[0].options.method, 'DELETE');
     assert.equal(calls[0].options.credentials, 'include');
   } finally { h.restore(); }
+});
+
+test('resolveBackendUrl centraliza VITE_BACKEND_URL y valida el entorno de producción', () => {
+  const { resolveBackendUrl } = compile('services/backend.ts', require, {});
+  assert.equal(resolveBackendUrl({}), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+  assert.equal(resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+
+  assert.throws(() => resolveBackendUrl({ PROD: true }), /VITE_BACKEND_URL es obligatoria/);
+  assert.throws(
+    () => resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'http://localhost:3000' }),
+    /HTTPS y un dominio público/,
+  );
+  assert.throws(
+    () => resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'http://api.itson.mx' }),
+    /HTTPS y un dominio público/,
+  );
+});
+
+test('en modo mock resolveBackendUrl no valida producción y conserva la URL', () => {
+  const { resolveBackendUrl } = compile('services/backend.ts', require, {});
+  const prodMock = { PROD: true, MODE: 'production', VITE_USE_MOCK: 'true' };
+  assert.equal(resolveBackendUrl(prodMock), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ ...prodMock, VITE_BACKEND_URL: 'http://localhost:3000' }), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ ...prodMock, VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+  // Solo 'true' activa el modo mock; cualquier otro valor sigue validando.
+  assert.throws(() => resolveBackendUrl({ PROD: true, VITE_USE_MOCK: 'false' }), /VITE_BACKEND_URL es obligatoria/);
+});
+
+test('el módulo backend carga en un build de producción mock sin VITE_BACKEND_URL', () => {
+  const backend = compile('services/backend.ts', require, { PROD: true, MODE: 'production', VITE_USE_MOCK: 'true' });
+  assert.equal(backend.mockMode, true);
+  assert.equal(backend.backendUrl, 'http://localhost:3000');
 });

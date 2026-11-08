@@ -12,6 +12,14 @@ const STATE_COOKIE = "itn41_google_state";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Envoltura de createSessionReader para quien no construye un lector propio
+// (rutas /push). Sin un secreto válido no hay sesión posible.
+async function getGoogleSession(req, { config, supabase, now = Date.now }) {
+  const secret = config?.googleAuthSecret;
+  if (!secret || secret.length < 32) return null;
+  return createSessionReader({ secret, supabase, now })(req);
+}
+
 function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetch, now = Date.now }) {
   const router = express.Router();
   const oauth = config.googleOAuth || {};
@@ -20,7 +28,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
   const frontend = new URL(config.frontendUrl || "http://localhost:5173");
   const baseCookie = { httpOnly: true, secure, sameSite: config.googleCookieSameSite || "lax" };
   const stateCookieOptions = { ...baseCookie, path: "/auth/google" };
-  // La sesión también debe viajar a /api. Para borrarla hay que repetir este path.
+  // La sesión también debe viajar a /api y /push. Para borrarla hay que repetir este path.
   const sessionCookieOptions = { ...baseCookie, path: "/" };
   // Antes de ITN-53 la sesión vivía bajo /auth/google. Esa cookie se enviaría
   // primero y taparía a la nueva, así que se borra al entrar y al salir.
@@ -29,7 +37,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
     clearLegacySessionCookie(res);
   };
-  const currentSession = createSessionReader({ secret, supabase, now });
+  const currentSession = req => getGoogleSession(req, { config, supabase, now });
   // Las respuestas de sesión y los redirects no se deben almacenar en cachés.
   router.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -112,7 +120,8 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
-  // El botón «Desconectar» existente también debe borrar la autorización real.
+  // El botón «Desconectar» borra solo la autorización de Classroom, sin
+  // desactivar las suscripciones Web Push de calificaciones ni de otros dispositivos.
   router.delete("/session", async (req, res) => {
     if (req.get("origin") !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
     try {
@@ -131,15 +140,29 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
-  // Cierre real de sesión: invalidación en servidor, sin borrar la autorización.
-  router.post("/logout", async (req, res) => {
+  // Cierre real de sesión en este dispositivo: invalida únicamente la sesión
+  // actual y revoca solo la suscripción Push vinculada a esta sesión (o endpoint
+  // indicado), conservando intactas las suscripciones de otros dispositivos del alumno.
+  router.post("/logout", express.json({ limit: "16kb" }), async (req, res) => {
     if (req.get("origin") !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
     try {
       const session = await currentSession(req);
       if (session) {
+        const currentSessionHash = sessionHash(session.sessionId);
         const { error } = await supabase.from("google_app_sessions").delete()
-          .eq("id", sessionHash(session.sessionId)).eq("user_id", session.userId);
+          .eq("id", currentSessionHash).eq("user_id", session.userId);
         if (error) throw error;
+
+        const { error: pushSessionError } = await supabase.from("push_subscriptions")
+          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash);
+        if (pushSessionError) throw pushSessionError;
+
+        const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
+        if (bodyEndpoint) {
+          const { error: pushEndpointError } = await supabase.from("push_subscriptions")
+            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint);
+          if (pushEndpointError) throw pushEndpointError;
+        }
       }
       clearSessionCookies(res);
       res.clearCookie(STATE_COOKIE, stateCookieOptions);
@@ -152,4 +175,4 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
   return router;
 }
 
-module.exports = { authGoogleRouter };
+module.exports = { authGoogleRouter, getGoogleSession, sessionHash, SESSION_COOKIE };

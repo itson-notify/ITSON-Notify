@@ -24,7 +24,7 @@ export interface Settings {
   categories: Record<NotifType, boolean>
   cupoWatch: string[]
   pushOn: boolean
-  pushPermission: 'default' | 'granted'
+  pushPermission: 'default' | 'granted' | 'denied';
   emailOn: boolean
   email: string
   quietHours: boolean

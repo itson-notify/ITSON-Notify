@@ -167,7 +167,16 @@ function loadConfig(env = process.env) {
   const faltanBase = REQUERIDAS.filter((name) => valor(name) === "");
   const oauthResult = loadGoogleOAuthConfig(valor);
 
-  const faltan = [...faltanBase, ...oauthResult.faltan];
+  const vapidPublicKey = valor("VAPID_PUBLIC_KEY") || null;
+  const vapidPrivateKey = valor("VAPID_PRIVATE_KEY") || null;
+  const vapidSubject = valor("VAPID_SUBJECT") || "mailto:notificaciones@itson.edu.mx";
+
+  // Si se define una llave VAPID sin la otra, se reporta la que falta.
+  const faltanVapid = [];
+  if (vapidPublicKey && !vapidPrivateKey) faltanVapid.push("VAPID_PRIVATE_KEY");
+  if (!vapidPublicKey && vapidPrivateKey) faltanVapid.push("VAPID_PUBLIC_KEY");
+
+  const faltan = [...faltanBase, ...oauthResult.faltan, ...faltanVapid];
   if (faltan.length > 0) {
     throw new Error(`Faltan variables de entorno: ${faltan.join(", ")}`);
   }
@@ -208,8 +217,11 @@ function loadConfig(env = process.env) {
   if (!["lax", "none"].includes(googleCookieSameSite)) {
     invalidas.push("GOOGLE_COOKIE_SAME_SITE (lax o none)");
   }
-  if (googleCookieSameSite === "none" && oauthResult.config.enabled &&
-      (!oauthResult.config.redirectUri.startsWith("https:") || !frontendUrl.startsWith("https:"))) {
+  if (
+    googleCookieSameSite === "none" &&
+    oauthResult.config.enabled &&
+    (!oauthResult.config.redirectUri.startsWith("https:") || !frontendUrl.startsWith("https:"))
+  ) {
     invalidas.push("GOOGLE_COOKIE_SAME_SITE (none requiere HTTPS en backend y frontend)");
   }
   const googleAuthSecret = valor("GOOGLE_AUTH_SECRET");
@@ -229,6 +241,8 @@ function loadConfig(env = process.env) {
     supabaseUrl: valor("SUPABASE_URL"),
     supabaseServiceRoleKey: valor("SUPABASE_SERVICE_ROLE_KEY"),
     googleOAuth: oauthResult.config,
+    vapidPublicKey,
+    vapidSubject,
   };
 
   // No son enumerables para evitar exposición accidental en logs o serialización JSON.
@@ -239,6 +253,7 @@ function loadConfig(env = process.env) {
     configurable: false,
   });
   Object.defineProperty(config, "googleAuthSecret", { value: googleAuthSecret, enumerable: false });
+  Object.defineProperty(config, "vapidPrivateKey", { value: vapidPrivateKey, enumerable: false });
 
   return config;
 }
