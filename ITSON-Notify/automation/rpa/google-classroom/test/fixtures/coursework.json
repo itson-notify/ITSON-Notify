@@ -1,0 +1,4 @@
+{
+  "courseWork": [{ "id": "synthetic-work-01", "courseId": "synthetic-course-01", "title": "Tarea ficticia", "state": "PUBLISHED", "workType": "ASSIGNMENT" }],
+  "nextPageToken": "synthetic-page-2"
+}

@@ -1,0 +1,4 @@
+{
+  "courses": [{ "id": "synthetic-course-01", "name": "Curso ficticio A", "courseState": "ACTIVE" }],
+  "nextPageToken": "synthetic-page-2"
+}
