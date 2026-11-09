@@ -358,6 +358,57 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
     assert.equal((await request(second).get('/auth/google/session').set('Cookie', cookie)).status, 401);
     assert.equal((await request(first).post('/auth/google/logout').set('Origin', frontend).set('Cookie', cookie)).status, 204);
   });
+
+  it('logout invalida sesion y borra cookie si Push devuelve 42P01', async () => {
+    const db = makeDb();
+    db.grants.set('g1', {
+      user_id: 'u1', google_id: 'g1',
+      email: 'alumno@example.test', refresh_token: 'cifrado'
+    });
+
+    const originalFrom = db.from.bind(db);
+    let pushQueried = false;
+    db.from = (table) => {
+      if (table !== 'push_subscriptions') return originalFrom(table);
+      return {
+        delete() {
+          const query = {
+            eq() { return query; },
+            then(resolve, reject) {
+              pushQueried = true;
+              return Promise.resolve({
+                error: { code: '42P01', message: 'tabla simulada ausente' }
+              }).then(resolve, reject);
+            }
+          };
+          return query;
+        }
+      };
+    };
+
+    const { app } = appFor({ db });
+    const cookie = sessionCookie();
+
+    const response = await request(app)
+      .post('/auth/google/logout')
+      .set('Origin', frontend)
+      .set('Cookie', cookie);
+
+    assert.equal(pushQueried, true);
+    assert.equal(response.status, 204);
+    assert.equal(db.sessions.size, 0);
+    assert.match(
+      response.headers['set-cookie'].join(';'),
+      /Max-Age=0|Expires=Thu, 01 Jan 1970/
+    );
+    assert.equal(
+      (await request(app)
+        .get('/auth/google/session')
+        .set('Cookie', cookie)).status,
+      401
+    );
+  });
+
   it('protege logout contra CSRF, incluido Origin ausente', async () => {
     const db = makeDb(); const { app } = appFor({ db });
     for (const origin of [null, 'https://atacante.test', 'null']) {

@@ -155,13 +155,19 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
 
         const { error: pushSessionError } = await supabase.from("push_subscriptions")
           .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash);
-        if (pushSessionError) throw pushSessionError;
+        if (pushSessionError) {
+          if (pushSessionError.code !== "42P01") throw pushSessionError;
+          logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
+        }
 
         const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
         if (bodyEndpoint) {
           const { error: pushEndpointError } = await supabase.from("push_subscriptions")
             .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint);
-          if (pushEndpointError) throw pushEndpointError;
+          if (pushEndpointError) {
+            if (pushEndpointError.code !== "42P01") throw pushEndpointError;
+            logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
+          }
         }
       }
       clearSessionCookies(res);
