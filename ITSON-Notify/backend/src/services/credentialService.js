@@ -12,10 +12,10 @@ function createCredentialService({ repo, crypto, now = () => Date.now() }) {
     return userId;
   }
 
-  // Da de alta al estudiante si aún no existe, igual que grade-snapshots.
+  // ITN-51 - Guarda el secreto del alumno de la sesión. El usuario ya existe en
+  // app_users porque la sesión de Google lo creó.
   // Devuelve { userId, portal, kind, status, keyVersion }, sin datos cifrados.
-  async function saveSecret({ email, portal, kind, secret }) {
-    const userId = await repo.ensureUser(email);
+  async function saveSecretForUser({ userId, portal, kind, secret }) {
     const cifrado = crypto.encryptSecret(secret, { userId, portal, kind });
     const saved = await repo.saveCredential({ userId, portal, kind, ...cifrado }, ahora());
     return { userId, portal, kind, status: saved.status, keyVersion: saved.key_version };
@@ -40,14 +40,19 @@ function createCredentialService({ repo, crypto, now = () => Date.now() }) {
     return { userId, portal, kind, status: marcada.status };
   }
 
-  // Devuelve { userId }.
-  async function deleteSecret({ email, portal, kind }) {
-    const userId = await buscarUsuario(email);
+  // ITN-51 - Estado de la credencial sin tocar los campos cifrados.
+  // Devuelve { status, lastValidatedAt } o null si el alumno no la ha vinculado.
+  async function getStatusForUser({ userId, portal, kind }) {
+    return repo.getCredentialStatus({ userId, portal, kind });
+  }
+
+  // ITN-51 - Borra la credencial del alumno de la sesión. Devuelve { userId }.
+  async function deleteSecretForUser({ userId, portal, kind }) {
     if (!(await repo.deleteCredential({ userId, portal, kind }))) throw new CredentialNotFoundError();
     return { userId };
   }
 
-  return { saveSecret, readSecret, markNeedsRelink, deleteSecret };
+  return { saveSecretForUser, readSecret, markNeedsRelink, getStatusForUser, deleteSecretForUser };
 }
 
 module.exports = { createCredentialService };
