@@ -161,6 +161,7 @@ module.exports = {
   getToken,
   callWs,
   encodeParams,
+  redact,
   MoodleError,
   HttpError,
   BASE_URL,
