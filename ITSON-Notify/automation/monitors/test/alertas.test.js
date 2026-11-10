@@ -191,3 +191,41 @@ describe("nombreErrorSeguro", () => {
     test(`rechaza ${JSON.stringify(nombre)}`, () => assert.equal(nombreErrorSeguro(nombre), null));
   }
 });
+
+// ITN-52 - Alertas agregadas por corrida: solo conteos de la lista blanca.
+describe("alertas con conteos (ITN-52)", () => {
+  const CASOS_CONTEOS = [
+    [
+      { tipo: "corrida_con_fallas", fuente: "worker-rpa", conteos: { cuentas: 5, fallidas: 3, fallas_ivirtual: 1, fallas_backend: 1, entregas_fallidas: 1 } },
+      "ITSON Notify: corrida con fallas (worker-rpa): 3 de 5 cuenta(s) sin completar (iVirtual 1, backend 1, entregas 1). Revisa los logs de worker-rpa.",
+    ],
+    [
+      { tipo: "tokens_en_bloque", fuente: "ivirtual-api", conteos: { cuentas: 4, token_invalido: 4 } },
+      "ITSON Notify: tokens rechazados en bloque (ivirtual-api): 4 de 4 cuenta(s). No se marcó ninguna para revincular; revisa iVirtual antes de la siguiente corrida.",
+    ],
+    [
+      { tipo: "backend", fuente: "worker-rpa", conteos: { cuentas: 2 } },
+      "ITSON Notify: corrida cancelada, el backend no respondió o rechazó la llave (worker-rpa). Cuentas sin procesar: 2. Revisa INTERNAL_API_KEY y los logs de worker-rpa.",
+    ],
+  ];
+  for (const [evento, esperado] of CASOS_CONTEOS) {
+    test(`${evento.tipo}: texto esperado y pasa validarMensaje`, async (t) => {
+      const s = simular(t);
+      await s.notificar({ ...evento, fecha: FECHA });
+      assert.equal(s.texto(), esperado);
+      assert.equal(validarMensaje(s.texto()), null);
+    });
+  }
+
+  test("descarta conteos fuera de la lista blanca o que no son enteros chicos", async (t) => {
+    const s = simular(t);
+    await s.notificar({
+      tipo: "corrida_con_fallas",
+      fuente: "worker-rpa",
+      conteos: { cuentas: 2, fallidas: "alumno@example.test", correo: 1, fallas_ivirtual: 1234567, fallas_backend: -1 },
+    });
+    const log = JSON.parse(s.lineas[0].replace(/^ALERTA_RPA /, ""));
+    assert.deepEqual(log.conteos, { cuentas: 2 });
+    assert.ok(!s.texto().includes("@") && !s.texto().includes("1234567"));
+  });
+});
