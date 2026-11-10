@@ -18,8 +18,24 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path: string, method: 'GET' | 'POST' = 'GET'): Promise<Response> {
-  const response = await fetch(`${backendUrl}/api${path}`, { method, credentials: 'include' })
+// ITN-51 - Estado de la vinculación de iVirtual. Nunca trae el token.
+export interface IvirtualLink {
+  available: boolean
+  linked: boolean
+  status: 'active' | 'needs_relink' | null
+  lastValidatedAt: string | null
+}
+
+type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
+
+// ApiError solo lleva el status: nunca el body de la petición ni el de la respuesta.
+async function request(path: string, method: Method = 'GET', body?: unknown): Promise<Response> {
+  const init: RequestInit = { method, credentials: 'include' }
+  if (body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(body)
+  }
+  const response = await fetch(`${backendUrl}/api${path}`, init)
   if (!response.ok) throw new ApiError(response.status)
   return response
 }
@@ -38,4 +54,25 @@ export async function markRead(id: string): Promise<void> {
 
 export async function markAllRead(): Promise<void> {
   await request('/notifications/read-all', 'POST')
+}
+
+// ITN-51 - Vinculación de iVirtual. La contraseña solo viaja en el body de esta
+// petición: aquí no se guarda ni se registra.
+export async function getIvirtualLink(): Promise<IvirtualLink> {
+  return (await request('/credentials/ivirtual')).json()
+}
+
+export async function linkIvirtual(username: string, password: string): Promise<IvirtualLink> {
+  return (await request('/credentials/ivirtual', 'PUT', { username, password })).json()
+}
+
+// Un 404 significa que ya estaba desvinculada: para el alumno el resultado es el mismo.
+export async function unlinkIvirtual(): Promise<'unlinked' | 'already_unlinked'> {
+  try {
+    await request('/credentials/ivirtual', 'DELETE')
+    return 'unlinked'
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return 'already_unlinked'
+    throw error
+  }
 }
