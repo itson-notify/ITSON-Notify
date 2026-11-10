@@ -16,8 +16,9 @@ function compile(file, requireImpl, env = {}) {
 }
 
 // Sin `useMock: false`, la app corre con VITE_USE_MOCK=true. `navigatorImpl`
-// simula el Service Worker para las pruebas de Web Push.
-function harness(search, fetchImpl, { useMock = true, initialNotifs = [], navigatorImpl = {} } = {}) {
+// simula el Service Worker para las pruebas de Web Push y `pushOverrides`
+// reemplaza funciones de pushNotifications.ts.
+function harness(search, fetchImpl, { useMock = true, initialNotifs = [], navigatorImpl = {}, pushOverrides = {} } = {}) {
   const originals = {
     window: global.window, fetch: global.fetch, setTimeout: global.setTimeout,
     navigator: Object.getOwnPropertyDescriptor(global, 'navigator'),
@@ -38,7 +39,7 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
   const clientRequire = id => (id === '@/services/backend' ? backend : require(id));
   const client = compile('services/googleAuth.ts', clientRequire, env);
   const api = compile('services/api.ts', clientRequire, env);
-  const push = compile('services/pushNotifications.ts', clientRequire, env);
+  const push = { ...compile('services/pushNotifications.ts', clientRequire, env), ...pushOverrides };
   const states = []; const effects = []; let cursor = 0; let mounted = false;
   const hooks = {
     useState(initial) {

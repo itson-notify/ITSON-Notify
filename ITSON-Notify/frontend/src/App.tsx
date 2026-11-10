@@ -180,10 +180,12 @@ export default function App() {
     body: 'Dejarás de recibir avisos en este dispositivo hasta que vuelvas a entrar.',
     label: 'Cerrar sesión', danger: true,
     onConfirm: async () => {
-      try {
-        await unsubscribeBrowserPush()
-        await logoutGoogle()
-      } catch {
+      // Si falla revocar el Push, la sesión de Google se cierra igual: el alumno
+      // pidió salir. Solo el resultado de logoutGoogle() decide el aviso.
+      try { await unsubscribeBrowserPush() }
+      catch { console.warn('push_unsubscribe_failed') }
+      try { await logoutGoogle() }
+      catch {
         notify('No se pudo cerrar la sesión. Intenta de nuevo.')
         return
       }

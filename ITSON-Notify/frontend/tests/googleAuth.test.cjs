@@ -53,7 +53,7 @@ test('cerrar sesión llama al backend y solo cambia a onboarding si la invalidac
   }
 });
 
-test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y aborta si falla', async () => {
+test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y si falla cierra la sesión igual', async () => {
   for (const deleteOk of [true, false]) {
     const calls = [];
     let browserUnsubscribed = 0;
@@ -82,6 +82,8 @@ test('cerrar sesión con suscripción Push activa la revoca en backend y navegad
       if (options.method === 'POST') return { ok: true };
       return { status: 401 };
     }, { navigatorImpl });
+    const originalWarn = console.warn;
+    console.warn = () => {};
     try {
       await h.start();
       find(h.render(), 'AppLayout').props.onLogout();
@@ -90,20 +92,60 @@ test('cerrar sesión con suscripción Push activa la revoca en backend y navegad
       assert.equal(calls[1].url, 'https://api.test/push/subscriptions');
       assert.equal(calls[1].options.method, 'DELETE');
       assert.deepEqual(JSON.parse(calls[1].options.body), { endpoint: 'https://fcm.test/sub-activa' });
-      if (deleteOk) {
-        assert.equal(browserUnsubscribed, 1);
-        assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
-        assert.ok(find(tree, 'Onboarding'));
-      } else {
-        assert.equal(browserUnsubscribed, 0);
-        assert.equal(calls.some(call => call.url.endsWith('/auth/google/logout')), false);
-        assert.ok(find(tree, 'AppLayout'));
-        assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
-      }
+      // El navegador solo se desuscribe si el backend ya borró la suscripción;
+      // el logout de Google se intenta siempre.
+      assert.equal(browserUnsubscribed, deleteOk ? 1 : 0);
+      assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
+      assert.ok(find(tree, 'Onboarding'));
     } finally {
+      console.warn = originalWarn;
       h.restore();
     }
   }
+});
+
+test('si unsubscribeBrowserPush rechaza, igual llama a logoutGoogle y termina la sesión sin toast de error', async () => {
+  const calls = [];
+  const warnings = [];
+  const h = harness('?classroom=error&from=settings', async (url, options = {}) => {
+    calls.push({ url, options });
+    return options.method === 'POST' ? { ok: true } : { status: 401 };
+  }, { pushOverrides: { unsubscribeBrowserPush: async () => { throw new Error('error_eliminando_suscripcion'); } } });
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    await h.start();
+    find(h.render(), 'AppLayout').props.onLogout();
+    await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+    const tree = h.render();
+    const logoutCalls = calls.filter(call => call.url === 'https://api.test/auth/google/logout');
+    assert.equal(logoutCalls.length, 1);
+    assert.equal(logoutCalls[0].options.method, 'POST');
+    assert.ok(find(tree, 'Onboarding'));
+    assert.equal(find(tree, 'AppLayout'), null);
+    // El único toast es el de ?classroom=error al arrancar, no el del logout.
+    assert.doesNotMatch(find(tree, 'ToastView')?.props.toast?.text ?? '', /No se pudo cerrar la sesión/);
+    // La advertencia es un código fijo, sin el error ni datos del alumno.
+    assert.deepEqual(warnings, [['push_unsubscribe_failed']]);
+  } finally {
+    console.warn = originalWarn;
+    h.restore();
+  }
+});
+
+test('si falla logoutGoogle tras revocar el Push, avisa y no termina la sesión', async () => {
+  const h = harness('?classroom=error&from=settings', async (url, options = {}) => (
+    options.method === 'POST' ? { ok: false } : { status: 401 }
+  ), { pushOverrides: { unsubscribeBrowserPush: async () => {} } });
+  try {
+    await h.start();
+    find(h.render(), 'AppLayout').props.onLogout();
+    await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+    const tree = h.render();
+    assert.equal(find(tree, 'Onboarding'), null);
+    assert.ok(find(tree, 'AppLayout'));
+    assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
+  } finally { h.restore(); }
 });
 
 test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización', async () => {
