@@ -7,10 +7,14 @@ const { createSessionReader, requireStudentSession } = require("../middleware/st
 const { parseNotificationId } = require("../models/studentApi");
 const { createStudentRepository } = require("../repositories/studentRepository");
 const { listStudentNotifications } = require("../services/studentNotifications");
+const { studentCredentialsRouter } = require("./studentCredentials");
 
 const ITSON_STATUS_ERROR = "needs_relink";
 
-function studentApiRouter({ config, supabase, now = Date.now }) {
+// ITN-51 - Todos los métodos que cambian estado exigen el Origin exacto.
+const METODOS_CON_ESCRITURA = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function studentApiRouter({ config, supabase, now = Date.now, logger, credentialCrypto, exchangeToken, linkLimiter }) {
   const router = express.Router();
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
   const repo = createStudentRepository(supabase);
@@ -21,9 +25,10 @@ function studentApiRouter({ config, supabase, now = Date.now }) {
     next();
   });
 
-  // Igual que DELETE /auth/google/session: un POST sin el Origin exacto no pasa.
+  // Igual que DELETE /auth/google/session: una escritura sin el Origin exacto no
+  // pasa. Va antes de la sesión y antes de parsear cualquier body.
   router.use((req, res, next) => {
-    if (req.method === "POST" && req.get("origin") !== frontendOrigin) {
+    if (METODOS_CON_ESCRITURA.has(req.method) && req.get("origin") !== frontendOrigin) {
       return res.status(403).json({ error: "origen_no_permitido" });
     }
     return next();
@@ -61,6 +66,13 @@ function studentApiRouter({ config, supabase, now = Date.now }) {
     if (!found) return res.status(404).json({ error: "no_encontrado" });
     return res.sendStatus(204);
   });
+
+  // ITN-51 - Vinculación de iVirtual. Hereda Origin y sesión de arriba; el router
+  // parsea su propio body (8 KB).
+  router.use(
+    "/credentials",
+    studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exchangeToken, limiter: linkLimiter }),
+  );
 
   return router;
 }
