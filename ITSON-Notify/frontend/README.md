@@ -30,8 +30,8 @@ Para cambiarlas hay que reiniciar `npm run dev` y volver a generar el build.
 Abre el frontend en `localhost`, no en `127.0.0.1`: con un host distinto al del backend, el navegador no envía la cookie de
 sesión con `SameSite=Lax`.
 
-El correo de Google debe ser el mismo que `ALUMNO_EMAIL` del worker para ver sus notificaciones. Con otro correo, cada uno
-queda en su propia fila de `app_users` y la lista sale vacía.
+Desde ITN-52 el worker consulta a cada alumno que vinculó iVirtual en Ajustes y entrega con su correo de Google, así que
+las notificaciones llegan a esa misma cuenta.
 
 ## Qué viene de la API y qué sigue simulado
 
