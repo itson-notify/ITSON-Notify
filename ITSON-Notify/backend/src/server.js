@@ -7,6 +7,7 @@ const { createApp } = require("./app");
 const { createLogger } = require("./utils/logger");
 const { buildChannels } = require("./services/notificationChannels");
 const { createNotificationRepository } = require("./repositories/notificationRepository");
+const { createExchangeToken } = require("./services/ivirtualToken");
 
 function main() {
   let config;
@@ -23,7 +24,9 @@ function main() {
   const pushRepo = createNotificationRepository(supabase);
   // Email si existen RESEND_API_KEY y NOTIFY_EMAIL_TO; web_push si existen llaves VAPID y pushRepo.
   const channels = buildChannels({ env: process.env, logger, pushRepo });
-  const app = createApp({ config, supabase, logger, channels });
+  // ITN-52 - Vinculación real de iVirtual: cambia usuario y contraseña por un token.
+  const exchangeToken = createExchangeToken();
+  const app = createApp({ config, supabase, logger, channels, exchangeToken });
 
   app.listen(config.port, () => {
     logger.info("servidor_iniciado", { port: config.port });

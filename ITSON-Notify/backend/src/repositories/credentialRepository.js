@@ -6,6 +6,7 @@ const { check, PersistenceError } = require("../utils/errors");
 const { upsertUser } = require("./snapshotRepository");
 
 const CREDENTIALS_ON_CONFLICT = "user_id,portal,kind"; // 007
+const ACTIVE_BATCH = 100;
 
 const toBytea = (buffer) => `\\x${buffer.toString("hex")}`;
 
@@ -31,9 +32,14 @@ function createCredentialRepository(supabase) {
 
   const ensureUser = (email) => upsertUser(supabase, email);
 
-  // Volver a vincular reactiva la cuenta y borra la validación anterior, que era
-  // de otro secreto.
-  async function saveCredential({ userId, portal, kind, ciphertext, nonce, authTag, keyVersion }, updatedAt) {
+  // Volver a vincular reactiva la cuenta y reemplaza la validación anterior, que era
+  // de otro secreto. ITN-52 - lastValidatedAt es la hora en que el portal aceptó este
+  // secreto, o null si nadie lo ha validado.
+  async function saveCredential(
+    { userId, portal, kind, ciphertext, nonce, authTag, keyVersion },
+    updatedAt,
+    { lastValidatedAt = null } = {},
+  ) {
     return check(
       "student_credentials",
       await supabase
@@ -48,12 +54,12 @@ function createCredentialRepository(supabase) {
             auth_tag: toBytea(authTag),
             key_version: keyVersion,
             status: "active",
-            last_validated_at: null,
+            last_validated_at: lastValidatedAt,
             updated_at: updatedAt,
           },
           { onConflict: CREDENTIALS_ON_CONFLICT },
         )
-        .select("portal,kind,status,key_version")
+        .select("portal,kind,status,key_version,last_validated_at")
         .single(),
     );
   }
@@ -95,6 +101,32 @@ function createCredentialRepository(supabase) {
     );
   }
 
+  // ITN-52 - Correos de los alumnos con una credencial activa de portal y kind.
+  // Solo lee user_id de student_credentials (nunca los campos cifrados) y después el
+  // correo en app_users, en tandas para no armar URLs enormes en PostgREST.
+  // Devuelve los correos ordenados.
+  async function listActiveEmails({ portal, kind }) {
+    const filas = check(
+      "student_credentials",
+      await supabase
+        .from("student_credentials")
+        .select("user_id")
+        .eq("portal", portal)
+        .eq("kind", kind)
+        .eq("status", "active"),
+    );
+    const ids = [...new Set(filas.map((f) => f.user_id))];
+    const correos = [];
+    for (let i = 0; i < ids.length; i += ACTIVE_BATCH) {
+      const usuarios = check(
+        "app_users",
+        await supabase.from("app_users").select("email").in("id", ids.slice(i, i + ACTIVE_BATCH)),
+      );
+      for (const u of usuarios) if (u.email) correos.push(u.email);
+    }
+    return correos.sort();
+  }
+
   // Devuelve true si borró la fila.
   async function deleteCredential(ref) {
     const rows = check(
@@ -112,6 +144,7 @@ function createCredentialRepository(supabase) {
     getCredentialStatus,
     markNeedsRelink,
     deleteCredential,
+    listActiveEmails,
   };
 }
 

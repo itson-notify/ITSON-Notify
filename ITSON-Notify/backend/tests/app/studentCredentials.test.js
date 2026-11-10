@@ -1,6 +1,8 @@
 // ITN-51 - /api/credentials/ivirtual con supertest, el Supabase simulado y un doble
-// del puerto exchangeToken (la llamada real a iVirtual es de ITN-52). Datos
-// inventados; la contraseña y el token se arman en tiempo de ejecución.
+// del puerto exchangeToken. Datos inventados; la contraseña y el token se arman en
+// tiempo de ejecución.
+// ITN-52 - Además se prueba el puerto real (createExchangeToken) con un fetch
+// simulado de token.php: nunca sale a la red.
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -11,6 +13,7 @@ const { createLogger } = require("../../src/utils/logger");
 const { sessionHash } = require("../../src/middleware/studentSession");
 const { encrypt } = require("../../src/utils/secureToken");
 const { createAttemptLimiter, LINK_ATTEMPTS, LINK_WINDOW_MS } = require("../../src/routes/studentCredentials");
+const { createExchangeToken } = require("../../src/services/ivirtualToken");
 const { createFakeSupabase } = require("../helpers/fakeSupabase");
 const { API_KEY, CREDENTIALS_KEY } = require("../helpers/payloads");
 
@@ -155,7 +158,9 @@ describe("PUT /api/credentials/ivirtual", () => {
     const res = await vincular();
 
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { available: true, linked: true, status: "active", lastValidatedAt: null });
+    assert.deepEqual(res.body, {
+      available: true, linked: true, status: "active", lastValidatedAt: new Date(T0).toISOString(),
+    });
     assert.deepEqual(llamadas, [{ username: USUARIO, password: PASSWORD }]);
 
     const [fila] = filas(db, ALUMNA);
@@ -163,6 +168,7 @@ describe("PUT /api/credentials/ivirtual", () => {
     assert.equal(fila.portal, "ivirtual");
     assert.equal(fila.kind, "ivirtual_token");
     assert.equal(fila.status, "active");
+    assert.equal(fila.last_validated_at, new Date(T0).toISOString());
     // Ni la contraseña ni el token quedan en claro en la fila.
     assertSinSensibles(JSON.stringify(fila));
     assert.ok(!Buffer.from(fila.ciphertext.slice(2), "hex").includes(Buffer.from(TOKEN)));
@@ -188,19 +194,27 @@ describe("PUT /api/credentials/ivirtual", () => {
     assert.deepEqual(llamadas[0], { username: USUARIO, password: conEspacios });
   });
 
-  test("volver a vincular reemplaza el token y reactiva una cuenta en needs_relink", async () => {
-    const { vincular, db } = setup();
+  test("volver a vincular reemplaza el token, reactiva needs_relink con fecha nueva y vuelve a /active", async () => {
+    const { app, vincular, db, reloj } = setup();
+    const activas = async () =>
+      (await request(app).get("/internal/credentials/active?portal=ivirtual").set("x-api-key", API_KEY)).body.students;
     await vincular();
     const [fila] = filas(db, ALUMNA);
     const nonce = fila.nonce;
     fila.status = "needs_relink";
-    fila.last_validated_at = new Date(T0).toISOString();
+    assert.deepEqual(await activas(), []);
 
+    // Dentro de la vigencia de la cookie de prueba (1 hora).
+    reloj.t += 10 * 60 * 1000;
     const res = await vincular();
+    const nueva = new Date(reloj.t).toISOString();
     assert.equal(res.body.status, "active");
+    assert.equal(res.body.lastValidatedAt, nueva);
     assert.equal(filas(db, ALUMNA).length, 1);
     assert.notEqual(filas(db, ALUMNA)[0].nonce, nonce);
-    assert.equal(filas(db, ALUMNA)[0].last_validated_at, null);
+    assert.equal(filas(db, ALUMNA)[0].status, "active");
+    assert.equal(filas(db, ALUMNA)[0].last_validated_at, nueva);
+    assert.deepEqual(await activas(), [{ email: ALUMNA.email }]);
   });
 
   test("sin puerto responde 501 vinculacion_no_disponible y no guarda nada", async () => {
@@ -212,12 +226,34 @@ describe("PUT /api/credentials/ivirtual", () => {
     assertSinSensibles(respuesta(res) + logs.join("\n"));
   });
 
-  test("si iVirtual rechaza las credenciales responde 422 sin guardar", async () => {
-    const { vincular, db } = setup({ exchange: async () => null });
+  test("si iVirtual rechaza las credenciales responde 422 vinculacion_fallida sin guardar", async () => {
+    for (const exchange of [async () => null, async () => ({ ok: false, reason: "credenciales" })]) {
+      const { vincular, db } = setup({ exchange });
+      const res = await vincular();
+      assert.equal(res.status, 422);
+      assert.deepEqual(res.body, { error: "vinculacion_fallida" });
+      assert.equal(db.tables.student_credentials.length, 0);
+    }
+  });
+
+  test("si iVirtual pide cambiar la contraseña responde 409 cambio_password sin guardar", async () => {
+    const { vincular, db } = setup({ exchange: async () => ({ ok: false, reason: "cambio_password" }) });
     const res = await vincular();
-    assert.equal(res.status, 422);
-    assert.deepEqual(res.body, { error: "credenciales_rechazadas" });
+    assert.equal(res.status, 409);
+    assert.deepEqual(res.body, { error: "cambio_password" });
     assert.equal(db.tables.student_credentials.length, 0);
+  });
+
+  test("un rechazo no borra una vinculación previa", async () => {
+    let respuestaPuerto = TOKEN;
+    const { vincular, db } = setup({ exchange: async () => respuestaPuerto });
+    await vincular();
+    const copia = { ...filas(db, ALUMNA)[0] };
+    for (const r of [null, { ok: false, reason: "cambio_password" }]) {
+      respuestaPuerto = r;
+      await vincular();
+      assert.deepEqual(filas(db, ALUMNA)[0], copia);
+    }
   });
 
   test("si el puerto lanza o devuelve un token inválido responde 502 genérico", async () => {
@@ -231,6 +267,8 @@ describe("PUT /api/credentials/ivirtual", () => {
       async () => "",
       async () => "   ",
       async () => ({ token: TOKEN }),
+      async () => ({ ok: false, reason: "otro" }),
+      async () => ({ ok: false }),
       async () => "x".repeat(4097),
     ]) {
       const { vincular, db, logs } = setup({ exchange });
@@ -382,6 +420,23 @@ describe("Origin en métodos que cambian estado", () => {
 });
 
 describe("límite de intentos", () => {
+  test("los 422, 409 y 502 cuentan como intentos", async () => {
+    let i = 0;
+    const respuestas = [null, { ok: false, reason: "cambio_password" }];
+    const { vincular, llamadas } = setup({
+      exchange: async () => {
+        const n = i++ % 3;
+        if (n === 2) throw new Error("red");
+        return respuestas[n];
+      },
+    });
+    const vistos = [];
+    for (let k = 0; k < LINK_ATTEMPTS; k++) vistos.push((await vincular()).status);
+    assert.deepEqual(vistos.slice(0, 3), [422, 409, 502]);
+    assert.equal((await vincular()).status, 429);
+    assert.equal(llamadas.length, LINK_ATTEMPTS);
+  });
+
   test(`el intento ${LINK_ATTEMPTS + 1} en 15 minutos responde 429 sin llamar al puerto`, async () => {
     const { vincular, llamadas, logs } = setup({ exchange: async () => null });
     for (let i = 0; i < LINK_ATTEMPTS; i++) assert.equal((await vincular()).status, 422);
@@ -525,4 +580,92 @@ describe("/internal/credentials después de ITN-51", () => {
     assert.equal(del.status, 404);
     assert.equal(db.tables.student_credentials.length, 0);
   });
+});
+
+
+// ITN-52 - Puerto real con token.php simulado. El fetch simulado repite la
+// contraseña y el usuario en sus mensajes para probar que no se filtran.
+describe("vinculación real con token.php simulado", () => {
+  const json = (data, status = 200) =>
+    new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+
+  function setupReal(respuesta) {
+    const peticiones = [];
+    const fetchFn = async (url, init) => {
+      peticiones.push({ url, body: new URLSearchParams(init.body) });
+      if (respuesta instanceof Error) throw respuesta;
+      return typeof respuesta === "function" ? respuesta() : respuesta;
+    };
+    const real = createExchangeToken({ fetchFn, sleep: async () => {} });
+    return { ...setup({ exchange: real }), peticiones };
+  }
+  const citando = (errorcode) => json({ error: `Login ${USUARIO} ${PASSWORD} ${TOKEN}`, errorcode });
+
+  test("válido: guarda solo el token cifrado y last_validated_at, nunca la contraseña", async () => {
+    const { vincular, db, logs, peticiones, leer } = setupReal(json({ token: TOKEN, privatetoken: null }));
+    const res = await vincular();
+    assert.equal(res.status, 200);
+    assert.equal(res.body.lastValidatedAt, new Date(T0).toISOString());
+    assert.equal(peticiones[0].url, "https://ivirtual.itson.edu.mx/login/token.php");
+    assert.equal(peticiones[0].body.get("service"), "moodle_mobile_app");
+
+    const [fila] = filas(db, ALUMNA);
+    assert.equal(fila.kind, "ivirtual_token");
+    assert.equal(fila.last_validated_at, new Date(T0).toISOString());
+    const crudo = JSON.stringify(db.tables);
+    assertSin(crudo, PASSWORD, "la contraseña");
+    assertSin(crudo, TOKEN, "el token");
+
+    // El secreto guardado es el token: se descifra con el servicio y no es la contraseña.
+    const { createCredentialService } = require("../../src/services/credentialService");
+    const { createCredentialRepository } = require("../../src/repositories/credentialRepository");
+    const { credentialCryptoFromConfig } = require("../../src/services/credentialCrypto");
+    const service = createCredentialService({
+      repo: createCredentialRepository(db.client),
+      crypto: credentialCryptoFromConfig({ credentialsEncryptionKey: CREDENTIALS_KEY }),
+    });
+    const { secret } = await service.readSecret({ email: ALUMNA.email, portal: "ivirtual", kind: "ivirtual_token" });
+    assert.equal(secret, TOKEN);
+
+    const estado = await leer();
+    assert.equal(estado.body.available, true);
+    assertSinSensibles(respuesta(res) + respuesta(estado) + logs.join("\n"));
+  });
+
+  test("invalidlogin: 422 vinculacion_fallida y no guarda nada", async () => {
+    const { vincular, db, logs } = setupReal(citando("invalidlogin"));
+    const res = await vincular();
+    assert.equal(res.status, 422);
+    assert.deepEqual(res.body, { error: "vinculacion_fallida" });
+    assert.equal(db.tables.student_credentials.length, 0);
+    assertSinSensibles(respuesta(res) + logs.join("\n"));
+    assert.ok(!logs.join("\n").includes(USUARIO));
+  });
+
+  for (const errorcode of ["forcepasswordchangenotice", "passwordisexpired"]) {
+    test(`${errorcode}: 409 cambio_password y no guarda nada`, async () => {
+      const { vincular, db, logs } = setupReal(citando(errorcode));
+      const res = await vincular();
+      assert.equal(res.status, 409);
+      assert.deepEqual(res.body, { error: "cambio_password" });
+      assert.equal(db.tables.student_credentials.length, 0);
+      assertSinSensibles(respuesta(res) + logs.join("\n"));
+    });
+  }
+
+  for (const [nombre, falla] of [
+    ["falla de red", new TypeError(`fetch failed ${PASSWORD}`)],
+    ["HTTP 503", () => json({ error: PASSWORD }, 503)],
+    ["HTTP 500", () => json({}, 500)],
+    ["otro errorcode", () => citando("servicenotavailable")],
+  ]) {
+    test(`${nombre}: 502 portal_no_disponible y no guarda nada`, async () => {
+      const { vincular, db, logs } = setupReal(falla);
+      const res = await vincular();
+      assert.equal(res.status, 502);
+      assert.deepEqual(res.body, { error: "portal_no_disponible" });
+      assert.equal(db.tables.student_credentials.length, 0);
+      assertSinSensibles(respuesta(res) + logs.join("\n"));
+    });
+  }
 });

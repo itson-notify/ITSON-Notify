@@ -56,9 +56,30 @@ function createAttemptLimiter({ max = LINK_ATTEMPTS, windowMs = LINK_WINDOW_MS, 
 
 // exchangeToken({ username, password }) es el puerto que conecta ITN-52. Contrato:
 //   - resuelve con el token (texto) si iVirtual aceptó las credenciales;
-//   - resuelve con null si iVirtual las rechazó;
+//   - resuelve con null si iVirtual las rechazó (forma de ITN-51, se conserva);
+//   - ITN-52: resuelve con { ok: false, reason } para distinguir el motivo:
+//     "credenciales" (invalidlogin) o "cambio_password" (forcepasswordchangenotice
+//     o passwordisexpired);
 //   - lanza si el portal no respondió o falló algo técnico.
 // Sin puerto, la vinculación responde 501 y GET dice available: false.
+//
+// Respuestas: 422 vinculacion_fallida, 409 cambio_password y 502 portal_no_disponible.
+// Las tres cuentan como intento. Si iVirtual rechaza, no se guarda nada.
+const MOTIVOS_RECHAZO = {
+  credenciales: { status: 422, error: "vinculacion_fallida", evento: "vinculacion_rechazada" },
+  cambio_password: { status: 409, error: "cambio_password", evento: "vinculacion_cambio_password" },
+};
+
+// ITN-52 - Traduce lo que devolvió el puerto. Devuelve { token } o { rechazo } o
+// { invalido: true }.
+function interpretarPuerto(resultado) {
+  if (resultado === null || resultado === undefined) return { rechazo: MOTIVOS_RECHAZO.credenciales };
+  if (typeof resultado === "object" && !Array.isArray(resultado) && resultado.ok === false) {
+    const rechazo = Object.hasOwn(MOTIVOS_RECHAZO, resultado.reason) ? MOTIVOS_RECHAZO[resultado.reason] : null;
+    return rechazo ? { rechazo } : { invalido: true };
+  }
+  return isValidSecret(resultado) ? { token: resultado } : { invalido: true };
+}
 function studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exchangeToken, limiter }) {
   const router = express.Router();
   const service = createCredentialService({
@@ -120,9 +141,9 @@ function studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exc
       return res.status(429).json({ error: "demasiados_intentos" });
     }
 
-    let token;
+    let resultado;
     try {
-      token = await exchangeToken({ username: parsed.data.username, password: parsed.data.password });
+      resultado = await exchangeToken({ username: parsed.data.username, password: parsed.data.password });
     } catch {
       // Nada del error del puerto llega al log: su mensaje o código podría citar
       // la contraseña o el token.
@@ -130,18 +151,21 @@ function studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exc
       return res.status(502).json({ error: "portal_no_disponible" });
     }
 
-    if (token === null || token === undefined) {
-      logger.warn("vinculacion_rechazada", { user_id: userId, portal: PORTAL, kind: KIND });
-      return res.status(422).json({ error: "credenciales_rechazadas" });
+    const { token, rechazo, invalido } = interpretarPuerto(resultado);
+    resultado = undefined;
+    if (rechazo) {
+      logger.warn(rechazo.evento, { user_id: userId, portal: PORTAL, kind: KIND });
+      return res.status(rechazo.status).json({ error: rechazo.error });
     }
-    if (!isValidSecret(token)) {
+    if (invalido) {
       logger.error("vinculacion_token_invalido", { user_id: userId, portal: PORTAL, kind: KIND, step: "exchange_token" });
       return res.status(502).json({ error: "portal_no_disponible" });
     }
 
     let guardada;
     try {
-      guardada = await service.saveSecretForUser({ ...ref(req), secret: token });
+      // ITN-52 - iVirtual acaba de aceptar el token: queda validado ahora.
+      guardada = await service.saveSecretForUser({ ...ref(req), secret: token, validated: true });
     } catch (error) {
       return fallo(res, "credencial_no_guardada", req, error);
     }
@@ -153,7 +177,7 @@ function studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exc
       status: guardada.status,
       key_version: guardada.keyVersion,
     });
-    return res.json({ available, linked: true, status: guardada.status, lastValidatedAt: null });
+    return res.json({ available, linked: true, status: guardada.status, lastValidatedAt: guardada.lastValidatedAt });
   });
 
   router.delete("/ivirtual", async (req, res) => {
