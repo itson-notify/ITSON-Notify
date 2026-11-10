@@ -360,3 +360,84 @@ describe("privacidad de los logs", () => {
     );
   });
 });
+
+// ITN-52 - GET /internal/credentials/active: a quién consulta el worker.
+describe("GET /internal/credentials/active", () => {
+  const activas = (app, query = "?portal=ivirtual", apiKey = API_KEY) => {
+    const req = request(app).get(`${RUTA}/active${query}`);
+    return apiKey ? req.set("x-api-key", apiKey) : req;
+  };
+
+  test("devuelve solo correos de cuentas ivirtual_token activas, sin secretos", async () => {
+    const { app, guardar, marcar, logs, db } = setup();
+    await guardar();
+    await guardar({ ...refIvirtual(OTRO_EMAIL), secret: SECRETO });
+    await guardar({ ...refGoogle("tercero@example.test"), secret: SECRETO_GOOGLE });
+    await marcar(refIvirtual(OTRO_EMAIL));
+
+    const res = await activas(app);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { students: [{ email: EMAIL }] });
+    assert.equal(res.headers["cache-control"], "no-store");
+    const texto = JSON.stringify({ body: res.body, headers: res.headers, text: res.text });
+    assertSinSecreto(texto);
+    assertSinSecreto(texto, SECRETO_GOOGLE);
+    for (const fila of db.tables.student_credentials) {
+      for (const campo of [fila.ciphertext, fila.nonce, fila.auth_tag]) assert.ok(!res.text.includes(campo.slice(2)));
+    }
+
+    const linea = JSON.parse(logs.at(-1));
+    assert.equal(linea.event, "credenciales_activas_listadas");
+    assert.equal(linea.count, 1);
+    assert.equal(linea.portal, "ivirtual");
+    const todo = logs.join("\n");
+    assert.ok(!todo.includes(EMAIL) && !todo.includes(OTRO_EMAIL));
+  });
+
+  test("sin cuentas activas devuelve una lista vacía", async () => {
+    const { app } = setup();
+    const res = await activas(app);
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { students: [] });
+  });
+
+  test("401 sin x-api-key o con una incorrecta", async () => {
+    const { app, db } = setup();
+    for (const llave of [null, OTRA_API_KEY]) {
+      const res = await activas(app, "?portal=ivirtual", llave);
+      assert.equal(res.status, 401);
+      assert.deepEqual(res.body, { error: "no_autorizado" });
+    }
+    assert.equal(db.calls.length, 0);
+  });
+
+  test("400 con un portal ausente, desconocido o repetido", async () => {
+    const { app, db } = setup();
+    for (const query of ["", "?portal=google_classroom", "?portal=otro", "?portal=ivirtual&portal=ivirtual"]) {
+      const res = await activas(app, query);
+      assert.equal(res.status, 400, query);
+      assert.equal(res.body.error, "cuerpo_invalido");
+    }
+    assert.equal(db.calls.length, 0);
+  });
+
+  test("falla de Supabase: 500 genérico sin el mensaje", async () => {
+    const { app, db, logs, guardar } = setup();
+    await guardar();
+    db.failNext("student_credentials", "select");
+    const res = await activas(app);
+    assert.equal(res.status, 500);
+    assert.deepEqual(res.body, { error: "error_interno" });
+    const linea = JSON.parse(logs.at(-1));
+    assert.equal(linea.event, "credenciales_activas_no_listadas");
+    assert.ok(!logs.join("\n").includes("fallo simulado"));
+  });
+
+  test("después de needs-relink la cuenta deja de aparecer", async () => {
+    const { app, guardar, marcar } = setup();
+    await guardar();
+    assert.equal((await activas(app)).body.students.length, 1);
+    await marcar({ ...refIvirtual(), reason: "credenciales" });
+    assert.deepEqual((await activas(app)).body, { students: [] });
+  });
+});
