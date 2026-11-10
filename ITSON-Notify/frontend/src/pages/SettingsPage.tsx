@@ -6,16 +6,45 @@ import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
+import type { IvirtualLink } from '@/services/api'
+import { timeAgo } from '@/utils/time'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
-export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify, onDisconnected }: {
+type PillTone = 'ok' | 'warn' | 'neutral'
+const PILL: Record<PillTone, { text: string; dot: string }> = {
+  ok: { text: 'text-[#15803D]', dot: 'bg-[#22C55E]' },
+  warn: { text: 'text-[#C2410C]', dot: 'bg-[#F97316]' },
+  neutral: { text: 'text-[#64748B]', dot: 'bg-[#CBD5E1]' },
+}
+
+// ITN-51 - Cómo se muestra la cuenta de iVirtual. `undefined` es el modo mock (estado
+// simulado de antes); `null`, que no se pudo leer. Sin vinculación nunca va en verde, y
+// sin lastValidatedAt se dice "Vinculada", no "Validada".
+function itsonView(link: IvirtualLink | null | undefined, itsonError: boolean) {
+  if (link === undefined) {
+    return itsonError
+      ? { tone: 'warn' as const, text: 'Requiere tu contraseña', action: 'Actualizar contraseña', canUnlink: false }
+      : { tone: 'ok' as const, text: 'Conectada', action: 'Actualizar contraseña', canUnlink: false }
+  }
+  if (link === null) return { tone: 'neutral' as const, text: 'Estado no disponible', action: 'Vincular cuenta', canUnlink: false }
+  if (!link.linked) return { tone: 'neutral' as const, text: 'Sin vincular', action: 'Vincular cuenta', canUnlink: false }
+  if (link.status === 'needs_relink') {
+    return { tone: 'warn' as const, text: 'Requiere tu contraseña', action: 'Actualizar contraseña', canUnlink: true }
+  }
+  const text = link.lastValidatedAt ? `Validada · ${timeAgo(link.lastValidatedAt)}` : 'Vinculada'
+  return { tone: 'ok' as const, text, action: 'Actualizar contraseña', canUnlink: true }
+}
+
+export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify, onDisconnected, ivirtualLink, onUnlinkItson }: {
   settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify; onDisconnected?: () => void
+  ivirtualLink?: IvirtualLink | null; onUnlinkItson?: () => void
 }) {
   const itsonError = settings.itsonStatus === 'error'
+  const itson = itsonView(ivirtualLink, itsonError)
 
-  const StatusPill = ({ ok, text }: { ok: boolean; text: string }) => (
-    <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${ok ? 'text-[#15803D]' : 'text-[#C2410C]'}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-[#22C55E]' : 'bg-[#F97316]'}`} />{text}
+  const StatusPill = ({ tone, text }: { tone: PillTone; text: string }) => (
+    <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${PILL[tone].text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${PILL[tone].dot}`} />{text}
     </span>
   )
 
@@ -70,17 +99,20 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify,
           <SettingRow icon={<SmallIcon tone="blue">{I.lock(18)}</SmallIcon>} title="Cuenta ITSON"
             subtitle={
               <div className="flex flex-col items-start gap-0.5">
-                <span>ID {settings.itsonId || '—'}</span>
-                <StatusPill ok={!itsonError} text={itsonError ? 'Requiere tu contraseña' : 'Conectada'} />
+                {ivirtualLink === undefined && <span>ID {settings.itsonId || '—'}</span>}
+                <StatusPill tone={itson.tone} text={itson.text} />
                 {/* [H4] Misma acción, mismas palabras que en el aviso de error */}
-                <button onClick={onFix} className={`${linkCls} ${itsonError ? 'text-[#C2410C]' : 'text-[#2563EB]'}`}>Actualizar contraseña</button>
+                <button onClick={onFix} className={`${linkCls} ${itson.tone === 'warn' ? 'text-[#C2410C]' : 'text-[#2563EB]'}`}>{itson.action}</button>
+                {itson.canUnlink && onUnlinkItson && (
+                  <button onClick={onUnlinkItson} className={`${linkCls} text-[#DC2626]`}>Desvincular</button>
+                )}
               </div>
             } />
           <SettingRow icon={<SmallIcon>{I.book(18)}</SmallIcon>} title="Google Classroom"
             subtitle={settings.classroomConnected
               ? <div className="flex flex-col items-start gap-0.5">
                   <span className="max-w-full truncate">{settings.classroomEmail}</span>
-                  <StatusPill ok text="Conectada" />
+                  <StatusPill tone="ok" text="Conectada" />
                   <button onClick={disconnectClassroom} className={`${linkCls} text-[#DC2626]`}>Desconectar</button>
                 </div>
               : 'Sin conectar'}>

@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { I } from './icons'
-import { Button, PasswordField, Sheet, Spinner, TextField } from './ui'
-import { FAQ, ITSON_RECOVERY_URL } from '@/services/mockData'
-import { focusRing, linkCls, norm } from '@/utils/styles'
+import { Button, Sheet } from './ui'
+import { FAQ } from '@/services/mockData'
+import { focusRing, norm } from '@/utils/styles'
 import type { ConfirmReq } from '@/types'
 
 /** [H5] Confirmación antes de acciones que quitan algo al alumno. */
@@ -67,35 +67,6 @@ export function HelpSheet({ initialQuery, onClose }: { initialQuery: string; onC
         {/* TODO: correo real de soporte */}
         <Button full variant="secondary">{I.mail(18)}Escribir a soporte</Button>
       </div>
-    </Sheet>
-  )
-}
-
-export function PasswordSheet({ itsonId, onClose, onSave }: { itsonId: string; onClose: () => void; onSave: () => void }) {
-  const [pw, setPw] = useState('')
-  const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle')
-  const save = () => {
-    setState('loading')
-    setTimeout(() => (pw.toLowerCase() === 'error' ? setState('error') : onSave()), 1200)
-  }
-  return (
-    <Sheet labelledBy="pw-title" onClose={onClose}>
-      <h2 id="pw-title" className="text-[18px] font-semibold text-[#111827]">Actualiza tu contraseña de ITSON</h2>
-      <p className="text-[14px] text-[#64748B] mt-1">Usa la contraseña con la que entras hoy al portal de alumnos.</p>
-      <form className="mt-5 space-y-4" onSubmit={e => { e.preventDefault(); if (pw) save() }}>
-        <TextField id="sheet-id" label="ID de estudiante" value={itsonId} disabled />
-        <PasswordField id="sheet-pw" value={pw} autoFocus onChange={v => { setPw(v); if (state === 'error') setState('idle') }}
-          error={state === 'error' ? 'El portal tampoco aceptó esta contraseña.' : undefined} />
-        {state === 'error' && (
-          <a href={ITSON_RECOVERY_URL} target="_blank" rel="noreferrer" className={`${linkCls} text-[#B91C1C]`}>Recuperar contraseña en ITSON{I.external(14)}</a>
-        )}
-        <div className="pt-2 space-y-2 md:flex md:flex-row-reverse md:space-y-0 md:gap-2">
-          <Button full type="submit" disabled={!pw || state === 'loading'}>
-            {state === 'loading' ? <><Spinner />Verificando…</> : 'Guardar y reconectar'}
-          </Button>
-          <Button full variant="ghost" onClick={onClose}>Cancelar</Button>
-        </div>
-      </form>
     </Sheet>
   )
 }
