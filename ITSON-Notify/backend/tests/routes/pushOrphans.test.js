@@ -239,6 +239,46 @@ describe("ITN-54 - Push huérfano tras un logout con limpieza fallida", () => {
     }
   });
 
+  test("con el logger real, push_cleanup_failed conserva error_code y target y descarta endpoint, email y user_id", async () => {
+    // Por la ruta: fallan los dos borrados Push del logout (sesión y endpoint).
+    const laptop = sesion();
+    await suscribir(laptop.cookie, LAPTOP);
+    db.failNext("push_subscriptions", "delete", "XX000");
+    db.failNext("push_subscriptions", "delete", "XX000");
+    const res = await request(app).post("/auth/google/logout")
+      .set("Origin", FRONTEND).set("Cookie", laptop.cookie).send({ endpoint: LAPTOP });
+    assert.equal(res.status, 204);
+
+    const eventos = logs.map((l) => JSON.parse(l)).filter((e) => e.event === "push_cleanup_failed");
+    assert.deepEqual(eventos.map(({ level, error_code, target }) => ({ level, error_code, target })), [
+      { level: "warn", error_code: "XX000", target: "session" },
+      { level: "warn", error_code: "XX000", target: "endpoint" },
+    ]);
+    for (const evento of eventos) {
+      assert.deepEqual(Object.keys(evento).sort(), ["error_code", "event", "level", "target", "ts"]);
+    }
+    // user_id está en la lista blanca desde ITN-27 (eventos de snapshots), así que
+    // el logger no lo descartaría: la garantía es que la ruta nunca lo envía.
+    for (const privado of [LAPTOP, EMAIL, userId]) {
+      assert.equal(logs.join("\n").includes(privado), false, privado);
+    }
+
+    // Directo: aunque alguien pase campos no permitidos, el logger los descarta.
+    const lineas = [];
+    createLogger((l) => lineas.push(l)).warn("push_cleanup_failed", {
+      error_code: "XX000", target: "endpoint", endpoint: LAPTOP, email: EMAIL,
+    });
+    const evento = JSON.parse(lineas[0]);
+    assert.deepEqual(Object.keys(evento).sort(), ["error_code", "event", "level", "target", "ts"]);
+    assert.equal(evento.error_code, "XX000");
+    assert.equal(evento.target, "endpoint");
+    for (const privado of [LAPTOP, EMAIL]) assert.equal(lineas[0].includes(privado), false, privado);
+    // target también pasa por valorSeguro: un endpoint completo no cabe en TEXTO_SEGURO.
+    lineas.length = 0;
+    createLogger((l) => lineas.push(l)).warn("push_cleanup_failed", { error_code: "XX000", target: LAPTOP });
+    assert.equal("target" in JSON.parse(lineas[0]), false);
+  });
+
   describe("cada lector de google_app_sessions rechaza una sesión revocada", () => {
     const lectores = [
       ["GET /auth/google/session (¿tiene sesión?)", (c) => request(app).get("/auth/google/session").set("Cookie", c)],

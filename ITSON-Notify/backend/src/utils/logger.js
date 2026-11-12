@@ -34,6 +34,9 @@ const CAMPOS_PERMITIDOS = new Set([
   "key_version",
   // ITN-52: cuántas cuentas activas se entregaron al worker, nunca sus correos.
   "count",
+  // ITN-53/54: etiqueta fija del borrado Push que falló ("session" o "endpoint"),
+  // nunca el endpoint.
+  "target",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.
