@@ -10,7 +10,8 @@
 --
 -- Requiere 002. Idempotente: se puede ejecutar mas de una vez sin error ni efectos
 -- extra. Todo corre en una sola transaccion.
--- Pendiente de aplicar.
+-- Aplicada en itson-notify-dev el 2026-11-06 (registrada con el nombre anterior
+-- 009_notifications_read_at).
 
 begin;
 
@@ -22,7 +23,7 @@ set local lock_timeout = '5s';
 do $$
 begin
   if to_regclass('public.notifications_log') is null then
-    raise exception '009 requiere la migracion 002 (falta notifications_log)';
+    raise exception '010 requiere la migracion 002 (falta notifications_log)';
   end if;
 end $$;
 
