@@ -17,8 +17,14 @@ Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo
 `004_grade_changes_unique.sql` (llave natural de `grade_changes`), `005_service_role_grants.sql` (grants
 explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `007_student_credentials.sql`
 (credenciales cifradas; sin ella, solo fallan los endpoints de credenciales), `009_push_subscriptions.sql`
-(suscripciones Web Push; sin ella, `/push` falla y el logout no puede revocar el Push del dispositivo) y
-`010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`).
+(suscripciones Web Push; sin ella, `/push` falla y el logout no puede revocar el Push del dispositivo),
+`010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`) y
+`011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54).
+
+La **011 se aplica ANTES de desplegar** el código de ITN-54. Si el código corre sin ella, el logout recibe
+`42703`, registra `session_revocation_column_missing` y vuelve a borrar la sesión como antes, sin marca. Ese
+respaldo es solo una red de seguridad para no romper el logout: sin la marca, la mitigación de Push huérfano
+de "Cierre de sesión y Web Push" no funciona.
 
 Estado en `itson-notify-dev`: la 010 ya está aplicada (2026-11-06, registrada con el nombre anterior
 `009_notifications_read_at`). La `009_push_subscriptions.sql` sigue **pendiente**: mientras tanto, el logout
@@ -413,10 +419,31 @@ la sesión en `google_app_sessions`; en ese caso no borra cookies. Una vez inval
 `push_subscriptions` la suscripción de esta sesión y, si el body trae `endpoint`, la de ese endpoint. Si alguno de
 esos borrados falla, registra `push_cleanup_failed` (solo `error_code` y `target`) y el logout termina igual.
 
-Riesgo residual: el envío de Web Push elige destinatarios solo por `user_id`, sin mirar la sesión. Si la limpieza
-falla, el dispositivo puede seguir recibiendo avisos privados del alumno hasta que el endpoint responda 404/410. El
-frontend revoca el Push del navegador antes de llamar al logout, así que esto solo ocurre si fallan las dos
-limpiezas, la del frontend y la del backend. La mitigación va en un ticket aparte.
+**Push huérfano (ITN-54).** El logout no borra la sesión: la marca con `revoked_at` (migración 011) en la misma
+escritura que decide el 204 o el 500, así que la marca existe siempre que el logout responde 204. Si la limpieza Push
+de la sesión sale bien, borra también la fila marcada. Si falla, la fila queda marcada y la purga borra después
+las suscripciones de esa sesión y la propia fila:
+
+- **Antes de cada envío Web Push.** El canal purga el Push de las sesiones marcadas del alumno y luego elige
+  destinatarios. La purga **falla cerrado**: si no puede leer las marcas o borrar las suscripciones, ese aviso no
+  se envía a **ningún** dispositivo del alumno, queda `failed` en `notifications_log` y se reintenta en la
+  siguiente corrida (hasta 5 intentos). Nunca se envía a una suscripción huérfana.
+- **En Desconectar.** Borrar la autorización arrastra en cascada las sesiones (migración 008), incluidas las
+  marcadas, así que primero se purgan. Si la purga falla, Desconectar responde 500 sin borrar nada
+  (`push_orphan_purge_failed`) y se puede reintentar.
+
+Todos los lectores de `google_app_sessions` pasan por `createSessionReader`, que trata una sesión con
+`revoked_at` como cerrada: `/auth/google/session`, Desconectar, logout, `/api/*` (incluido
+`/api/credentials`) y `/push/subscriptions`. `/internal/credentials` usa `x-api-key` y no lee sesiones.
+
+La purga solo toca sesiones marcadas: Desconectar borra sesiones sin marcarlas y conserva el Push de todos los
+dispositivos, y las filas con `session_id` null no coinciden nunca. Los logs solo llevan códigos y conteos
+(`push_orphans_purged` con `count`, `push_orphan_purge_failed` con `error_code`).
+
+Riesgo residual: la marca cubre el borrado por sesión, no el borrado por `endpoint` del body. Una suscripción
+ligada a otra sesión del mismo navegador, o con `session_id` null, puede quedar huérfana si fallan la baja del
+frontend y el borrado por `endpoint` del backend. Recibe avisos hasta que el endpoint responda 404/410 o el
+navegador se suscriba de nuevo.
 
 Con una cookie emitida antes de ITN-53 (`Path=/auth/google`), `/api` responde 401 hasta volver a entrar con Google.
 
