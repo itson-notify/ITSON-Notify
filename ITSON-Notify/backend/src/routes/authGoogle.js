@@ -7,6 +7,7 @@ const {
   createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization,
 } = require("../services/googleAuthService");
+const { createNotificationRepository } = require("../repositories/notificationRepository");
 
 const STATE_COOKIE = "itn41_google_state";
 const STATE_TTL_MS = 10 * 60 * 1000;
@@ -38,6 +39,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     clearLegacySessionCookie(res);
   };
   const currentSession = req => getGoogleSession(req, { config, supabase, now });
+  const pushRepo = createNotificationRepository(supabase);
   // Las respuestas de sesión y los redirects no se deben almacenar en cachés.
   router.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -127,6 +129,16 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     try {
       const session = await currentSession(req);
       if (!session) return res.status(401).json({ error: "no_autenticado" });
+      // ITN-54: borrar la autorización arrastra en cascada las sesiones, incluidas
+      // las marcadas por un logout cuya limpieza Push falló. Se purgan antes; si la
+      // purga falla, Desconectar se aborta (500) para no perder las marcas.
+      try {
+        const { subscriptions } = await pushRepo.purgeRevokedPushSubscriptions(session.userId);
+        if (subscriptions > 0) logger.info("push_orphans_purged", { count: subscriptions, step: "disconnect" });
+      } catch (error) {
+        logger.warn("push_orphan_purge_failed", { error_code: error?.code ?? null, step: "disconnect" });
+        throw error;
+      }
       const { error } = await supabase.from("google_authorizations")
         .delete().eq("user_id", session.userId).eq("google_id", session.googleId);
       if (error) throw error;
