@@ -140,6 +140,22 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     }
   });
 
+  // Limpieza Push del logout. Es secundaria: la sesión ya se invalidó, así que un
+  // fallo aquí se registra (solo el código) y no impide terminar el logout.
+  async function cleanupPush(target, query) {
+    try {
+      const { error } = await query();
+      if (!error) return;
+      if (error.code === "42P01") {
+        logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
+        return;
+      }
+      logger.warn("push_cleanup_failed", { error_code: error.code ?? null, target });
+    } catch (error) {
+      logger.warn("push_cleanup_failed", { error_code: error?.code ?? null, target });
+    }
+  }
+
   // Cierre real de sesión en este dispositivo: invalida únicamente la sesión
   // actual y revoca solo la suscripción Push vinculada a esta sesión (o endpoint
   // indicado), conservando intactas las suscripciones de otros dispositivos del alumno.
@@ -148,32 +164,26 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     try {
       const session = await currentSession(req);
       if (session) {
+        // Obligatorio: si no se puede invalidar la sesión, el logout falla.
         const currentSessionHash = sessionHash(session.sessionId);
         const { error } = await supabase.from("google_app_sessions").delete()
           .eq("id", currentSessionHash).eq("user_id", session.userId);
         if (error) throw error;
 
-        const { error: pushSessionError } = await supabase.from("push_subscriptions")
-          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash);
-        if (pushSessionError) {
-          if (pushSessionError.code !== "42P01") throw pushSessionError;
-          logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
-        }
+        await cleanupPush("session", () => supabase.from("push_subscriptions")
+          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash));
 
         const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
         if (bodyEndpoint) {
-          const { error: pushEndpointError } = await supabase.from("push_subscriptions")
-            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint);
-          if (pushEndpointError) {
-            if (pushEndpointError.code !== "42P01") throw pushEndpointError;
-            logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
-          }
+          await cleanupPush("endpoint", () => supabase.from("push_subscriptions")
+            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint));
         }
       }
       clearSessionCookies(res);
       res.clearCookie(STATE_COOKIE, stateCookieOptions);
       return res.sendStatus(204);
-    } catch {
+    } catch (error) {
+      logger.error("logout_fallido", { error_code: error?.code ?? null });
       return res.status(500).json({ error: "error_interno" });
     }
   });
