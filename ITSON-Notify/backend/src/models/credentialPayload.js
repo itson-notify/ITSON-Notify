@@ -1,5 +1,5 @@
-// ITN-36 - Contrato de los bodies de /internal/credentials. Documentado en
-// backend/README.md.
+// ITN-36 - Contrato de los bodies de /internal/credentials y, desde ITN-51, de
+// /api/credentials/ivirtual. Documentado en backend/README.md.
 const { z } = require("zod");
 
 // ivirtual_password existe en el esquema de la 007 como último recurso, pero la API
@@ -25,7 +25,8 @@ const referencia = {
   kind: z.enum(KINDS),
 };
 
-// El secreto se guarda tal cual: no se recorta ni se cambia a minúsculas.
+// El secreto se guarda tal cual: no se recorta ni se cambia a minúsculas. Desde
+// ITN-51 valida el token que entrega el puerto de iVirtual antes de guardarlo.
 const secret = z
   .string()
   .min(1)
@@ -41,10 +42,19 @@ function conKindDelPortal(schema) {
 }
 
 const refSchema = conKindDelPortal(z.object(referencia));
-const saveSchema = conKindDelPortal(z.object({ ...referencia, secret }));
 const needsRelinkSchema = conKindDelPortal(
   z.object({ ...referencia, reason: z.enum(MOTIVOS_RELINK).optional() }),
 );
+
+// ITN-51 - Body de PUT /api/credentials/ivirtual. z.object descarta las llaves que
+// no estén aquí: un id o correo en el body nunca llega a la ruta. La contraseña no
+// se recorta ni se cambia: se manda tal cual al portal.
+const MAX_USERNAME_LENGTH = 64;
+const MAX_PASSWORD_LENGTH = 256;
+const ivirtualLinkSchema = z.object({
+  username: z.string().trim().min(1).max(MAX_USERNAME_LENGTH),
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
+});
 
 // Devuelve { success: true, data } o { success: false, issues }. issues solo trae
 // ruta y código: nunca el valor recibido, que puede ser el secreto.
@@ -63,8 +73,11 @@ function parser(schema) {
 }
 
 module.exports = {
-  parseCredentialSave: parser(saveSchema),
   parseCredentialRef: parser(refSchema),
   parseCredentialNeedsRelink: parser(needsRelinkSchema),
+  parseIvirtualLink: parser(ivirtualLinkSchema),
+  isValidSecret: (value) => secret.safeParse(value).success,
   MAX_SECRET_LENGTH,
+  MAX_USERNAME_LENGTH,
+  MAX_PASSWORD_LENGTH,
 };

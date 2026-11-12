@@ -94,13 +94,13 @@ describe("/api sin sesión", () => {
 });
 
 describe("CORS y encabezados de /api", () => {
-  test("el preflight solo autoriza el origen exacto, con cookies y sin DELETE", async () => {
+  test("el preflight solo autoriza el origen exacto y con cookies", async () => {
     const { app } = setup();
     const res = await request(app).options("/api/notifications/read-all").set("Origin", "https://otro.test");
     assert.equal(res.status, 204);
     assert.equal(res.headers["access-control-allow-origin"], FRONTEND);
     assert.equal(res.headers["access-control-allow-credentials"], "true");
-    assert.equal(res.headers["access-control-allow-methods"], "GET, POST, OPTIONS");
+    assert.equal(res.headers["access-control-allow-methods"], "GET, POST, PUT, DELETE, OPTIONS");
   });
 
   test("las respuestas llevan Cache-Control: no-store", async () => {

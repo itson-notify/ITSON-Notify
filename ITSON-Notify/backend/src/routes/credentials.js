@@ -1,9 +1,10 @@
 // ITN-36 - /internal/credentials, detrás de requireApiKey como grade-snapshots.
+// ITN-51 - Mínimo privilegio: el worker solo lee (POST /get) y marca (POST
+// /needs-relink). Guardar y borrar los hace el alumno en /api/credentials/ivirtual.
 // El secreto solo sale en la respuesta 200 de POST /get. Los logs llevan user_id,
 // portal, kind, key_version y códigos; nunca el body ni el correo.
 const express = require("express");
 const {
-  parseCredentialSave,
   parseCredentialRef,
   parseCredentialNeedsRelink,
 } = require("../models/credentialPayload");
@@ -59,15 +60,6 @@ function credentialsRouter({ supabase, logger, now, credentialCrypto }) {
     }
   };
 
-  router.put(
-    "/",
-    ruta(parseCredentialSave, "credencial_no_guardada", async (entrada, res) => {
-      const { userId, portal, kind, status, keyVersion } = await service.saveSecret(entrada);
-      logger.info("credencial_guardada", { user_id: userId, portal, kind, status, key_version: keyVersion });
-      return res.status(200).json({ portal, kind, status });
-    }),
-  );
-
   router.post(
     "/get",
     ruta(parseCredentialRef, "credencial_no_leida", async (entrada, res) => {
@@ -90,16 +82,6 @@ function credentialsRouter({ supabase, logger, now, credentialCrypto }) {
         reason: entrada.reason ?? null,
       });
       return res.status(200).json({ portal, kind, status });
-    }),
-  );
-
-  router.delete(
-    "/",
-    ruta(parseCredentialRef, "credencial_no_borrada", async (entrada, res) => {
-      const { userId } = await service.deleteSecret(entrada);
-      const { portal, kind } = entrada;
-      logger.info("credencial_borrada", { user_id: userId, portal, kind });
-      return res.status(200).json({ portal, kind, status: "borrada" });
     }),
   );
 

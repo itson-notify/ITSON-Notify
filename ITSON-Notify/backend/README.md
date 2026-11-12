@@ -61,10 +61,11 @@ el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca rec
 | `src/services/notificationService.js`        | Agrupa cambios por ítem, envía y reintenta pendientes        |
 | `src/services/notificationChannels.js`       | Canales `log` y `email` (Resend)                             |
 | `src/routes/gradeSnapshots.js`               | `POST /internal/grade-snapshots`                             |
-| `src/routes/credentials.js`                  | `/internal/credentials` (ITN-36)                             |
+| `src/routes/credentials.js`                  | `/internal/credentials` (ITN-36): solo `get` y `needs-relink` |
+| `src/routes/studentCredentials.js`           | `/api/credentials/ivirtual` (ITN-51) y límite de intentos     |
 | `src/models/credentialPayload.js`            | Esquemas zod de los bodies de credenciales                   |
 | `src/services/credentialCrypto.js`           | Cifrado AES-256-GCM con AAD y versiones de llave             |
-| `src/services/credentialService.js`          | Cifra y guarda, lee y descifra                               |
+| `src/services/credentialService.js`          | Cifra y guarda (por `user_id`), lee y descifra               |
 | `src/repositories/credentialRepository.js`   | Repo de `student_credentials` (solo datos cifrados)          |
 | `src/utils/logger.js`                        | Logs JSON con lista blanca de campos                         |
 
@@ -228,8 +229,10 @@ la API lo rechaza.
 
 ### Flujo
 
-1. **Captura:** el estudiante da sus datos. El formulario y su autenticación todavía no existen.
-2. **Cifrado:** `PUT /internal/credentials` cifra con AES-256-GCM, con un nonce aleatorio de 12 bytes por cifrado y
+1. **Captura (ITN-51):** el alumno, con su sesión de Google, manda usuario y contraseña a
+   `PUT /api/credentials/ivirtual`. El backend los cambia por un token (puerto `exchangeToken`, ITN-52) y descarta
+   la contraseña.
+2. **Cifrado:** el servicio cifra el token con AES-256-GCM, con un nonce aleatorio de 12 bytes por cifrado y
    AAD `user_id:portal:kind`. Una fila copiada a otro estudiante o tipo no se puede descifrar.
 3. **Almacenamiento:** `student_credentials` (migración 007) guarda `ciphertext`, `nonce`, `auth_tag` y
    `key_version`. Tiene RLS sin políticas y permisos solo para `service_role`.
@@ -239,7 +242,8 @@ la API lo rechaza.
 
 ### Endpoints
 
-Todos van detrás de `x-api-key` y responden con `Cache-Control: no-store`. El cuerpo base es:
+Desde ITN-51 el worker solo lee y marca: `PUT` y `DELETE` se quitaron y responden 404. Guardar y borrar los hace el
+alumno en `/api/credentials/ivirtual`. Todos van detrás de `x-api-key` y responden con `Cache-Control: no-store`. El cuerpo base es:
 
 ```json
 { "user": { "email": "alumno@example.test" }, "portal": "ivirtual", "kind": "ivirtual_token" }
@@ -249,13 +253,10 @@ Las combinaciones válidas son `ivirtual` con `ivirtual_token` y `google_classro
 
 | Ruta                                      | Body extra                                 | Respuesta `200`                              |
 | ----------------------------------------- | ------------------------------------------ | -------------------------------------------- |
-| `PUT /internal/credentials`               | `secret` (hasta 4096 caracteres)           | `{ portal, kind, status: "active" }`         |
 | `POST /internal/credentials/get`          | Ninguno                                    | `{ portal, kind, secret }`                   |
 | `POST /internal/credentials/needs-relink` | `reason` opcional: `credenciales` o `cambio_password` | `{ portal, kind, status: "needs_relink" }` |
-| `DELETE /internal/credentials`            | Ninguno                                    | `{ portal, kind, status: "borrada" }`        |
 
-`PUT` da de alta al estudiante si no existe y, al volver a vincular, reactiva la cuenta. Las demás rutas nunca crean
-estudiantes.
+Estas rutas nunca crean estudiantes.
 
 | Código | Body                                 | Cuándo                                                   |
 | ------ | ------------------------------------ | -------------------------------------------------------- |
@@ -295,8 +296,8 @@ La versión de cada fila está en `key_version`, y el código ya descifra con la
 ### Si la llave se compromete
 
 Una llave filtrada junto con una copia de la base revela todos los tokens. Rotar no basta: siguen siendo válidos en
-cada portal hasta revocarlos. Lo mismo aplica si se filtra `INTERNAL_API_KEY`, porque permite pedir cualquier secreto
-descifrado; en ese caso, cámbiala también en el worker.
+cada portal hasta revocarlos. Si lo filtrado es `INTERNAL_API_KEY`, sigue la sección
+[`INTERNAL_API_KEY`](#internal_api_key-mínimo-privilegio-itn-51).
 
 1. Invalida todas las credenciales. Desde ese momento, `get` responde 409:
    ```sql
@@ -305,7 +306,33 @@ descifrado; en ese caso, cámbiala también en el worker.
 2. Reemplaza `CREDENTIALS_ENCRYPTION_KEY` por una nueva y vuelve a desplegar. No reutilices la anterior.
 3. Revoca lo que se pueda en el origen: los refresh tokens en Google y los tokens en iVirtual. Hay que confirmar con
    el administrador de Moodle cómo invalidarlos, porque cambiar la contraseña podría no bastar.
-4. Pide a cada estudiante que vuelva a vincular su cuenta. `PUT` cifra con la llave nueva y reactiva la fila.
+4. Pide a cada estudiante que vuelva a vincular su cuenta. `PUT /api/credentials/ivirtual` cifra con la llave nueva
+   y reactiva la fila.
+
+### `INTERNAL_API_KEY`: mínimo privilegio (ITN-51)
+
+**Decisión.** Las escrituras de credenciales ya solo vienen de la sesión del alumno, así que la llave del worker
+perdió `PUT` y `DELETE` de `/internal/credentials`. Se confirmó con grep que ningún worker de `automation/` los
+usaba: hoy el worker solo llama a `POST /internal/grade-snapshots`. El refresh token de Google lo guarda
+`googleAuthService.js` directamente, sin pasar por HTTP.
+
+**Riesgo residual.** Quien tenga la llave todavía puede:
+
+- leer el token descifrado de cualquier estudiante con `POST /internal/credentials/get`, y
+- marcar cualquier cuenta como `needs_relink`, lo que detiene sus avisos hasta que vuelva a vincular.
+
+Ya no puede plantar un token propio en la cuenta de otro ni borrar credenciales. Cifrar en la base protege contra una
+fuga de la base, no contra una fuga del worker o de esta llave.
+
+**Rotación** (de rutina o si se sospecha una fuga):
+
+1. Genera una llave nueva de al menos 32 caracteres (`openssl rand -base64 48`).
+2. Actualiza `INTERNAL_API_KEY` en el servicio del backend y en `worker-rpa` de Railway con el mismo valor, y
+   despliega los dos. Mientras uno tenga la llave vieja, el worker recibe 401: hazlo fuera del horario del cron.
+3. Revisa en los logs del backend las líneas `credencial_leida` y `credencial_marcada_revinculacion` del periodo
+   sospechoso: llevan `user_id`, `portal` y `kind`.
+4. Si hubo lecturas que no son del worker, trata esos tokens como comprometidos: márcalos `needs_relink`, revócalos
+   en el portal si se puede y pide a esos alumnos que vuelvan a vincular.
 
 ## Autorización de Google Classroom (ITN-41)
 
@@ -342,9 +369,13 @@ origen exacto de `FRONTEND_URL`.
 | `GET /api/notifications`               | Hasta 100 notificaciones con forma `Notif`, de la más reciente a la más antigua |
 | `POST /api/notifications/:id/read`     | 204. 400 `id_invalido` si no es uuid; 404 si no existe o es de otro alumno  |
 | `POST /api/notifications/read-all`     | 204                                                                         |
+| `GET /api/credentials/ivirtual`        | `{ available, linked, status, lastValidatedAt }` (ITN-51)                   |
+| `PUT /api/credentials/ivirtual`        | Vincula iVirtual (ITN-51, ver abajo)                                        |
+| `DELETE /api/credentials/ivirtual`     | 204. 404 `no_encontrado` si no había vinculación (ITN-51)                   |
 
-Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. Los POST exigen que `Origin` sea exactamente el del
-frontend; si no, responden 403 `{"error":"origen_no_permitido"}`.
+Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. POST, PUT, PATCH y DELETE exigen que `Origin` sea
+exactamente el del frontend; si no, responden 403 `{"error":"origen_no_permitido"}`. El Origin se revisa antes que la
+sesión y antes de leer el body.
 
 - **Origen de los datos:** `notifications_log` con `channel = 'log'`, que da una fila por aviso; `read_at` (migración
   010) indica si está leída. Materia y valores salen de `grade_changes` y `subjects`.
@@ -369,6 +400,34 @@ limpiezas, la del frontend y la del backend. La mitigación va en un ticket apar
 
 Con una cookie emitida antes de ITN-53 (`Path=/auth/google`), `/api` responde 401 hasta volver a entrar con Google.
 
+### Vinculación de iVirtual (ITN-51)
+
+El alumno siempre es el de la sesión (`req.student.userId`). Un `userId`, `email` o `user` en el body se descarta.
+
+- **`GET`** nunca devuelve el token ni campos cifrados: solo lee `status` y `last_validated_at`. `available` es
+  `false` mientras no esté conectado el puerto de ITN-52; el frontend entonces no pide la contraseña. `status` es
+  `active`, `needs_relink` o `null` si no hay vinculación. `lastValidatedAt` queda en `null` hasta que ITN-52 valide.
+- **`PUT`** recibe `{ "username": "...", "password": "..." }` (máximo 8 KB de body). `username` se recorta y admite
+  hasta 64 caracteres; `password` se manda tal cual, no vacía y hasta 256. El backend llama a
+  `exchangeToken({ username, password })`, que se inyecta en `createApp`; si devuelve un token, se guarda cifrado
+  como `ivirtual_token` y se responde `{ available, linked: true, status: "active", lastValidatedAt: null }`. La
+  contraseña no se guarda: se suelta al terminar la petición.
+
+  | Código | Body                                   | Cuándo                                                     |
+  | ------ | -------------------------------------- | ---------------------------------------------------------- |
+  | 400    | `{"error":"cuerpo_invalido", ...}`     | JSON mal formado o campos inválidos (sin citar el valor)   |
+  | 413    | `{"error":"cuerpo_demasiado_grande"}`  | Más de 8 KB                                                |
+  | 422    | `{"error":"credenciales_rechazadas"}`  | El puerto respondió `null`: iVirtual rechazó los datos     |
+  | 429    | `{"error":"demasiados_intentos"}`      | Más de 5 intentos en 15 minutos. Trae `Retry-After`        |
+  | 501    | `{"error":"vinculacion_no_disponible"}` | Sin puerto: ITN-52 aún no lo conecta                      |
+  | 502    | `{"error":"portal_no_disponible"}`     | El puerto lanzó o devolvió algo que no es un token válido  |
+
+- **Contrato del puerto (para ITN-52):** resuelve con el token si el portal aceptó, con `null` si rechazó las
+  credenciales, y lanza ante fallas técnicas. Nada de su error llega a los logs.
+- **Límite de intentos:** 5 por alumno cada 15 minutos; solo cuentan los `PUT` que llegan al puerto (no los 400 ni
+  el 501). Una vinculación exitosa reinicia el contador. Vive en memoria: se reinicia con el proceso y no se comparte
+  entre instancias. Con más de una réplica hará falta moverlo a la base o a Redis.
+
 ### Notificaciones de ejemplo en dev
 
 Una corrida real no genera avisos hasta que cambia una calificación. Para probar el frontend antes de eso:
@@ -385,7 +444,9 @@ en `app_users` y la migración 010 debe estar aplicada. Para borrar lo sembrado,
 ## Privacidad de los logs
 
 Los eventos de credenciales solo llevan `user_id`, `portal`, `kind`, `key_version`, `status`, `reason` y códigos de
-error. Nunca el secreto, el correo, el body ni los datos cifrados.
+error. Nunca el secreto, el correo, el body ni los datos cifrados. En la vinculación (ITN-51) tampoco el usuario ni la
+contraseña de iVirtual, ni el mensaje o código de error del puerto `exchangeToken`. El manejador de errores de `app.js`
+no imprime `err.message` ni `err.body`, donde body-parser deja el JSON mal formado.
 
 Los logs son una línea JSON por evento y solo llevan ids (`snapshot_id`, `user_id`), conteos y códigos de error
 (`step`, `error_code`). El logger descarta cualquier otro campo. Nunca se registran calificaciones, nombres de
@@ -418,10 +479,9 @@ Los eventos de notificación (`notificacion_enviada`, `notificacion_fallida`,
   `notifications_log`.
 - **Corridas simultáneas del mismo alumno.** Dos peticiones al mismo tiempo podrían reintentar la misma fila
   `pending` y enviarla dos veces. El worker corre una vez por intervalo, así que no se esperan.
-- **`INTERNAL_API_KEY` protege las credenciales.** Quien tenga esa llave puede leer los secretos descifrados de
-  cualquier estudiante por `POST /internal/credentials/get`, y también guardar o borrar los de cualquiera. Cifrar en
-  la base protege contra una fuga de la base, no contra una fuga del worker. Antes de exponer la captura a
-  estudiantes hace falta autenticarlos y separar permisos.
+- **`INTERNAL_API_KEY` todavía lee todos los tokens.** Desde ITN-51 ya no guarda ni borra, pero sigue leyendo y
+  marcando cualquier cuenta. Riesgo residual y rotación en
+  [`INTERNAL_API_KEY`: mínimo privilegio](#internal_api_key-mínimo-privilegio-itn-51).
 - **Pendiente: alertas al equipo desde el backend.** `sendTeamAlert` (Telegram) vive en
   `automation/monitors/telegram.js` y el backend no puede importarlo. Para avisar al equipo de notificaciones
   fallidas hay que sacar ese módulo a algo compartido. **Ticket aparte.** Mientras tanto, los fallos solo

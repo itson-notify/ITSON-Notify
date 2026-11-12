@@ -75,6 +75,16 @@ function createCredentialRepository(supabase) {
     };
   }
 
+  // ITN-51 - Solo status y last_validated_at, para responder al alumno sin leer
+  // el ciphertext. Devuelve { status, lastValidatedAt } o null.
+  async function getCredentialStatus(ref) {
+    const row = check(
+      "student_credentials",
+      await fila(ref, supabase.from("student_credentials").select("status,last_validated_at")).maybeSingle(),
+    );
+    return row ? { status: row.status, lastValidatedAt: row.last_validated_at ?? null } : null;
+  }
+
   // Devuelve { portal, kind, status } o null si no existe.
   async function markNeedsRelink(ref, updatedAt) {
     return check(
@@ -94,7 +104,15 @@ function createCredentialRepository(supabase) {
     return rows.length > 0;
   }
 
-  return { findUserIdByEmail, ensureUser, saveCredential, getCredential, markNeedsRelink, deleteCredential };
+  return {
+    findUserIdByEmail,
+    ensureUser,
+    saveCredential,
+    getCredential,
+    getCredentialStatus,
+    markNeedsRelink,
+    deleteCredential,
+  };
 }
 
 module.exports = { createCredentialRepository, CREDENTIALS_ON_CONFLICT };

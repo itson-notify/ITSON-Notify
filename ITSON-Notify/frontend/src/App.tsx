@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AppLayout } from '@/layouts/AppLayout'
-import { ConfirmDialog, HelpSheet, PasswordSheet, ToastView } from '@/components/overlays'
+import { ConfirmDialog, HelpSheet, ToastView } from '@/components/overlays'
+import { IvirtualLinkSheet } from '@/components/IvirtualLinkSheet'
 import { Spinner } from '@/components/ui'
 import { Onboarding } from '@/pages/Onboarding'
 import { HomePage } from '@/pages/HomePage'
@@ -8,7 +9,7 @@ import { NotificationsPage } from '@/pages/NotificationsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { DEFAULT_SETTINGS, INITIAL_NOTIFS } from '@/services/mockData'
-import { ApiError, getMe, getNotifications, markAllRead, markRead } from '@/services/api'
+import { ApiError, getIvirtualLink, getMe, getNotifications, markAllRead, markRead, unlinkIvirtual, type IvirtualLink } from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
@@ -35,7 +36,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [firstRun, setFirstRun] = useState(false)
-  const [pwOpen, setPwOpen] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
+  // ITN-51 - Estado real de la vinculación de iVirtual; null mientras no se conoce (o en mock).
+  const [ivirtualLink, setIvirtualLink] = useState<IvirtualLink | null>(null)
   const [helpQuery, setHelpQuery] = useState<string | null>(null)
   const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null)
   const [toast, setToast] = useState<{ id: number; text: string; undo?: () => void } | null>(null)
@@ -55,13 +58,21 @@ export default function App() {
   const endSession = () => {
     setOnboarded(false); setSettings(DEFAULT_SETTINGS); setNotifs(EMPTY_NOTIFS)
     setPage('inicio'); setFilter('todas'); setSelectedId(null); setPromptDismissed(false)
+    setIvirtualLink(null); setLinkOpen(false)
   }
   // Un 401 significa que la sesión ya no sirve: se vuelve a Onboarding.
+  const sessionExpired = () => {
+    endSession()
+    notify('Tu sesión expiró. Vuelve a entrar con Google.')
+  }
   const apiFailed = (error: unknown, text: string) => {
-    if (error instanceof ApiError && error.status === 401) {
-      endSession()
-      notify('Tu sesión expiró. Vuelve a entrar con Google.')
-    } else notify(text)
+    if (error instanceof ApiError && error.status === 401) sessionExpired()
+    else notify(text)
+  }
+  // ITN-51 - itsonStatus sigue a la vinculación: needs_relink es error.
+  const applyIvirtualLink = (link: IvirtualLink) => {
+    setIvirtualLink(link)
+    setSettings(s => ({ ...s, itsonStatus: link.status === 'needs_relink' ? 'error' : 'ok' }))
   }
   const loadFromApi = () => {
     setLoading(true)
@@ -75,16 +86,32 @@ export default function App() {
       })
       .catch(error => apiFailed(error, 'No se pudieron cargar tus notificaciones'))
       .finally(() => setLoading(false))
+    // Aparte: si falla, Ajustes muestra el estado como desconocido sin romper la carga.
+    getIvirtualLink().then(setIvirtualLink).catch(() => setIvirtualLink(null))
   }
+
+  // ITN-51 - Desvincular con confirmación. Un 404 es "ya estaba desvinculada".
+  const unlinkItson = () => setConfirmReq({
+    title: '¿Desvincular tu cuenta de iVirtual?',
+    body: 'Dejaremos de revisar tus calificaciones. Para volver a vincularla tendrás que escribir tu contraseña otra vez.',
+    label: 'Desvincular', danger: true,
+    onConfirm: async () => {
+      try {
+        const result = await unlinkIvirtual()
+        applyIvirtualLink({ available: ivirtualLink?.available ?? false, linked: false, status: null, lastValidatedAt: null })
+        notify(result === 'already_unlinked' ? 'Tu cuenta de iVirtual ya estaba desvinculada' : 'Cuenta de iVirtual desvinculada')
+      } catch (error) { apiFailed(error, 'No se pudo desvincular tu cuenta de iVirtual') }
+    },
+  })
 
   // [H3] Esc cierra el detalle abierto (si no hay un diálogo encima)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selectedId !== null && !pwOpen && !confirmReq && helpQuery === null) setSelectedId(null)
+      if (e.key === 'Escape' && selectedId !== null && !linkOpen && !confirmReq && helpQuery === null) setSelectedId(null)
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [selectedId, pwOpen, confirmReq, helpQuery])
+  }, [selectedId, linkOpen, confirmReq, helpQuery])
 
   // ITN-41 - La conexión se consulta en el backend; los parámetros de retorno
   // solo sirven para mostrar el resultado, nunca para autenticar al alumno.
@@ -193,14 +220,14 @@ export default function App() {
     },
   })
 
-  const syncProps: SyncProps = { syncing, firstRun, loading, onSync: sync, onFix: () => setPwOpen(true), onHelp: setHelpQuery }
+  const syncProps: SyncProps = { syncing, firstRun, loading, onSync: sync, onFix: () => setLinkOpen(true), onHelp: setHelpQuery }
 
   const overlays = (
     <>
-      {/* TODO(API): la contraseña de ITSON sigue simulada: no se envía al backend y solo cambia el estado local. */}
-      {pwOpen && (
-        <PasswordSheet itsonId={settings.itsonId} onClose={() => setPwOpen(false)}
-          onSave={() => { setSettings(s => ({ ...s, itsonStatus: 'ok' })); setPwOpen(false); notify('Cuenta ITSON reconectada') }} />
+      {/* ITN-51 - Vinculación real de iVirtual contra /api/credentials/ivirtual. */}
+      {linkOpen && (
+        <IvirtualLinkSheet onClose={() => setLinkOpen(false)} onSessionExpired={sessionExpired}
+          onLinked={link => { applyIvirtualLink(link); notify('Cuenta de iVirtual vinculada') }} />
       )}
       {helpQuery !== null && <HelpSheet initialQuery={helpQuery} onClose={() => setHelpQuery(null)} />}
       {confirmReq && <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />}
@@ -234,7 +261,8 @@ export default function App() {
         )}
         {/* TODO(API): los ajustes y los cupos vigilados siguen simulados: solo viven en memoria. */}
         {page === 'configuracion' && (
-          <SettingsPage settings={settings} setSettings={setSettings} onFix={() => setPwOpen(true)} askConfirm={setConfirmReq} notify={notify}
+          <SettingsPage settings={settings} setSettings={setSettings} onFix={() => setLinkOpen(true)} askConfirm={setConfirmReq} notify={notify}
+            ivirtualLink={mockMode ? undefined : ivirtualLink} onUnlinkItson={unlinkItson}
             onDisconnected={mockMode ? undefined : endSession} />
         )}
         {page === 'perfil' && <ProfilePage settings={settings} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}

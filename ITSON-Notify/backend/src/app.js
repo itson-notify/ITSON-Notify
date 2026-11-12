@@ -31,6 +31,10 @@ function createApp({
   logger = createLogger(),
   now = () => Date.now(),
   channels,
+  // ITN-51 - Puerto de ITN-52 para cambiar usuario y contraseña de iVirtual por un
+  // token. Sin él, PUT /api/credentials/ivirtual responde 501.
+  exchangeToken,
+  linkLimiter,
 }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
   if (!config?.credentialsEncryptionKey) throw new Error("createApp requiere config.credentialsEncryptionKey");
@@ -53,6 +57,7 @@ function createApp({
   app.disable("x-powered-by");
 
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
+  const credentialCrypto = credentialCryptoFromConfig(config);
 
   // Sin autenticación y sin revelar configuración ni estado de dependencias.
   app.get("/health", (req, res) => {
@@ -64,7 +69,7 @@ function createApp({
   app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now, channels: activeChannels }));
   app.use(
     "/internal/credentials",
-    credentialsRouter({ supabase, logger, now, credentialCrypto: credentialCryptoFromConfig(config) }),
+    credentialsRouter({ supabase, logger, now, credentialCrypto }),
   );
 
   // Autenticación y autorización con Google Classroom (ITN-41)
@@ -74,8 +79,12 @@ function createApp({
     authGoogleRouter({ config, supabase, logger, now }),
   );
 
-  // Lecturas del alumno con sesión de Google (ITN-53)
-  app.use("/api", frontendCors(config, "GET, POST, OPTIONS"), studentApiRouter({ config, supabase, now }));
+  // Lecturas del alumno con sesión de Google (ITN-53) y vinculación de iVirtual (ITN-51)
+  app.use(
+    "/api",
+    frontendCors(config, "GET, POST, PUT, DELETE, OPTIONS"),
+    studentApiRouter({ config, supabase, now, logger, credentialCrypto, exchangeToken, linkLimiter }),
+  );
 
   // Suscripciones Web Push del navegador móvil
   app.use("/push", frontendCors(config, "GET, POST, DELETE, OPTIONS"), express.json({ limit: "64kb" }));
@@ -150,8 +159,9 @@ function createApp({
     res.status(404).json({ error: "no_encontrado" });
   });
 
-  // Errores no controlados. Nunca se devuelve ni se loguea err.message: puede
-  // traer fragmentos del body (JSON mal formado) o mensajes de Supabase.
+  // Errores no controlados. Nunca se devuelve ni se loguea err.message ni err.body:
+  // pueden traer fragmentos del body (JSON mal formado, con la contraseña de
+  // ITN-51) o mensajes de Supabase.
   app.use((err, req, res, next) => {
     if (err?.type === "entity.parse.failed") {
       return res.status(400).json({ error: "cuerpo_invalido" });

@@ -1,6 +1,8 @@
 // ITN-36 - Pruebas de /internal/credentials con supertest y un Supabase simulado
 // (tests/helpers/fakeSupabase.js). Secretos inventados y armados en tiempo de
 // ejecución.
+// ITN-51 - El worker ya no guarda ni borra: las credenciales se siembran con el
+// servicio (como lo hace /api/credentials/ivirtual) y PUT y DELETE responden 404.
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("crypto");
@@ -8,6 +10,9 @@ const request = require("supertest");
 
 const { createApp } = require("../../src/app");
 const { createLogger } = require("../../src/utils/logger");
+const { createCredentialRepository } = require("../../src/repositories/credentialRepository");
+const { createCredentialService } = require("../../src/services/credentialService");
+const { credentialCryptoFromConfig } = require("../../src/services/credentialCrypto");
 const { createFakeSupabase } = require("../helpers/fakeSupabase");
 const { API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL } = require("../helpers/payloads");
 
@@ -21,8 +26,16 @@ const refGoogle = (email = EMAIL) => ({ user: { email }, portal: "google_classro
 function setup({ key = CREDENTIALS_KEY } = {}) {
   const db = createFakeSupabase();
   const logs = [];
+  const config = { internalApiKey: API_KEY, credentialsEncryptionKey: key };
+  const repo = createCredentialRepository(db.client);
+  const service = createCredentialService({ repo, crypto: credentialCryptoFromConfig(config) });
+  // Siembra directa, sin HTTP: da de alta al estudiante y guarda cifrado.
+  const guardar = async ({ user, portal, kind, secret } = { ...refIvirtual(), secret: SECRETO }) => {
+    const userId = await repo.ensureUser(user.email);
+    return service.saveSecretForUser({ userId, portal, kind, secret });
+  };
   const app = createApp({
-    config: { internalApiKey: API_KEY, credentialsEncryptionKey: key },
+    config,
     supabase: db.client,
     logger: createLogger((line) => logs.push(line)),
   });
@@ -33,10 +46,9 @@ function setup({ key = CREDENTIALS_KEY } = {}) {
     logs,
     app,
     llamar,
-    guardar: (body = { ...refIvirtual(), secret: SECRETO }, apiKey) => llamar("put", "", body, apiKey),
+    guardar,
     leer: (body = refIvirtual(), apiKey) => llamar("post", "/get", body, apiKey),
     marcar: (body = refIvirtual(), apiKey) => llamar("post", "/needs-relink", body, apiKey),
-    borrar: (body = refIvirtual(), apiKey) => llamar("delete", "", body, apiKey),
   };
 }
 
@@ -73,74 +85,40 @@ describe("autenticación", () => {
   });
 });
 
-describe("PUT /internal/credentials", () => {
-  test("guarda cifrado y responde solo portal, kind y status", async () => {
-    const { guardar, db } = setup();
-    const res = await guardar();
-
-    assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { portal: "ivirtual", kind: "ivirtual_token", status: "active" });
-    assert.equal(res.headers["cache-control"], "no-store");
-    assertSinSecreto(JSON.stringify(res.body));
-
-    assert.equal(db.tables.student_credentials.length, 1);
-    const fila = db.tables.student_credentials[0];
-    assert.equal(fila.user_id, db.tables.app_users[0].id);
-    assert.equal(fila.key_version, 1);
-    assert.equal(fila.status, "active");
-    assert.match(fila.nonce, /^\\x[0-9a-f]{24}$/);
-    assert.match(fila.auth_tag, /^\\x[0-9a-f]{32}$/);
-  });
-
-  test("la fila no contiene el secreto en claro ni codificado", async () => {
-    const { guardar, db } = setup();
+describe("PUT y DELETE /internal/credentials (ITN-51)", () => {
+  test("ya no existen: 404 con llave válida, sin escribir ni borrar", async () => {
+    const { llamar, guardar, db } = setup();
     await guardar();
-    const fila = db.tables.student_credentials[0];
-    assertSinSecreto(JSON.stringify(fila));
-    const cifrado = Buffer.from(fila.ciphertext.slice(2), "hex");
-    assert.ok(!cifrado.includes(Buffer.from(SECRETO)));
-    assert.ok(!Object.keys(fila).includes("secret"));
-  });
+    const antes = structuredClone(db.tables.student_credentials);
+    const llamadasAntes = db.calls.length;
 
-  test("da de alta al estudiante nuevo y normaliza el correo", async () => {
-    const { guardar, leer, db } = setup();
-    await guardar({ ...refIvirtual(`  ${EMAIL.toUpperCase()} `), secret: SECRETO });
-    assert.equal(db.tables.app_users[0].email, EMAIL);
-    const res = await leer();
-    assert.equal(res.body.secret, SECRETO);
-  });
-
-  test("guarda el secreto tal cual, sin recortarlo", async () => {
-    const { guardar, leer } = setup();
-    const conEspacios = `  ${SECRETO}  `;
-    await guardar({ ...refIvirtual(), secret: conEspacios });
-    assert.equal((await leer()).body.secret, conEspacios);
-  });
-
-  test("volver a guardar reemplaza el secreto, con otro nonce, y reactiva la cuenta", async () => {
-    const { guardar, leer, marcar, db } = setup();
-    await guardar();
-    const nonceAnterior = db.tables.student_credentials[0].nonce;
-    await marcar();
-
-    const nuevo = `${SECRETO}-nuevo`;
-    const res = await guardar({ ...refIvirtual(), secret: nuevo });
-
-    assert.equal(res.body.status, "active");
-    assert.equal(db.tables.student_credentials.length, 1);
-    assert.notEqual(db.tables.student_credentials[0].nonce, nonceAnterior);
-    assert.equal((await leer()).body.secret, nuevo);
+    const put = await llamar("put", "", { ...refIvirtual(), secret: `${SECRETO}-nuevo` });
+    const del = await llamar("delete", "", refIvirtual());
+    for (const res of [put, del]) {
+      assert.equal(res.status, 404);
+      assert.deepEqual(res.body, { error: "no_encontrado" });
+      assertSinSecreto(JSON.stringify(res.body));
+    }
+    assert.deepEqual(db.tables.student_credentials, antes);
+    assert.equal(db.calls.length, llamadasAntes);
   });
 });
 
 describe("POST /internal/credentials/get", () => {
-  test("devuelve lo guardado, sin cache", async () => {
+  test("devuelve lo guardado, sin cache, y la fila no tiene el secreto en claro", async () => {
     const { guardar, leer } = setup();
     await guardar();
     const res = await leer();
     assert.equal(res.status, 200);
     assert.deepEqual(res.body, { portal: "ivirtual", kind: "ivirtual_token", secret: SECRETO });
     assert.equal(res.headers["cache-control"], "no-store");
+  });
+
+  test("devuelve el secreto tal cual, sin recortarlo", async () => {
+    const { guardar, leer } = setup();
+    const conEspacios = `  ${SECRETO}  `;
+    await guardar({ ...refIvirtual(), secret: conEspacios });
+    assert.equal((await leer()).body.secret, conEspacios);
   });
 
   test("guarda los dos tipos por separado y por estudiante", async () => {
@@ -241,34 +219,6 @@ describe("POST /internal/credentials/needs-relink", () => {
   });
 });
 
-describe("DELETE /internal/credentials", () => {
-  test("borra el registro: después get responde 404 y el estudiante sigue existiendo", async () => {
-    const { guardar, leer, borrar, db } = setup();
-    await guardar();
-
-    const res = await borrar();
-    assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { portal: "ivirtual", kind: "ivirtual_token", status: "borrada" });
-    assert.equal(db.tables.student_credentials.length, 0);
-    assert.equal(db.tables.app_users.length, 1);
-    assert.equal((await leer()).status, 404);
-  });
-
-  test("404 si no existe", async () => {
-    const { guardar, borrar } = setup();
-    assert.deepEqual((await borrar()).body, { error: "no_encontrado" });
-    await guardar();
-    assert.equal((await borrar(refGoogle())).status, 404);
-  });
-
-  test("400 sin body", async () => {
-    const { app } = setup();
-    const res = await request(app).delete(RUTA).set("x-api-key", API_KEY);
-    assert.equal(res.status, 400);
-    assert.equal(res.body.error, "cuerpo_invalido");
-  });
-});
-
 describe("validación del body", () => {
   test("400 en cuerpos inválidos, sin tocar la base y sin devolver valores", async () => {
     const casos = {
@@ -285,10 +235,8 @@ describe("validación del body", () => {
     };
     const { llamar, db } = setup();
     const rutas = [
-      ["put", "", () => ({ ...refIvirtual(), secret: SECRETO })],
       ["post", "/get", () => refIvirtual()],
       ["post", "/needs-relink", () => refIvirtual()],
-      ["delete", "", () => refIvirtual()],
     ];
     for (const [metodo, sufijo, base] of rutas) {
       for (const [nombre, romper] of Object.entries(casos)) {
@@ -303,22 +251,10 @@ describe("validación del body", () => {
     assert.equal(db.calls.length, 0);
   });
 
-  test("400 si el secreto falta, está vacío, no es texto o es demasiado largo", async () => {
-    const { guardar, db } = setup();
-    const invalidos = [undefined, "", "   ", null, 123, { valor: SECRETO }, "x".repeat(4097)];
-    for (const secret of invalidos) {
-      const res = await guardar({ ...refIvirtual(), secret });
-      assert.equal(res.status, 400);
-      assert.ok(res.body.detalles.some((d) => d.path === "secret"));
-      assertSinSecreto(JSON.stringify(res.body));
-    }
-    assert.equal(db.calls.length, 0);
-  });
-
   test("JSON mal formado responde 400 y su contenido no llega a respuesta ni logs", async () => {
     const { app, logs } = setup();
     const res = await request(app)
-      .put(RUTA)
+      .post(`${RUTA}/get`)
       .set("x-api-key", API_KEY)
       .set("Content-Type", "application/json")
       .send(`{"secret": "${SECRETO}"`);
@@ -328,8 +264,8 @@ describe("validación del body", () => {
   });
 
   test("un body de más de 1 MB responde 413 sin copiarlo", async () => {
-    const { guardar, logs } = setup();
-    const res = await guardar({ ...refIvirtual(), secret: `${SECRETO}${"x".repeat(1024 * 1024)}` });
+    const { llamar, logs } = setup();
+    const res = await llamar("post", "/get", { ...refIvirtual(), secret: `${SECRETO}${"x".repeat(1024 * 1024)}` });
     assert.equal(res.status, 413);
     assert.deepEqual(res.body, { error: "cuerpo_demasiado_grande" });
     assertSinSecreto(logs.join("\n"));
@@ -338,16 +274,13 @@ describe("validación del body", () => {
 
 describe("fallas de Supabase", () => {
   test("500 sin el mensaje de Supabase en la respuesta ni en los logs", async () => {
-    const { guardar, leer, marcar, borrar, db, logs } = setup();
+    const { guardar, leer, marcar, db, logs } = setup();
     await guardar();
 
     const casos = [
-      ["app_users", "upsert", () => guardar(), "credencial_no_guardada"],
-      ["student_credentials", "upsert", () => guardar(), "credencial_no_guardada"],
       ["app_users", "select", () => leer(), "credencial_no_leida"],
       ["student_credentials", "select", () => leer(), "credencial_no_leida"],
       ["student_credentials", "update", () => marcar(), "credencial_no_marcada"],
-      ["student_credentials", "delete", () => borrar(), "credencial_no_borrada"],
     ];
     for (const [tabla, op, accion, evento] of casos) {
       db.failNext(tabla, op);
@@ -368,25 +301,27 @@ describe("fallas de Supabase", () => {
 
 describe("privacidad de los logs", () => {
   test("ningún flujo registra el secreto, el correo ni el body", async () => {
-    const { app, guardar, leer, marcar, borrar, db, logs } = setup();
+    const { app, llamar, guardar, leer, marcar, db, logs } = setup();
 
     await guardar();
     await guardar({ ...refGoogle(), secret: SECRETO_GOOGLE });
     await leer();
     await marcar({ ...refIvirtual(), reason: "cambio_password" });
     await leer();
-    await guardar({ ...refIvirtual(), kind: "ivirtual_password", secret: SECRETO });
-    await guardar({ user: { email: SECRETO }, portal: SECRETO, kind: SECRETO, secret: SECRETO });
-    await request(app).put(RUTA).set("x-api-key", API_KEY).set("Content-Type", "application/json").send(`{"secret":"${SECRETO}`);
-    await request(app).put(RUTA).send({ ...refIvirtual(), secret: SECRETO });
-    db.failNext("student_credentials", "upsert");
-    await guardar();
-    db.tables.student_credentials[0].auth_tag = `\\x${"00".repeat(16)}`;
-    await guardar();
-    await borrar();
+    await leer({ user: { email: SECRETO }, portal: SECRETO, kind: SECRETO });
+    await marcar({ user: { email: SECRETO }, portal: SECRETO, kind: SECRETO });
+    await request(app).post(`${RUTA}/get`).set("x-api-key", API_KEY).set("Content-Type", "application/json").send(`{"secret":"${SECRETO}`);
+    await request(app).post(`${RUTA}/get`).send({ ...refIvirtual(), secret: SECRETO });
+    await llamar("put", "", { ...refIvirtual(), secret: SECRETO });
+    await llamar("delete", "", refIvirtual());
+    db.failNext("student_credentials", "select");
     await leer();
+    db.tables.student_credentials[0].status = "active";
+    db.tables.student_credentials[0].auth_tag = `\\x${"00".repeat(16)}`;
+    await leer();
+    await leer(refGoogle(OTRO_EMAIL));
 
-    assert.ok(logs.length >= 10);
+    assert.ok(logs.length >= 8);
     const todo = logs.join("\n");
     assertSinSecreto(todo);
     assertSinSecreto(todo, SECRETO_GOOGLE);
@@ -404,12 +339,11 @@ describe("privacidad de los logs", () => {
     await guardar();
     await leer();
 
-    const guardada = JSON.parse(logs.find((l) => l.includes("credencial_guardada")));
+    const leida = JSON.parse(logs.find((l) => l.includes("credencial_leida")));
     assert.deepEqual(
-      { user_id: guardada.user_id, portal: guardada.portal, kind: guardada.kind, key_version: guardada.key_version },
+      { user_id: leida.user_id, portal: leida.portal, kind: leida.kind, key_version: leida.key_version },
       { user_id: db.tables.app_users[0].id, portal: "ivirtual", kind: "ivirtual_token", key_version: 1 },
     );
-    assert.ok(logs.some((l) => JSON.parse(l).event === "credencial_leida"));
   });
 
   test("el logger descarta el secreto aunque alguien lo pase por error", () => {
