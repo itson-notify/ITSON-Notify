@@ -1,7 +1,8 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
 // usa el backend del query builder de supabase-js (select, upsert, update,
-// delete, eq/neq/lt/in/not is null, order, limit, range, single, maybeSingle) y
-// las reglas de las migraciones 001 a 004, 006 y 007 que importan aquí:
+// delete, eq/neq/lt/in/is null/not is null, order, limit, range, single,
+// maybeSingle) y las reglas de las migraciones 001 a 004 y 006 a 010 que importan
+// aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
 //     escritas;
@@ -37,11 +38,11 @@ const TABLES = {
     uniques: [["previous_snapshot_id", "current_snapshot_id", "subject_id", "external_item_id", "field_name"]],
     notNull: ["user_id", "field_name", "change_type"],
   },
-  // 002: unique (grade_change_id, channel); status y attempts con default.
+  // 002: unique (grade_change_id, channel); status y attempts con default. 010: read_at.
   notifications_log: {
     uniques: [["grade_change_id", "channel"]],
     notNull: ["user_id", "channel", "status", "attempts"],
-    defaults: { status: "pending", attempts: 0, error: null, sent_at: null, payload: null },
+    defaults: { status: "pending", attempts: 0, error: null, sent_at: null, payload: null, read_at: null },
   },
   // 006: defaultNow son las columnas con default now(), que solo aplica al insertar.
   classroom_courses: {
@@ -70,20 +71,15 @@ const TABLES = {
     },
     rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
   },
-  // 008 y 009: Autorización con Google Classroom y Suscripciones Web Push.
+  // 008
+  google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"] },
+  google_app_sessions: { uniques: [], notNull: ["user_id", "google_id", "expires_at"] },
+  // 009: Suscripciones Web Push.
   // 009 exige UNIQUE(endpoint) para garantizar propiedad exclusiva por dispositivo.
   push_subscriptions: {
     uniques: [["endpoint"]],
     notNull: ["user_id", "endpoint", "p256dh", "auth"]
   },
-  google_app_sessions: {
-    uniques: [["id"]],
-    notNull: ["user_id", "google_id", "expires_at"]
-  },
-  google_authorizations: {
-    uniques: [["user_id", "google_id"]],
-    notNull: ["user_id", "google_id", "email"]
-  }
 };
 
 // Primer check que la fila (o el cambio de un update) no cumple.
@@ -157,6 +153,12 @@ class Query {
   not(column, operator, value) {
     if (operator !== "is" || value !== null) throw new Error(`not(${operator}) no soportado en el fake`);
     this.filters.push((r) => norm(r[column]) !== null);
+    return this;
+  }
+  // Solo la forma que usa el backend: .is(column, null).
+  is(column, value) {
+    if (value !== null) throw new Error("is() solo admite null en el fake");
+    this.filters.push((r) => norm(r[column]) === null);
     return this;
   }
   eq(column, value) {

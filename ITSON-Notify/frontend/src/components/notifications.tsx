@@ -1,6 +1,7 @@
 import { I } from './icons'
 import { Button, TypeIcon } from './ui'
 import { TYPE_CFG } from '@/utils/notifTypes'
+import { timeAgo } from '@/utils/time'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { Filter, Notif, NotifType } from '@/types'
 
@@ -16,7 +17,7 @@ export function NotifRow({ n, selected, onClick }: { n: Notif; selected?: boolea
         </div>
         <div className="flex items-baseline justify-between gap-2 mt-0.5">
           <span className="text-[13px] text-[#64748B] truncate">{n.subject}</span>
-          <span className="text-[12px] text-[#94A3B8] flex-shrink-0">{n.time}</span>
+          <span className="text-[12px] text-[#94A3B8] flex-shrink-0">{timeAgo(n.time)}</span>
         </div>
       </div>
       <span className={`flex-shrink-0 transition-colors ${selected ? 'text-[#2563EB]' : 'text-[#CBD5E1] group-hover:text-[#2563EB]'}`}>{I.chevron()}</span>
@@ -24,7 +25,7 @@ export function NotifRow({ n, selected, onClick }: { n: Notif; selected?: boolea
   )
 }
 
-export function NotifList({ items, selectedId, onOpen, emptyText }: { items: Notif[]; selectedId?: number | null; onOpen: (id: number) => void; emptyText?: string }) {
+export function NotifList({ items, selectedId, onOpen, emptyText }: { items: Notif[]; selectedId?: string | null; onOpen: (id: string) => void; emptyText?: string }) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center py-14 px-6 text-center text-[#64748B] gap-2">
@@ -71,7 +72,7 @@ export function NotifDetail({ n, onBack, onMarkUnread }: { n: Notif; onBack: () 
         <TypeIcon type={n.type} size={48} />
         <div className="min-w-0 pt-0.5">
           <h1 className="text-[20px] md:text-[22px] leading-snug font-semibold text-[#111827] tracking-[-0.01em]">{n.title}</h1>
-          <p className="text-[13px] text-[#94A3B8] mt-1">{n.time}, desde {cfg.source}</p>
+          <p className="text-[13px] text-[#94A3B8] mt-1">{timeAgo(n.time)}, desde {cfg.source}</p>
         </div>
       </div>
 

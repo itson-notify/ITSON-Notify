@@ -2,29 +2,22 @@
 const express = require("express");
 const crypto = require("crypto");
 const { encrypt, decrypt } = require("../utils/secureToken");
+const { SESSION_COOKIE, sessionHash, cookieValue, createSessionReader } = require("../middleware/studentSession");
 const {
   createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization,
 } = require("../services/googleAuthService");
 
 const STATE_COOKIE = "itn41_google_state";
-const SESSION_COOKIE = "itn41_google_session";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
-const sessionHash = id => crypto.createHash("sha256").update(id).digest("hex");
-
+// Envoltura de createSessionReader para quien no construye un lector propio
+// (rutas /push). Sin un secreto válido no hay sesión posible.
 async function getGoogleSession(req, { config, supabase, now = Date.now }) {
   const secret = config?.googleAuthSecret;
   if (!secret || secret.length < 32) return null;
-  const session = decrypt(cookieValue(req, SESSION_COOKIE), secret, "google-session");
-  if (!session || !Number.isFinite(session.exp) || session.exp <= now() ||
-      !session.userId || !session.googleId || typeof session.sessionId !== "string") return null;
-  const { data, error } = await supabase.from("google_app_sessions")
-    .select("user_id, google_id, expires_at").eq("id", sessionHash(session.sessionId)).maybeSingle();
-  if (error) throw error;
-  return data && data.user_id === session.userId && data.google_id === session.googleId &&
-    Date.parse(data.expires_at) > now() ? session : null;
+  return createSessionReader({ secret, supabase, now })(req);
 }
 
 function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetch, now = Date.now }) {
@@ -33,10 +26,18 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
   const secret = config.googleAuthSecret;
   const secure = new URL(oauth.redirectUri || "http://localhost:3000/auth/google/callback").protocol === "https:";
   const frontend = new URL(config.frontendUrl || "http://localhost:5173");
-  const baseCookieOptions = { httpOnly: true, secure, sameSite: config.googleCookieSameSite || "lax" };
-  const stateCookieOptions = { ...baseCookieOptions, path: "/auth/google" };
-  const sessionCookieOptions = { ...baseCookieOptions, path: "/" };
-
+  const baseCookie = { httpOnly: true, secure, sameSite: config.googleCookieSameSite || "lax" };
+  const stateCookieOptions = { ...baseCookie, path: "/auth/google" };
+  // La sesión también debe viajar a /api y /push. Para borrarla hay que repetir este path.
+  const sessionCookieOptions = { ...baseCookie, path: "/" };
+  // Antes de ITN-53 la sesión vivía bajo /auth/google. Esa cookie se enviaría
+  // primero y taparía a la nueva, así que se borra al entrar y al salir.
+  const clearLegacySessionCookie = res => res.clearCookie(SESSION_COOKIE, stateCookieOptions);
+  const clearSessionCookies = res => {
+    res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
+    clearLegacySessionCookie(res);
+  };
+  const currentSession = req => getGoogleSession(req, { config, supabase, now });
   // Las respuestas de sesión y los redirects no se deben almacenar en cachés.
   router.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
@@ -50,10 +51,6 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     url.searchParams.set("classroom", status);
     url.searchParams.set("from", from);
     return url.toString();
-  }
-
-  async function currentSession(req) {
-    return getGoogleSession(req, { config, supabase, now });
   }
 
   router.get("/", (req, res) => {
@@ -99,6 +96,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       });
       if (sessionError) throw sessionError;
       const session = encrypt({ userId, googleId, sessionId, exp }, secret, "google-session");
+      clearLegacySessionCookie(res);
       res.cookie(SESSION_COOKIE, session, { ...sessionCookieOptions, maxAge: SESSION_TTL_MS });
       logger.info("google_classroom_autorizado", { user_id: userId });
       return res.redirect(returnToFrontend("auth_success", pending.from));
@@ -135,12 +133,28 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       const { error: sessionsError } = await supabase.from("google_app_sessions")
         .delete().eq("user_id", session.userId).eq("google_id", session.googleId);
       if (sessionsError) throw sessionsError;
-      res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
+      clearSessionCookies(res);
       return res.sendStatus(204);
     } catch {
       return res.status(500).json({ error: "error_interno" });
     }
   });
+
+  // Limpieza Push del logout. Es secundaria: la sesión ya se invalidó, así que un
+  // fallo aquí se registra (solo el código) y no impide terminar el logout.
+  async function cleanupPush(target, query) {
+    try {
+      const { error } = await query();
+      if (!error) return;
+      if (error.code === "42P01") {
+        logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
+        return;
+      }
+      logger.warn("push_cleanup_failed", { error_code: error.code ?? null, target });
+    } catch (error) {
+      logger.warn("push_cleanup_failed", { error_code: error?.code ?? null, target });
+    }
+  }
 
   // Cierre real de sesión en este dispositivo: invalida únicamente la sesión
   // actual y revoca solo la suscripción Push vinculada a esta sesión (o endpoint
@@ -150,44 +164,31 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     try {
       const session = await currentSession(req);
       if (session) {
+        // Obligatorio: si no se puede invalidar la sesión, el logout falla.
         const currentSessionHash = sessionHash(session.sessionId);
         const { error } = await supabase.from("google_app_sessions").delete()
           .eq("id", currentSessionHash).eq("user_id", session.userId);
         if (error) throw error;
 
-        const { error: pushSessionError } = await supabase.from("push_subscriptions")
-          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash);
-        if (pushSessionError) {
-          if (pushSessionError.code !== "42P01") throw pushSessionError;
-          logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
-        }
+        await cleanupPush("session", () => supabase.from("push_subscriptions")
+          .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash));
 
         const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
         if (bodyEndpoint) {
-          const { error: pushEndpointError } = await supabase.from("push_subscriptions")
-            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint);
-          if (pushEndpointError) {
-            if (pushEndpointError.code !== "42P01") throw pushEndpointError;
-            logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
-          }
+          await cleanupPush("endpoint", () => supabase.from("push_subscriptions")
+            .delete().eq("user_id", session.userId).eq("endpoint", bodyEndpoint));
         }
       }
-      res.clearCookie(SESSION_COOKIE, sessionCookieOptions);
+      clearSessionCookies(res);
       res.clearCookie(STATE_COOKIE, stateCookieOptions);
       return res.sendStatus(204);
-    } catch {
+    } catch (error) {
+      logger.error("logout_fallido", { error_code: error?.code ?? null });
       return res.status(500).json({ error: "error_interno" });
     }
   });
 
   return router;
-}
-
-// Express no instala cookie-parser; basta leer las dos cookies propias.
-function cookieValue(req, name) {
-  const item = (req.headers.cookie || "").split(";").map(value => value.trim())
-    .find(value => value.startsWith(`${name}=`));
-  return item ? item.slice(name.length + 1) : null;
 }
 
 module.exports = { authGoogleRouter, getGoogleSession, sessionHash, SESSION_COOKIE };

@@ -1,100 +1,9 @@
 // ITN-41 y Web Push: regresiones de navegación, cierre de sesión, revocación Push
-// y configuración centralizada del backend sin dependencias nuevas.
+// y configuración centralizada del backend sin dependencias nuevas. El harness
+// (tests/harness.cjs) no sustituye una prueba de navegador ni una autorización real.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const ts = require('typescript');
-
-function compile(file, requireImpl, env = {}) {
-  const source = fs.readFileSync(path.join(__dirname, '../src', file), 'utf8')
-    .replace(/import\.meta\.env/g, JSON.stringify(env));
-  const output = ts.transpileModule(source, { compilerOptions: {
-    module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
-  } }).outputText;
-  const module = { exports: {} };
-  new Function('require', 'module', 'exports', output)(requireImpl, module, module.exports);
-  return module.exports;
-}
-
-function harness(search, fetchImpl, { navigatorImpl } = {}) {
-  const originals = {
-    window: global.window,
-    fetch: global.fetch,
-    setTimeout: global.setTimeout,
-    navigator: Object.getOwnPropertyDescriptor(global, 'navigator'),
-  };
-  const assigned = [];
-  const history = [];
-  global.window = {
-    location: { search, pathname: '/app', assign: url => assigned.push(url) },
-    history: { replaceState: (...args) => history.push(args) },
-    addEventListener() {},
-    removeEventListener() {},
-    scrollTo() {},
-    atob: str => Buffer.from(str, 'base64').toString('binary'),
-    PushManager: function PushManager() {},
-  };
-  global.fetch = fetchImpl;
-  global.setTimeout = () => 1;
-  global.document = { title: 'ITSON Notify' };
-  if (navigatorImpl !== undefined) {
-    Object.defineProperty(global, 'navigator', { value: navigatorImpl, configurable: true, writable: true });
-  } else {
-    Object.defineProperty(global, 'navigator', { value: {}, configurable: true, writable: true });
-  }
-
-  const env = { VITE_BACKEND_URL: 'https://api.test/' };
-  const backendMod = compile('services/backend.ts', require, env);
-  const resolveModule = id => {
-    if (id === '@/services/backend') return backendMod;
-    return require(id);
-  };
-  const client = compile('services/googleAuth.ts', resolveModule, env);
-  const pushMod = compile('services/pushNotifications.ts', resolveModule, env);
-
-  const states = []; const effects = []; let cursor = 0; let mounted = false;
-  const hooks = {
-    useState(initial) {
-      const index = cursor++;
-      if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial;
-      return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
-    },
-    useEffect(effect) { if (!mounted) effects.push(effect); },
-  };
-  const jsx = (type, props) => ({ type, props });
-  const App = compile('App.tsx', id => {
-    if (id === 'react') return hooks;
-    if (id === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
-    if (id === '@/services/backend') return backendMod;
-    if (id === '@/services/googleAuth') return client;
-    if (id === '@/services/pushNotifications') return pushMod;
-    if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
-      categories: {}, classroomConnected: false, itsonStatus: 'ok',
-    }, INITIAL_NOTIFS: [] };
-    return new Proxy({}, { get: (_, key) => key });
-  }).default;
-  return {
-    backendMod, client, pushMod, assigned, history,
-    render() { cursor = 0; const tree = App(); mounted = true; return tree; },
-    async start() { const tree = this.render(); effects.forEach(effect => effect()); await new Promise(setImmediate); return tree; },
-    restore() {
-      global.window = originals.window;
-      global.fetch = originals.fetch;
-      global.setTimeout = originals.setTimeout;
-      delete global.document;
-      if (originals.navigator) Object.defineProperty(global, 'navigator', originals.navigator);
-      else delete global.navigator;
-    },
-  };
-}
-function find(node, type) {
-  if (!node || typeof node !== 'object') return null;
-  if (node.type === type) return node;
-  const children = [node.props?.children].flat(Infinity);
-  for (const child of children) { const found = find(child, type); if (found) return found; }
-  return null;
-}
+const { compile, harness, find } = require('./harness.cjs');
 
 test('cancelar Google desde Configuración vuelve a Configuración con sesión ausente o error de red', async () => {
   for (const fetchImpl of [async () => ({ status: 401 }), async () => { throw new Error('sin red'); }]) {
@@ -144,7 +53,7 @@ test('cerrar sesión llama al backend y solo cambia a onboarding si la invalidac
   }
 });
 
-test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y aborta si falla', async () => {
+test('cerrar sesión con suscripción Push activa la revoca en backend y navegador antes del logout, y si falla cierra la sesión igual', async () => {
   for (const deleteOk of [true, false]) {
     const calls = [];
     let browserUnsubscribed = 0;
@@ -173,6 +82,8 @@ test('cerrar sesión con suscripción Push activa la revoca en backend y navegad
       if (options.method === 'POST') return { ok: true };
       return { status: 401 };
     }, { navigatorImpl });
+    const originalWarn = console.warn;
+    console.warn = () => {};
     try {
       await h.start();
       find(h.render(), 'AppLayout').props.onLogout();
@@ -181,20 +92,60 @@ test('cerrar sesión con suscripción Push activa la revoca en backend y navegad
       assert.equal(calls[1].url, 'https://api.test/push/subscriptions');
       assert.equal(calls[1].options.method, 'DELETE');
       assert.deepEqual(JSON.parse(calls[1].options.body), { endpoint: 'https://fcm.test/sub-activa' });
-      if (deleteOk) {
-        assert.equal(browserUnsubscribed, 1);
-        assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
-        assert.ok(find(tree, 'Onboarding'));
-      } else {
-        assert.equal(browserUnsubscribed, 0);
-        assert.equal(calls.some(call => call.url.endsWith('/auth/google/logout')), false);
-        assert.ok(find(tree, 'AppLayout'));
-        assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
-      }
+      // El navegador solo se desuscribe si el backend ya borró la suscripción;
+      // el logout de Google se intenta siempre.
+      assert.equal(browserUnsubscribed, deleteOk ? 1 : 0);
+      assert.equal(calls[2].url, 'https://api.test/auth/google/logout');
+      assert.ok(find(tree, 'Onboarding'));
     } finally {
+      console.warn = originalWarn;
       h.restore();
     }
   }
+});
+
+test('si unsubscribeBrowserPush rechaza, igual llama a logoutGoogle y termina la sesión sin toast de error', async () => {
+  const calls = [];
+  const warnings = [];
+  const h = harness('?classroom=error&from=settings', async (url, options = {}) => {
+    calls.push({ url, options });
+    return options.method === 'POST' ? { ok: true } : { status: 401 };
+  }, { pushOverrides: { unsubscribeBrowserPush: async () => { throw new Error('error_eliminando_suscripcion'); } } });
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    await h.start();
+    find(h.render(), 'AppLayout').props.onLogout();
+    await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+    const tree = h.render();
+    const logoutCalls = calls.filter(call => call.url === 'https://api.test/auth/google/logout');
+    assert.equal(logoutCalls.length, 1);
+    assert.equal(logoutCalls[0].options.method, 'POST');
+    assert.ok(find(tree, 'Onboarding'));
+    assert.equal(find(tree, 'AppLayout'), null);
+    // El único toast es el de ?classroom=error al arrancar, no el del logout.
+    assert.doesNotMatch(find(tree, 'ToastView')?.props.toast?.text ?? '', /No se pudo cerrar la sesión/);
+    // La advertencia es un código fijo, sin el error ni datos del alumno.
+    assert.deepEqual(warnings, [['push_unsubscribe_failed']]);
+  } finally {
+    console.warn = originalWarn;
+    h.restore();
+  }
+});
+
+test('si falla logoutGoogle tras revocar el Push, avisa y no termina la sesión', async () => {
+  const h = harness('?classroom=error&from=settings', async (url, options = {}) => (
+    options.method === 'POST' ? { ok: false } : { status: 401 }
+  ), { pushOverrides: { unsubscribeBrowserPush: async () => {} } });
+  try {
+    await h.start();
+    find(h.render(), 'AppLayout').props.onLogout();
+    await find(h.render(), 'ConfirmDialog').props.req.onConfirm();
+    const tree = h.render();
+    assert.equal(find(tree, 'Onboarding'), null);
+    assert.ok(find(tree, 'AppLayout'));
+    assert.match(find(tree, 'ToastView').props.toast.text, /No se pudo cerrar la sesión/);
+  } finally { h.restore(); }
 });
 
 test('conectar inicia OAuth real y desconectar utiliza la ruta de autorización', async () => {
@@ -225,4 +176,20 @@ test('resolveBackendUrl centraliza VITE_BACKEND_URL y valida el entorno de produ
     () => resolveBackendUrl({ PROD: true, VITE_BACKEND_URL: 'http://api.itson.mx' }),
     /HTTPS y un dominio público/,
   );
+});
+
+test('en modo mock resolveBackendUrl no valida producción y conserva la URL', () => {
+  const { resolveBackendUrl } = compile('services/backend.ts', require, {});
+  const prodMock = { PROD: true, MODE: 'production', VITE_USE_MOCK: 'true' };
+  assert.equal(resolveBackendUrl(prodMock), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ ...prodMock, VITE_BACKEND_URL: 'http://localhost:3000' }), 'http://localhost:3000');
+  assert.equal(resolveBackendUrl({ ...prodMock, VITE_BACKEND_URL: 'https://api.itson.mx/' }), 'https://api.itson.mx');
+  // Solo 'true' activa el modo mock; cualquier otro valor sigue validando.
+  assert.throws(() => resolveBackendUrl({ PROD: true, VITE_USE_MOCK: 'false' }), /VITE_BACKEND_URL es obligatoria/);
+});
+
+test('el módulo backend carga en un build de producción mock sin VITE_BACKEND_URL', () => {
+  const backend = compile('services/backend.ts', require, { PROD: true, MODE: 'production', VITE_USE_MOCK: 'true' });
+  assert.equal(backend.mockMode, true);
+  assert.equal(backend.backendUrl, 'http://localhost:3000');
 });

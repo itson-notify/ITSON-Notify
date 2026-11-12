@@ -3,8 +3,8 @@ import { focusRing, linkCls } from '@/utils/styles'
 import type { SourceStatus } from '@/types'
 
 /** [H1] Siempre visible: cuándo se revisó, si está revisando o si algo falló. */
-export function SyncStatus({ status, syncing, firstRun, onSync, onFix, onHelp }: {
-  status: SourceStatus; syncing: boolean; firstRun: boolean; onSync: () => void; onFix: () => void; onHelp: (q: string) => void
+export function SyncStatus({ status, syncing, firstRun, loading, onSync, onFix, onHelp }: {
+  status: SourceStatus; syncing: boolean; firstRun: boolean; loading: boolean; onSync: () => void; onFix: () => void; onHelp: (q: string) => void
 }) {
   if (status === 'error') {
     return (
@@ -21,12 +21,13 @@ export function SyncStatus({ status, syncing, firstRun, onSync, onFix, onHelp }:
       </div>
     )
   }
-  const busy = syncing || firstRun
+  const busy = syncing || firstRun || loading
+  // TODO(API): la hora de la última revisión es fija. Falta que el backend la exponga.
   return (
     <div className="flex items-center justify-between gap-3 text-[13px] text-[#64748B]">
       <span className="flex items-center gap-2" aria-live="polite">
         <span className={`w-2 h-2 rounded-full ${busy ? 'bg-[#F59E0B] motion-safe:animate-pulse' : 'bg-[#22C55E]'}`} />
-        {firstRun ? 'Haciendo tu primera revisión…' : syncing ? 'Revisando tus portales…' : 'Última revisión hace 8 min'}
+        {loading ? 'Cargando tus notificaciones…' : firstRun ? 'Haciendo tu primera revisión…' : syncing ? 'Revisando tus portales…' : 'Última revisión hace 8 min'}
       </span>
       <button onClick={onSync} disabled={busy}
         className={`flex items-center gap-1.5 min-h-9 px-2 -mr-2 rounded-md font-medium text-[#2563EB] hover:bg-[#EFF6FF] disabled:opacity-50 cursor-pointer disabled:cursor-default ${focusRing}`}>

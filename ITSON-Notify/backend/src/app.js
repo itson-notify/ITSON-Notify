@@ -8,9 +8,22 @@ const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
 const { authGoogleRouter, getGoogleSession, sessionHash } = require("./routes/authGoogle");
+const { studentApiRouter } = require("./routes/studentApi");
 const { buildChannels } = require("./services/notificationChannels");
 const { createNotificationRepository } = require("./repositories/notificationRepository");
 const { credentialCryptoFromConfig } = require("./services/credentialCrypto");
+
+// Solo el origen exacto del frontend, con cookies.
+function frontendCors(config, methods) {
+  return (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", new URL(config.frontendUrl || "http://localhost:5173").origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", methods);
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  };
+}
 
 function createApp({
   config,
@@ -41,15 +54,6 @@ function createApp({
 
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
 
-  const setCors = (req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", frontendOrigin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    if (req.method === "OPTIONS") return res.sendStatus(204);
-    next();
-  };
-
   // Sin autenticación y sin revelar configuración ni estado de dependencias.
   app.get("/health", (req, res) => {
     res.json({ status: "ok" });
@@ -64,10 +68,17 @@ function createApp({
   );
 
   // Autenticación y autorización con Google Classroom (ITN-41)
-  app.use("/auth/google", setCors, authGoogleRouter({ config, supabase, logger, now }));
+  app.use(
+    "/auth/google",
+    frontendCors(config, "GET, POST, DELETE, OPTIONS"),
+    authGoogleRouter({ config, supabase, logger, now }),
+  );
+
+  // Lecturas del alumno con sesión de Google (ITN-53)
+  app.use("/api", frontendCors(config, "GET, POST, OPTIONS"), studentApiRouter({ config, supabase, now }));
 
   // Suscripciones Web Push del navegador móvil
-  app.use("/push", setCors, express.json({ limit: "64kb" }));
+  app.use("/push", frontendCors(config, "GET, POST, DELETE, OPTIONS"), express.json({ limit: "64kb" }));
 
   app.get("/push/vapid-public-key", (req, res) => {
     if (!config.vapidPublicKey) return res.status(503).json({ error: "push_no_disponible" });

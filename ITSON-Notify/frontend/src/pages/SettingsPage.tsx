@@ -8,8 +8,8 @@ import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
-export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify }: {
-  settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify
+export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify, onDisconnected }: {
+  settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify; onDisconnected?: () => void
 }) {
   const itsonError = settings.itsonStatus === 'error'
 
@@ -27,6 +27,7 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify 
       try {
         await disconnectGoogle()
         setSettings(s => ({ ...s, classroomConnected: false }))
+        onDisconnected?.()
         notify('Google Classroom desconectado')
       } catch { notify('No se pudo desconectar Google Classroom') }
     },

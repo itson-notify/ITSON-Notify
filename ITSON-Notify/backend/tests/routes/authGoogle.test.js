@@ -110,15 +110,18 @@ function makeDb() {
   };
 }
 
-function appFor({ db = makeDb(), cfg = config, fetchImpl = async () => { throw new Error('No debería consultar Google'); }, now = Date.now } = {}) {
+function appFor({ db = makeDb(), cfg = config, fetchImpl = async () => { throw new Error('No debería consultar Google'); }, now = Date.now, log = logger } = {}) {
   const app = express();
-  app.use('/auth/google', authGoogleRouter({ config: cfg, supabase: db, logger, fetchImpl, now }));
+  app.use('/auth/google', authGoogleRouter({ config: cfg, supabase: db, logger: log, fetchImpl, now }));
   return { app, db };
 }
 
 function sessionCookie({ userId = 'u1', googleId = 'g1', exp = Date.now() + 60000 } = {}) {
   return `itn41_google_session=${encrypt({ userId, googleId, exp, sessionId: 'test-session' }, SECRET, 'google-session')}`;
 }
+
+// El atributo Path de la cookie `name` en una lista de Set-Cookie.
+const cookiePaths = (headers, name) => headers.filter(c => c.startsWith(`${name}=`)).map(c => /Path=([^;]+)/i.exec(c)[1]);
 
 describe('Rutas /auth/google', () => {
   it('rechaza empezar OAuth si falta configuración real', async () => {
@@ -199,6 +202,7 @@ describe('Rutas /auth/google', () => {
     assert.equal(db.deletions, 1);
     assert.equal(db.pushSubscriptions.size, 1);
     assert.match(res.headers['set-cookie'].join(';'), /itn41_google_session=/);
+    assert.ok(cookiePaths(res.headers['set-cookie'], 'itn41_google_session').includes('/'));
   });
   it('completa OAuth con ID token firmado y almacena refresh token cifrado', async () => {
     const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -237,6 +241,10 @@ describe('Rutas /auth/google', () => {
     assert.ok(exchangeBody.get('code_verifier'));
     assert.equal(crypto.createHash('sha256').update(exchangeBody.get('code_verifier')).digest('base64url'), params.get('code_challenge'));
     assert.equal(db.grants.size, 1);
+    // La sesión viaja a /api; el state del flujo OAuth se queda bajo /auth/google.
+    const emitida = callback.headers['set-cookie'].find(c => c.startsWith('itn41_google_session=') && !/Expires=Thu, 01 Jan 1970/.test(c));
+    assert.match(emitida, /Path=\/(;|$)/);
+    assert.deepEqual(cookiePaths(started.headers['set-cookie'], 'itn41_google_state'), ['/auth/google']);
     const row = db.grants.get('google-id');
     assert.deepEqual(decrypt(row.refresh_token, SECRET, 'google-refresh'), { token: 'refresh-secreto' });
     const session = await agent.get('/auth/google/session');
@@ -345,6 +353,8 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
     assert.equal(db.pushSubscriptions.size, 1);
     assert.equal(db.pushSubscriptions.has('https://fcm.test/telefono'), true);
     assert.match(logout.headers['set-cookie'].join(';'), /Max-Age=0|Expires=Thu, 01 Jan 1970/);
+    // Se borra con el path actual y con el anterior a ITN-53.
+    assert.deepEqual(cookiePaths(logout.headers['set-cookie'], 'itn41_google_session').sort(), ['/', '/auth/google']);
     assert.equal((await request(second).get('/auth/google/session').set('Cookie', cookie)).status, 401);
     assert.equal((await request(first).post('/auth/google/logout').set('Origin', frontend).set('Cookie', cookie)).status, 204);
   });
@@ -397,6 +407,114 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
         .set('Cookie', cookie)).status,
       401
     );
+  });
+
+  // Logger que guarda cada evento para revisar qué campos se registran.
+  function captureLogger() {
+    const entries = [];
+    const push = level => (event, fields) => entries.push({ level, event, fields });
+    return { entries, info: push('info'), warn: push('warn'), error: push('error') };
+  }
+
+  // Hace fallar el borrado de push_subscriptions cuando el filtro incluye `field`;
+  // el resto de las operaciones usan la tabla simulada normal.
+  function failPushDeleteOn(db, field) {
+    const originalFrom = db.from.bind(db);
+    db.from = table => {
+      if (table !== 'push_subscriptions') return originalFrom(table);
+      const real = originalFrom(table);
+      return {
+        delete() {
+          const filters = {};
+          const realQuery = real.delete();
+          const query = {
+            eq(key, value) { filters[key] = value; realQuery.eq(key, value); return query; },
+            then(resolve, reject) {
+              if (field in filters) {
+                return Promise.resolve({
+                  error: { code: 'XX000', message: 'fallo simulado https://fcm.test/laptop alumno@example.test' },
+                }).then(resolve, reject);
+              }
+              return realQuery.then(resolve, reject);
+            },
+          };
+          return query;
+        },
+      };
+    };
+  }
+
+  const PRIVATE_VALUES = ['https://fcm.test/laptop', 'alumno@example.test', 'u1', 'itn41_google_session', 'fallo simulado'];
+
+  for (const [field, target] of [['session_id', 'session'], ['endpoint', 'endpoint']]) {
+    it(`logout responde 204 e invalida la sesión aunque falle el borrado Push por ${target}`, async () => {
+      const db = makeDb();
+      db.pushSubscriptions.set('https://fcm.test/laptop', {
+        user_id: 'u1', session_id: testSessionHash, endpoint: 'https://fcm.test/laptop',
+      });
+      failPushDeleteOn(db, field);
+      const log = captureLogger();
+      const { app } = appFor({ db, log });
+      const cookie = sessionCookie();
+
+      const response = await request(app).post('/auth/google/logout')
+        .set('Origin', frontend).set('Cookie', cookie)
+        .send({ endpoint: 'https://fcm.test/laptop' });
+
+      assert.equal(response.status, 204);
+      assert.equal(db.sessions.size, 0);
+      assert.match(response.headers['set-cookie'].join(';'), /Max-Age=0|Expires=Thu, 01 Jan 1970/);
+      assert.deepEqual(cookiePaths(response.headers['set-cookie'], 'itn41_google_session').sort(), ['/', '/auth/google']);
+      assert.equal((await request(app).get('/auth/google/session').set('Cookie', cookie)).status, 401);
+
+      // Solo un aviso, con el código y la etiqueta fija del borrado que falló.
+      assert.deepEqual(log.entries, [
+        { level: 'warn', event: 'push_cleanup_failed', fields: { error_code: 'XX000', target } },
+      ]);
+      const serialized = JSON.stringify(log.entries);
+      for (const value of PRIVATE_VALUES) assert.equal(serialized.includes(value), false, value);
+    });
+  }
+
+  it('logout responde 500 y conserva la sesión si falla el borrado de google_app_sessions', async () => {
+    const db = makeDb();
+    const originalFrom = db.from.bind(db);
+    db.from = table => {
+      const real = originalFrom(table);
+      if (table !== 'google_app_sessions') return real;
+      return {
+        ...real,
+        delete() {
+          const query = {
+            eq() { return query; },
+            then(resolve, reject) {
+              return Promise.resolve({
+                error: { code: '57014', message: 'fallo simulado alumno@example.test' },
+              }).then(resolve, reject);
+            },
+          };
+          return query;
+        },
+      };
+    };
+    const log = captureLogger();
+    const { app } = appFor({ db, log });
+    const cookie = sessionCookie();
+
+    const response = await request(app).post('/auth/google/logout')
+      .set('Origin', frontend).set('Cookie', cookie)
+      .send({ endpoint: 'https://fcm.test/laptop' });
+
+    assert.equal(response.status, 500);
+    assert.notEqual(response.status, 204);
+    assert.deepEqual(response.body, { error: 'error_interno' });
+    assert.equal((response.headers['set-cookie'] || []).some(c => c.startsWith('itn41_google_session=')), false);
+    assert.equal(db.sessions.size, 1);
+    assert.notEqual((await request(app).get('/auth/google/session').set('Cookie', cookie)).status, 401);
+
+    assert.deepEqual(log.entries, [{ level: 'error', event: 'logout_fallido', fields: { error_code: '57014' } }]);
+    const serialized = JSON.stringify(log.entries);
+    for (const value of PRIVATE_VALUES) assert.equal(serialized.includes(value), false, value);
   });
 
   it('protege logout contra CSRF, incluido Origin ausente', async () => {

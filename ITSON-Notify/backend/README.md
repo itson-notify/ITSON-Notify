@@ -15,8 +15,14 @@ Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo
 
 **Migraciones requeridas**, en orden, además de 001 y 002: `003_external_item_id.sql`,
 `004_grade_changes_unique.sql` (llave natural de `grade_changes`), `005_service_role_grants.sql` (grants
-explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026) y `007_student_credentials.sql`
-(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales).
+explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `007_student_credentials.sql`
+(credenciales cifradas; sin ella, solo fallan los endpoints de credenciales), `009_push_subscriptions.sql`
+(suscripciones Web Push; sin ella, `/push` falla y el logout no puede revocar el Push del dispositivo) y
+`010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`).
+
+Estado en `itson-notify-dev`: la 010 ya está aplicada (2026-11-06, registrada con el nombre anterior
+`009_notifications_read_at`). La `009_push_subscriptions.sql` sigue **pendiente**: mientras tanto, el logout
+recibe `42P01` al limpiar Push, lo registra como `push_cleanup_table_missing` y termina igual.
 
 ## Variables
 
@@ -323,6 +329,58 @@ manualmente en dev, después de `007_student_credentials.sql` (ITN-36).
 
 Con `GOOGLE_OAUTH_ENABLED=false`, `GET /auth/google` responde 503 (`{"error":"google_oauth_no_configurado"}`). Es lo
 esperado.
+
+## API del alumno (ITN-53)
+
+Rutas que usa el frontend con la cookie de sesión de Google (`itn41_google_session`, con `Path=/`). Todo se filtra por el
+`user_id` de la sesión, nunca por un id del cliente. Las respuestas llevan `Cache-Control: no-store` y CORS solo para el
+origen exacto de `FRONTEND_URL`.
+
+| Ruta                                   | Respuesta                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /api/me`                          | `{ email, classroomConnected, itsonStatus }`                                |
+| `GET /api/notifications`               | Hasta 100 notificaciones con forma `Notif`, de la más reciente a la más antigua |
+| `POST /api/notifications/:id/read`     | 204. 400 `id_invalido` si no es uuid; 404 si no existe o es de otro alumno  |
+| `POST /api/notifications/read-all`     | 204                                                                         |
+
+Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. Los POST exigen que `Origin` sea exactamente el del
+frontend; si no, responden 403 `{"error":"origen_no_permitido"}`.
+
+- **Origen de los datos:** `notifications_log` con `channel = 'log'`, que da una fila por aviso; `read_at` (migración
+  010) indica si está leída. Materia y valores salen de `grade_changes` y `subjects`.
+- **`itsonStatus`:** sale de `student_credentials` del portal `ivirtual`: `needs_relink` es `error`; `active` o sin
+  registro es `ok`.
+- **`type`:** siempre `calificaciones`, porque `notifications_log` solo registra cambios de calificación y no tiene
+  columna de tipo.
+- **No hay endpoint para marcar como no leída.** "Marcar como no leída" y "Deshacer" son locales en el frontend
+  por diseño del ticket: el cambio no se guarda en el backend y, al recargar, la notificación vuelve a mostrarse como leída.
+
+### Cierre de sesión y Web Push
+
+`POST /auth/google/logout` responde 204 si cierra la sesión, 403 sin `Origin` válido y 500 si no puede invalidar
+la sesión en `google_app_sessions`; en ese caso no borra cookies. Una vez invalidada la sesión, borra de
+`push_subscriptions` la suscripción de esta sesión y, si el body trae `endpoint`, la de ese endpoint. Si alguno de
+esos borrados falla, registra `push_cleanup_failed` (solo `error_code` y `target`) y el logout termina igual.
+
+Riesgo residual: el envío de Web Push elige destinatarios solo por `user_id`, sin mirar la sesión. Si la limpieza
+falla, el dispositivo puede seguir recibiendo avisos privados del alumno hasta que el endpoint responda 404/410. El
+frontend revoca el Push del navegador antes de llamar al logout, así que esto solo ocurre si fallan las dos
+limpiezas, la del frontend y la del backend. La mitigación va en un ticket aparte.
+
+Con una cookie emitida antes de ITN-53 (`Path=/auth/google`), `/api` responde 401 hasta volver a entrar con Google.
+
+### Notificaciones de ejemplo en dev
+
+Una corrida real no genera avisos hasta que cambia una calificación. Para probar el frontend antes de eso:
+
+```bash
+SEED_ALUMNO_EMAIL=<correo-del-alumno> npm run seed:dev
+```
+
+Lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `backend/.env` y se niega a correr con `NODE_ENV=production`. Ese
+candado depende de la variable: antes de correrlo, revisa que `SUPABASE_URL` sea el proyecto de dev. El alumno debe existir
+en `app_users` y la migración 010 debe estar aplicada. Para borrar lo sembrado, usa el SQL del encabezado de
+`scripts/seed-dev-notifications.js`.
 
 ## Privacidad de los logs
 
