@@ -113,21 +113,24 @@ no puede detectarlos.
 
 ## 7. Qué fallos del RPA alertan
 
-Cada fallo deja una línea `ALERTA_RPA` en los logs de `worker-rpa` y manda este texto al grupo:
+Desde ITN-52 la corrida es multi-alumno y manda **a lo más una alerta por corrida**, solo con conteos. Cada alerta
+deja una línea `ALERTA_RPA` en los logs de `worker-rpa` y manda este texto al grupo:
 
 | Fallo | Código de salida | Texto |
 |-------|------------------|-------|
-| iVirtual pide cambio de contraseña | 2 | `ITSON Notify: extracción detenida por cambio_password (ivirtual-api). Requiere intervención manual.` |
-| Credenciales rechazadas | 1 | `ITSON Notify: credenciales de iVirtual rechazadas (ivirtual-api). Pausa el worker con RPA_PAUSADO=true y revisa.` |
-| Falla pasajera tras los reintentos | 1 | `ITSON Notify: extracción fallida tras los reintentos (ivirtual-api, código invalidtoken). Se intentará en la siguiente corrida; revisa los logs de worker-rpa.` El código solo aparece si Moodle lo mandó. |
+| Fallas de iVirtual, del backend o de entrega en una o más cuentas | 1 | `ITSON Notify: corrida con fallas (worker-rpa): 3 de 5 cuenta(s) sin completar (iVirtual 1, backend 1, entregas 1). Revisa los logs de worker-rpa.` |
+| Backend inalcanzable al listar cuentas, o `401` al leer un token | 1 | `ITSON Notify: corrida cancelada, el backend no respondió o rechazó la llave (worker-rpa). Cuentas sin procesar: 2. Revisa INTERNAL_API_KEY y los logs de worker-rpa.` |
+| Tokens rechazados en bloque (3 o más cuentas, todas `invalidtoken`) | 1 | `ITSON Notify: tokens rechazados en bloque (ivirtual-api): 4 de 4 cuenta(s). No se marcó ninguna para revincular; revisa iVirtual antes de la siguiente corrida.` |
 | Excepción no controlada | 1 | `ITSON Notify: excepción no controlada en la corrida (worker-rpa, error TypeError). Revisa los logs de worker-rpa en Railway.` |
 | Falta configuración o es inválida | 1 | `ITSON Notify: corrida cancelada, falta configuración o es inválida (worker-rpa). Revisa las variables del servicio en Railway.` |
-| Entrega al backend fallida | 1 | `ITSON Notify: el worker no pudo entregar la extracción al backend (status 503). Revisa los logs de worker-rpa en Railway.` La manda `entrega-backend.js`, sin línea `ALERTA_RPA`. |
 
-**No alertan:** la extracción correcta y `RPA_PAUSADO=true`.
+**No alertan:** la corrida sin fallas, sin cuentas activas, `RPA_PAUSADO=true` y el token rechazado de un alumno
+(`invalidtoken`): ese caso es normal, solo lo arregla el alumno volviendo a vincular, y queda contado en el log
+final (`token_invalido=...`). La entrega al backend ya no alerta por su cuenta: se suma a la alerta de la corrida.
 
 Los mensajes se arman solo con el tipo de fallo, la fuente y, si aplica, un código corto (`errorcode` de Moodle
-con la forma `^[a-z_]{1,40}$`) o el nombre de la clase del error. Lo demás se descarta aunque venga en el evento,
+con la forma `^[a-z_]{1,40}$`), el nombre de la clase del error o conteos de una lista cerrada (enteros de 0 a
+99999). Lo demás se descarta aunque venga en el evento,
 incluido el texto libre de los errores. El detalle se busca en los logs de Railway; una excepción no controlada
 solo deja ahí el nombre del error.
 

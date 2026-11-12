@@ -1,6 +1,8 @@
 // ITN-36 - /internal/credentials, detrás de requireApiKey como grade-snapshots.
 // ITN-51 - Mínimo privilegio: el worker solo lee (POST /get) y marca (POST
 // /needs-relink). Guardar y borrar los hace el alumno en /api/credentials/ivirtual.
+// ITN-52 - GET /active lista a quién consultar: solo correos de cuentas activas,
+// nunca secretos. El log solo lleva el conteo.
 // El secreto solo sale en la respuesta 200 de POST /get. Los logs llevan user_id,
 // portal, kind, key_version y códigos; nunca el body ni el correo.
 const express = require("express");
@@ -59,6 +61,31 @@ function credentialsRouter({ supabase, logger, now, credentialCrypto }) {
       return res.status(500).json({ error: "error_interno" });
     }
   };
+
+  // ITN-52 - Por ahora solo iVirtual: el worker de Classroom no consulta esta lista.
+  const KIND_ACTIVO = { ivirtual: "ivirtual_token" };
+
+  router.get("/active", async (req, res) => {
+    const portal = req.query.portal;
+    if (typeof portal !== "string" || !Object.hasOwn(KIND_ACTIVO, portal)) {
+      logger.warn("credencial_body_rechazado", { issues: 1 });
+      return res.status(400).json({ error: "cuerpo_invalido", detalles: [{ path: "portal", code: "invalid_value" }] });
+    }
+    const kind = KIND_ACTIVO[portal];
+    try {
+      const correos = await service.listActiveStudents({ portal, kind });
+      logger.info("credenciales_activas_listadas", { portal, kind, count: correos.length });
+      return res.status(200).json({ students: correos.map((email) => ({ email })) });
+    } catch (error) {
+      logger.error("credenciales_activas_no_listadas", {
+        portal,
+        kind,
+        step: error.step ?? null,
+        error_code: error.code ?? null,
+      });
+      return res.status(500).json({ error: "error_interno" });
+    }
+  });
 
   router.post(
     "/get",

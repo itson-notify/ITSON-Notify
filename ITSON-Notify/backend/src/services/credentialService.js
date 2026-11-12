@@ -14,11 +14,29 @@ function createCredentialService({ repo, crypto, now = () => Date.now() }) {
 
   // ITN-51 - Guarda el secreto del alumno de la sesión. El usuario ya existe en
   // app_users porque la sesión de Google lo creó.
-  // Devuelve { userId, portal, kind, status, keyVersion }, sin datos cifrados.
-  async function saveSecretForUser({ userId, portal, kind, secret }) {
+  // ITN-52 - Con validated: true, el portal acaba de aceptar el secreto y se llena
+  // last_validated_at con la hora actual.
+  // Devuelve { userId, portal, kind, status, keyVersion, lastValidatedAt }, sin datos cifrados.
+  async function saveSecretForUser({ userId, portal, kind, secret, validated = false }) {
     const cifrado = crypto.encryptSecret(secret, { userId, portal, kind });
-    const saved = await repo.saveCredential({ userId, portal, kind, ...cifrado }, ahora());
-    return { userId, portal, kind, status: saved.status, keyVersion: saved.key_version };
+    const t = ahora();
+    const saved = await repo.saveCredential({ userId, portal, kind, ...cifrado }, t, {
+      lastValidatedAt: validated ? t : null,
+    });
+    return {
+      userId,
+      portal,
+      kind,
+      status: saved.status,
+      keyVersion: saved.key_version,
+      lastValidatedAt: saved.last_validated_at ?? null,
+    };
+  }
+
+  // ITN-52 - Correos de los alumnos con la credencial activa, para el worker. Nunca
+  // toca los campos cifrados.
+  async function listActiveStudents({ portal, kind }) {
+    return repo.listActiveEmails({ portal, kind });
   }
 
   // Devuelve { userId, keyVersion, secret }. Una credencial en needs_relink no se
@@ -52,7 +70,14 @@ function createCredentialService({ repo, crypto, now = () => Date.now() }) {
     return { userId };
   }
 
-  return { saveSecretForUser, readSecret, markNeedsRelink, getStatusForUser, deleteSecretForUser };
+  return {
+    saveSecretForUser,
+    readSecret,
+    markNeedsRelink,
+    getStatusForUser,
+    deleteSecretForUser,
+    listActiveStudents,
+  };
 }
 
 module.exports = { createCredentialService };

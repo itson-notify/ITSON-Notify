@@ -1,4 +1,6 @@
 // Pruebas de la entrega al backend con fetch simulado. Datos inventados.
+// ITN-52 - El correo llega por parámetro (uno por alumno) y la entrega ya no alerta:
+// el cron junta las fallas y alerta una vez por corrida.
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -9,7 +11,6 @@ const EMAIL = "alumno@example.test";
 const ENV = {
   BACKEND_URL: "http://backend.test/",
   INTERNAL_API_KEY: API_KEY,
-  ALUMNO_EMAIL: EMAIL,
 };
 const CONFIG = leerConfigEntrega(ENV).config;
 const RUN_ID = "2f0c3a8e-6d1b-4c55-9b0e-0d8d6a1f7c42";
@@ -50,28 +51,26 @@ function simular(t, pasos, extra = {}) {
     const paso = pasos[Math.min(i++, pasos.length - 1)];
     return typeof paso === "function" ? paso(url, init) : paso;
   });
-  const alertarEquipo = t.mock.fn(async () => ({ ok: true }));
   const sleep = t.mock.fn(async () => {});
-  const correr = (resultado = RESULTADO) =>
+  const correr = (resultado = RESULTADO, email = EMAIL) =>
     entregarResultados(resultado, {
       config: CONFIG,
+      email,
       capturedAt: CAPTURED_AT,
       log: (l) => lineas.push(l),
       logError: (l) => errores.push(l),
       fetchFn,
-      alertarEquipo,
       randomUUID: () => RUN_ID,
       sleep,
       ...extra,
     });
-  return { correr, fetchFn, alertarEquipo, sleep, lineas, errores };
+  return { correr, fetchFn, sleep, lineas, errores };
 }
 
 const bodyEnviado = (s, n = 0) => JSON.parse(s.fetchFn.mock.calls[n].arguments[1].body);
 
 function sinDatosSensibles(s) {
-  const todo =
-    [...s.lineas, ...s.errores].join("\n") + JSON.stringify(s.alertarEquipo.mock.calls);
+  const todo = [...s.lineas, ...s.errores].join("\n");
   for (const prohibido of [API_KEY, EMAIL, "Materia de prueba A", "85.5", "backend.test"]) {
     assert.ok(!todo.includes(prohibido), `no debe aparecer: ${prohibido}`);
   }
@@ -80,13 +79,19 @@ function sinDatosSensibles(s) {
 describe("leerConfigEntrega", () => {
   test("arma el endpoint sin doble diagonal", () => {
     assert.equal(CONFIG.endpoint, "http://backend.test/internal/grade-snapshots");
+    assert.equal(CONFIG.backendUrl, "http://backend.test");
   });
 
   test("variables faltantes: las nombra sin imprimir valores", () => {
-    const r = leerConfigEntrega({ INTERNAL_API_KEY: API_KEY, ALUMNO_EMAIL: "  " });
+    const r = leerConfigEntrega({ INTERNAL_API_KEY: "  " });
     assert.equal(r.ok, false);
-    assert.equal(r.error, "Faltan variables del servicio: BACKEND_URL, ALUMNO_EMAIL.");
-    assert.ok(!r.error.includes(API_KEY));
+    assert.equal(r.error, "Faltan variables del servicio: BACKEND_URL, INTERNAL_API_KEY.");
+  });
+
+  test("ITN-52: ya no exige ALUMNO_EMAIL ni lo pone en la config", () => {
+    const r = leerConfigEntrega(ENV);
+    assert.equal(r.ok, true);
+    assert.ok(!("email" in r.config));
   });
 
   test("valores inválidos no se repiten en el error", () => {
@@ -94,12 +99,11 @@ describe("leerConfigEntrega", () => {
       [{ ...ENV, BACKEND_URL: "no-es-url" }, /BACKEND_URL/],
       [{ ...ENV, BACKEND_URL: "ftp://backend.test" }, /BACKEND_URL/],
       [{ ...ENV, INTERNAL_API_KEY: "corta" }, /INTERNAL_API_KEY/],
-      [{ ...ENV, ALUMNO_EMAIL: "sin-arroba" }, /ALUMNO_EMAIL/],
     ]) {
       const r = leerConfigEntrega(env);
       assert.equal(r.ok, false);
       assert.match(r.error, esperado);
-      assert.ok(!/no-es-url|ftp:|corta|sin-arroba/.test(r.error));
+      assert.ok(!/no-es-url|ftp:|corta/.test(r.error));
     }
   });
 });
@@ -127,7 +131,6 @@ describe("entregarResultados", () => {
     });
     assert.ok(s.lineas.some((l) => l.includes(`run_id=${RUN_ID}`) && l.includes("changes_detected=2")));
     assert.ok(s.lineas.some((l) => l.includes("baseline=false")));
-    assert.equal(s.alertarEquipo.mock.callCount(), 0);
     sinDatosSensibles(s);
   });
 
@@ -142,7 +145,6 @@ describe("entregarResultados", () => {
       s.sleep.mock.calls.map((c) => c.arguments[0]),
       [1000, 2000],
     );
-    assert.equal(s.alertarEquipo.mock.callCount(), 0);
   });
 
   test("reintentos reutilizan el mismo run_id y el mismo body", async (t) => {
@@ -159,7 +161,7 @@ describe("entregarResultados", () => {
     assert.equal(JSON.parse(cuerpos[0]).run_id, `${RUN_ID.slice(0, -1)}0`);
   });
 
-  test("401: no reintenta, alerta y devuelve fallo", async (t) => {
+  test("401: no reintenta y devuelve fallo sin alertar", async (t) => {
     const s = simular(t, [respuesta(401, { error: "no_autorizado" })]);
 
     const r = await s.correr();
@@ -167,8 +169,6 @@ describe("entregarResultados", () => {
     assert.deepEqual(r, { ok: false, runId: RUN_ID, status: 401, intentos: 1 });
     assert.equal(s.fetchFn.mock.callCount(), 1);
     assert.equal(s.sleep.mock.callCount(), 0);
-    assert.equal(s.alertarEquipo.mock.callCount(), 1);
-    assert.match(s.alertarEquipo.mock.calls[0].arguments[0], /status 401/);
     assert.ok(s.errores.some((l) => l.includes("status=401 intento=1")));
     sinDatosSensibles(s);
   });
@@ -182,7 +182,7 @@ describe("entregarResultados", () => {
     }
   });
 
-  test("5xx persistente: 4 intentos en total, alerta y fallo", async (t) => {
+  test("5xx persistente: 4 intentos en total y fallo", async (t) => {
     const s = simular(t, [respuesta(500)]);
 
     const r = await s.correr();
@@ -193,7 +193,6 @@ describe("entregarResultados", () => {
       s.sleep.mock.calls.map((c) => c.arguments[0]),
       [1000, 2000, 4000],
     );
-    assert.equal(s.alertarEquipo.mock.callCount(), 1);
     sinDatosSensibles(s);
   });
 
@@ -216,7 +215,6 @@ describe("entregarResultados", () => {
     assert.deepEqual(r, { ok: false, runId: RUN_ID, status: "TimeoutError", intentos: 2 });
     assert.equal(s.fetchFn.mock.callCount(), 2);
     assert.ok(s.errores.some((l) => l.includes("status=TimeoutError intento=2")));
-    assert.equal(s.alertarEquipo.mock.callCount(), 1);
   });
 
   test("error de red: reintenta y no imprime el mensaje del error", async (t) => {
@@ -231,11 +229,23 @@ describe("entregarResultados", () => {
     sinDatosSensibles(s);
   });
 
-  test("la alerta pasa el filtro de sendTeamAlert", async (t) => {
-    const { validarMensaje } = require("../../monitors/telegram");
-    const s = simular(t, [respuesta(500)]);
-    await s.correr();
-    assert.equal(validarMensaje(s.alertarEquipo.mock.calls[0].arguments[0]), null);
+  test("ITN-52: usa el correo recibido por parámetro, uno por alumno", async (t) => {
+    const s = simular(t, [respuesta(200, RESPUESTA_200)]);
+    await s.correr(RESULTADO, "otra.alumna@example.test");
+    await s.correr(RESULTADO, "  tercera@example.test ");
+    assert.equal(bodyEnviado(s, 0).user.email, "otra.alumna@example.test");
+    assert.equal(bodyEnviado(s, 1).user.email, "tercera@example.test");
+  });
+
+  test("ITN-52: sin correo válido no llama al backend y no lo imprime", async (t) => {
+    for (const email of [null, "", "sin-arroba"]) {
+      const s = simular(t, [respuesta(200, RESPUESTA_200)]);
+      const r = await s.correr(RESULTADO, email);
+      assert.equal(r.ok, false);
+      assert.equal(r.status, "correo_invalido");
+      assert.equal(s.fetchFn.mock.callCount(), 0);
+      assert.ok(!s.errores.join("\n").includes("sin-arroba"));
+    }
   });
 
   test("sin cursos no llama al backend", async (t) => {
@@ -268,27 +278,6 @@ describe("entregarResultados", () => {
     assert.match(s.lineas[0], /^Entrega al backend correcta: .*intento=2 /);
   });
 
-  test("canales: la alerta al equipo recibe logError como su log", async (t) => {
-    const s = simular(t, [respuesta(401)]);
-    let logDeAlerta;
-
-    await entregarResultados(RESULTADO, {
-      config: CONFIG,
-      log: (l) => s.lineas.push(l),
-      logError: (l) => s.errores.push(l),
-      fetchFn: s.fetchFn,
-      randomUUID: () => RUN_ID,
-      alertarEquipo: async (_texto, { log }) => {
-        logDeAlerta = log;
-        log("falla al alertar");
-      },
-    });
-
-    assert.equal(typeof logDeAlerta, "function");
-    assert.deepEqual(s.lineas, []);
-    assert.ok(s.errores.includes("falla al alertar"));
-  });
-
   test("por defecto la entrega usa console.log y console.error", async (t) => {
     const stdout = t.mock.method(console, "log", () => {});
     const stderr = t.mock.method(console, "error", () => {});
@@ -297,6 +286,7 @@ describe("entregarResultados", () => {
 
     await entregarResultados(RESULTADO, {
       config: CONFIG,
+      email: EMAIL,
       fetchFn,
       randomUUID: () => RUN_ID,
       sleep: async () => {},

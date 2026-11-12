@@ -15,11 +15,17 @@ type Phase = 'checking' | 'unavailable' | 'load_failed' | 'idle' | 'sending' | '
 const MAX_USERNAME = 64
 
 // Texto para cada fallo del envío, sin códigos ni detalles del backend.
+// ITN-52 - En PUT, el 409 solo significa cambio_password y el 502 que iVirtual no
+// respondió: basta el status, el body del error no se lee.
 function sendFailure(error: unknown): { phase: Phase; text: string } {
   const status = error instanceof ApiError ? error.status : 0
   if (status === 501) return { phase: 'unavailable', text: '' }
   if (status === 422) return { phase: 'rejected', text: 'iVirtual no aceptó ese usuario o contraseña.' }
+  if (status === 409) {
+    return { phase: 'failed', text: 'iVirtual te pide cambiar tu contraseña: hazlo en ivirtual.itson.edu.mx y vuelve a vincular.' }
+  }
   if (status === 429) return { phase: 'failed', text: 'Hiciste demasiados intentos. Espera unos minutos y vuelve a intentarlo.' }
+  if (status === 502) return { phase: 'failed', text: 'No se pudo contactar iVirtual, intenta más tarde.' }
   return { phase: 'failed', text: 'No pudimos vincular tu cuenta. Intenta de nuevo más tarde.' }
 }
 

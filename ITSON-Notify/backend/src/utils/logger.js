@@ -32,6 +32,8 @@ const CAMPOS_PERMITIDOS = new Set([
   "portal",
   "kind",
   "key_version",
+  // ITN-52: cuántas cuentas activas se entregaron al worker, nunca sus correos.
+  "count",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.

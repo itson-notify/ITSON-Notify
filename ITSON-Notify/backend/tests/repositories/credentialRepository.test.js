@@ -33,7 +33,9 @@ describe("credentialRepository", () => {
   test("guarda los bytea como texto \\x y los devuelve como los mismos Buffer", async () => {
     const datos = cifrado();
     const guardada = await repo.saveCredential({ ...ref, ...datos }, AHORA);
-    assert.deepEqual(guardada, { portal: "ivirtual", kind: "ivirtual_token", status: "active", key_version: 1 });
+    assert.deepEqual(guardada, {
+      portal: "ivirtual", kind: "ivirtual_token", status: "active", key_version: 1, last_validated_at: null,
+    });
 
     const fila = db.tables.student_credentials[0];
     assert.equal(fila.ciphertext, `\\x${datos.ciphertext.toString("hex")}`);
@@ -65,6 +67,42 @@ describe("credentialRepository", () => {
     assert.equal(fila.last_validated_at, null);
     assert.equal(fila.updated_at, DESPUES);
     assert.equal(fila.ciphertext, `\\x${nuevo.ciphertext.toString("hex")}`);
+  });
+
+  // ITN-52
+  test("saveCredential con lastValidatedAt lo guarda y lo devuelve", async () => {
+    const guardada = await repo.saveCredential({ ...ref, ...cifrado() }, DESPUES, { lastValidatedAt: DESPUES });
+    assert.equal(guardada.last_validated_at, DESPUES);
+    assert.equal(db.tables.student_credentials[0].last_validated_at, DESPUES);
+  });
+
+  // ITN-52
+  test("listActiveEmails: solo correos de cuentas activas del portal y kind, sin campos cifrados", async () => {
+    await repo.saveCredential({ ...ref, ...cifrado() }, AHORA);
+    const otra = await repo.ensureUser("otro.prueba@example.test");
+    await repo.saveCredential({ ...ref, userId: otra, ...cifrado() }, AHORA);
+    await repo.markNeedsRelink({ ...ref, userId: otra }, AHORA);
+    const tercera = await repo.ensureUser("tercera.prueba@example.test");
+    await repo.saveCredential(
+      { userId: tercera, portal: "google_classroom", kind: "google_refresh_token", ...cifrado() }, AHORA,
+    );
+
+    const original = db.client.from;
+    const columnas = [];
+    db.client.from = (tabla) => {
+      const q = original(tabla);
+      const select = q.select.bind(q);
+      q.select = (cols) => { columnas.push(`${tabla}:${cols}`); return select(cols); };
+      return q;
+    };
+    assert.deepEqual(await repo.listActiveEmails({ portal: "ivirtual", kind: "ivirtual_token" }), [
+      "alumna.prueba@example.test",
+    ]);
+    assert.deepEqual(columnas, ["student_credentials:user_id", "app_users:email"]);
+    db.client.from = original;
+    assert.deepEqual(await repo.listActiveEmails({ portal: "google_classroom", kind: "google_refresh_token" }), [
+      "tercera.prueba@example.test",
+    ]);
   });
 
   test("un kind distinto del mismo estudiante es otra fila", async () => {

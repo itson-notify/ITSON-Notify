@@ -128,7 +128,7 @@ function linkBackend({ get = () => json(LINK()), put = () => json(LINK({ linked:
 
 test('el cliente usa credentials include, PUT con JSON y ApiError sin datos', async () => {
   const { api } = clients();
-  const b = linkBackend({ put: () => json({ error: 'credenciales_rechazadas' }, 422) });
+  const b = linkBackend({ put: () => json({ error: 'vinculacion_fallida' }, 422) });
   await withFetch(b.fetchImpl, async () => {
     assert.deepEqual(await api.getIvirtualLink(), LINK());
     await assert.rejects(api.linkIvirtual(USUARIO, PASSWORD), error => {
@@ -222,7 +222,7 @@ test('éxito: borra la contraseña al enviar, avisa a App y no la deja en consol
 test('rechazo (422): mensaje genérico, contraseña vacía y enlace para recuperarla', async () => {
   const leaks = spyLeaks();
   try {
-    await withFetch(linkBackend({ put: () => json({ error: 'credenciales_rechazadas', detalle: 'interno' }, 422) }).fetchImpl, async () => {
+    await withFetch(linkBackend({ put: () => json({ error: 'vinculacion_fallida', detalle: 'interno' }, 422) }).fetchImpl, async () => {
       const sheet = mountSheet();
       await sheet.start();
       await fillAndSend(sheet);
@@ -253,11 +253,12 @@ test('501 al enviar: oculta el formulario y muestra que aún no está disponible
   });
 });
 
-test('429, 500 y fallo de red: mensajes genéricos sin códigos ni detalles', async () => {
+test('409, 429, 500, 502 y fallo de red: mensajes genéricos sin códigos ni detalles', async () => {
   for (const [put, esperado] of [
     [() => json({ error: 'demasiados_intentos' }, 429), /demasiados intentos/],
     [() => json({ error: 'error_interno' }, 500), /No pudimos vincular tu cuenta/],
-    [() => json({ error: 'portal_no_disponible' }, 502), /No pudimos vincular tu cuenta/],
+    [() => json({ error: 'portal_no_disponible' }, 502), /No se pudo contactar iVirtual, intenta más tarde/],
+    [() => json({ error: 'cambio_password' }, 409), /iVirtual te pide cambiar tu contraseña: hazlo en ivirtual\.itson\.edu\.mx y vuelve a vincular/],
     [() => { throw new TypeError(`fallo de red ${PASSWORD}`); }, /No pudimos vincular tu cuenta/],
   ]) {
     await withFetch(linkBackend({ put }).fetchImpl, async () => {
@@ -268,7 +269,7 @@ test('429, 500 y fallo de red: mensajes genéricos sin códigos ni detalles', as
       const tree = sheet.render();
       const error = field(tree, 'PasswordField').props.error;
       assert.match(error, esperado);
-      assert.ok(!/\d{3}|error_|portal_|demasiados_|PASSWORD/.test(error));
+      assert.ok(!/\d{3}|error_|portal_|demasiados_|cambio_password|PASSWORD/.test(error));
       assert.ok(!error.includes(PASSWORD));
       assert.equal(field(tree, 'PasswordField').props.value, '');
     });

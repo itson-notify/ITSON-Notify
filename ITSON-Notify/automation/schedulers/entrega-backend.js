@@ -1,5 +1,4 @@
 const crypto = require("crypto");
-const { sendTeamAlert } = require("../monitors/telegram");
 
 // Entrega de la extracción al backend Express (ITN-25 -> ITN-27):
 // POST ${BACKEND_URL}/internal/grade-snapshots con x-api-key.
@@ -8,6 +7,10 @@ const { sendTeamAlert } = require("../monitors/telegram");
 // Privacidad: nunca se loguea ni se manda en alertas el body, las
 // calificaciones, el correo, la API key ni la URL. Solo run_id, status HTTP,
 // número de intento y conteos.
+//
+// ITN-52 - El correo ya no sale de ALUMNO_EMAIL: el cron lo pasa por alumno (viene
+// de /internal/credentials/active). La entrega tampoco alerta: el cron junta las
+// fallas de todos los alumnos y manda una sola alerta por corrida.
 
 const RUTA = "/internal/grade-snapshots";
 const TIMEOUT_MS = 30_000;
@@ -17,7 +20,8 @@ const BACKOFF_BASE_MS = 1_000;
 // El backend exige al menos 32 caracteres (backend/README.md).
 const MIN_LONGITUD_API_KEY = 32;
 
-const VARIABLES_REQUERIDAS = ["BACKEND_URL", "INTERNAL_API_KEY", "ALUMNO_EMAIL"];
+const VARIABLES_REQUERIDAS = ["BACKEND_URL", "INTERNAL_API_KEY"];
+const RE_CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Devuelve { ok: true, config } o { ok: false, error }. El error nombra las
 // variables, nunca sus valores.
@@ -46,12 +50,7 @@ function leerConfigEntrega(env = process.env) {
     };
   }
 
-  const email = env.ALUMNO_EMAIL.trim();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return { ok: false, error: "ALUMNO_EMAIL no tiene formato de correo." };
-  }
-
-  return { ok: true, config: { endpoint: `${backendUrl}${RUTA}`, apiKey, email } };
+  return { ok: true, config: { backendUrl, endpoint: `${backendUrl}${RUTA}`, apiKey } };
 }
 
 // Body del contrato. courses va tal cual sale de extractGrades(): ya tiene la
@@ -90,18 +89,18 @@ async function intentarEnvio({ endpoint, apiKey, body, fetchFn, timeoutMs }) {
   }
 }
 
-// Manda el resultado de una extracción correcta. Devuelve
+// Manda el resultado de una extracción correcta del alumno `email`. Devuelve
 // { ok: true, runId, respuesta }, { ok: true, omitido: true } o
-// { ok: false, runId, status, intentos }.
+// { ok: false, runId, status, intentos }. No alerta: lo hace el cron una vez.
 async function entregarResultados(
   result,
   {
     config,
+    email,
     capturedAt = new Date().toISOString(),
     log = console.log,
     logError = console.error,
     fetchFn = globalThis.fetch,
-    alertarEquipo = sendTeamAlert,
     randomUUID = crypto.randomUUID,
     sleep = esperar,
     timeoutMs = TIMEOUT_MS,
@@ -115,12 +114,16 @@ async function entregarResultados(
     log("Extracción sin cursos: no se envía al backend.");
     return { ok: true, omitido: true };
   }
+  if (typeof email !== "string" || !RE_CORREO.test(email.trim())) {
+    logError("Entrega al backend omitida: la cuenta no trae un correo válido.");
+    return { ok: false, runId: null, status: "correo_invalido", intentos: 0 };
+  }
 
   // Un run_id por corrida, el mismo en cada reintento: el backend es
   // idempotente por run_id.
   const runId = randomUUID();
   const body = JSON.stringify(
-    armarPayload({ runId, capturedAt, email: config.email, courses: result.courses }),
+    armarPayload({ runId, capturedAt, email: email.trim(), courses: result.courses }),
   );
 
   const totalIntentos = maxReintentos + 1;
@@ -152,15 +155,7 @@ async function entregarResultados(
     await sleep(backoffBaseMs * 2 ** (intento - 1));
   }
 
-  const status = ultimo.status ?? ultimo.error;
-  // Sin run_id: sendTeamAlert rechaza cadenas largas tipo UUID. Se busca en
-  // los logs de Railway con el status.
-  await alertarEquipo(
-    `ITSON Notify: el worker no pudo entregar la extracción al backend (status ${status}). ` +
-      "Revisa los logs de worker-rpa en Railway.",
-    { log: logError },
-  );
-  return { ok: false, runId, status, intentos };
+  return { ok: false, runId, status: ultimo.status ?? ultimo.error, intentos };
 }
 
 module.exports = {

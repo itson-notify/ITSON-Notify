@@ -1,4 +1,4 @@
-const { getToken, MoodleError } = require("./client");
+const { getToken, MoodleError, redact } = require("./client");
 const { fetchGrades } = require("./grades");
 
 // Errorcodes de login/token.php de Moodle que indican que la contraseña se
@@ -37,4 +37,31 @@ async function extractGrades({ usuario, password }, opts) {
   }
 }
 
-module.exports = { extractGrades };
+// ITN-52 - Extracción con el token que el alumno vinculó (sin usuario ni contraseña).
+// Resultados posibles:
+//   ok             calificaciones extraídas
+//   token_invalido Moodle respondió invalidtoken: el token ya no sirve y hay que
+//                  pedir al alumno que vuelva a vincular
+//   error          cualquier otra falla (red, 5xx tras reintentos, nopermissions,
+//                  accessexception, servicio deshabilitado...). No invalida la cuenta.
+//
+// El mensaje de error ya viene sin el token (callWs lo redacta); se vuelve a
+// redactar aquí por si otra capa lo repite.
+async function extractGradesWithToken(token, opts) {
+  try {
+    const courses = await fetchGrades(token, opts);
+    return { status: "ok", courses };
+  } catch (error) {
+    if (error instanceof MoodleError && error.errorcode === "invalidtoken") {
+      return { status: "token_invalido", courses: [] };
+    }
+    return {
+      status: "error",
+      courses: [],
+      error: redact(error?.message ?? "Error", token),
+      errorcode: error?.errorcode ?? null,
+    };
+  }
+}
+
+module.exports = { extractGrades, extractGradesWithToken };

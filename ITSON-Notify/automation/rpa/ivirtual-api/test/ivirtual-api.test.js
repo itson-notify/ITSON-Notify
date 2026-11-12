@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const path = require("path");
 const fs = require("fs");
 
-const { extractGrades } = require("../index");
+const { extractGrades, extractGradesWithToken } = require("../index");
 const { callWs, encodeParams, MoodleError } = require("../client");
 
 const FIXTURES = path.join(__dirname, "fixtures");
@@ -235,5 +235,58 @@ describe("cliente HTTP", () => {
   test("encodeParams usa el formato de arreglos de Moodle", () => {
     const body = encodeParams({ courseids: [1, 2], options: { a: true }, x: null });
     assert.equal(body.toString(), "courseids%5B0%5D=1&courseids%5B1%5D=2&options%5Ba%5D=1");
+  });
+});
+
+// ITN-52 - Extracción con el token vinculado del alumno, sin token.php.
+describe("extractGradesWithToken", () => {
+  test("extrae con el token dado y nunca llama a token.php", async (t) => {
+    const { calls } = mockMoodle(t);
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.courses.length, 2);
+    assert.ok(!calls.some((c) => c.key === "token"));
+    for (const call of calls) {
+      assert.equal(call.body.get("wstoken"), TOKEN);
+      assert.ok(!call.url.includes(TOKEN));
+    }
+  });
+
+  test("invalidtoken devuelve token_invalido y no reintenta", async (t) => {
+    const { calls } = mockMoodle(t, {
+      core_webservice_get_site_info: () => json(fixture("invalidtoken")),
+    });
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.deepEqual(result, { status: "token_invalido", courses: [] });
+    assert.equal(calls.length, 1);
+  });
+
+  for (const [nombre, respuesta] of [
+    ["nopermissions", () => json(fixture("nopermissions"))],
+    ["accessexception", () => json({ exception: "x", errorcode: "accessexception", message: "Access control exception" })],
+    ["servicio deshabilitado", () => json({ exception: "x", errorcode: "servicenotavailable", message: "Web service is not available" })],
+    ["HTTP 503", () => new Response("caído", { status: 503 })],
+  ]) {
+    test(`${nombre} devuelve error y no invalida la cuenta`, async (t) => {
+      mockMoodle(t, { core_webservice_get_site_info: respuesta });
+      const result = await extractGradesWithToken(TOKEN, OPTS);
+      assert.equal(result.status, "error");
+      assert.deepEqual(result.courses, []);
+    });
+  }
+
+  test("el error no repite el token aunque Moodle lo cite", async (t) => {
+    mockMoodle(t, {
+      core_webservice_get_site_info: () =>
+        json({ exception: "x", errorcode: "accessexception", message: `token ${TOKEN} sin acceso` }),
+    });
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+    const texto = JSON.stringify(result);
+    for (const forma of [TOKEN, Buffer.from(TOKEN).toString("hex"), Buffer.from(TOKEN).toString("base64")]) {
+      assert.ok(!texto.includes(forma));
+    }
+    assert.equal(result.errorcode, "accessexception");
   });
 });
