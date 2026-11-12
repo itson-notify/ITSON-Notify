@@ -142,18 +142,38 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
 
   // Limpieza Push del logout. Es secundaria: la sesión ya se invalidó, así que un
   // fallo aquí se registra (solo el código) y no impide terminar el logout.
+  // Devuelve true si no quedó nada que limpiar (incluido 42P01: no hay tabla).
   async function cleanupPush(target, query) {
     try {
       const { error } = await query();
-      if (!error) return;
+      if (!error) return true;
       if (error.code === "42P01") {
         logger.warn("push_cleanup_table_missing", { error_code: "42P01" });
-        return;
+        return true;
       }
       logger.warn("push_cleanup_failed", { error_code: error.code ?? null, target });
     } catch (error) {
       logger.warn("push_cleanup_failed", { error_code: error?.code ?? null, target });
     }
+    return false;
+  }
+
+  // ITN-54: invalida la sesión marcándola con revoked_at (migración 011). La marca
+  // es lo que permite a la purga previa al envío borrar después el Push de esta
+  // sesión si su limpieza falla. Sin la 011 (42703) vuelve al borrado anterior:
+  // es solo una red de seguridad, la 011 se aplica antes de desplegar.
+  // Devuelve true si la sesión quedó marcada.
+  async function revokeSession(id, userId) {
+    const { error } = await supabase.from("google_app_sessions")
+      .update({ revoked_at: new Date(now()).toISOString() })
+      .eq("id", id).eq("user_id", userId);
+    if (!error) return true;
+    if (error.code !== "42703") throw error;
+    logger.warn("session_revocation_column_missing", { error_code: "42703" });
+    const { error: deleteError } = await supabase.from("google_app_sessions").delete()
+      .eq("id", id).eq("user_id", userId);
+    if (deleteError) throw deleteError;
+    return false;
   }
 
   // Cierre real de sesión en este dispositivo: invalida únicamente la sesión
@@ -166,12 +186,21 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       if (session) {
         // Obligatorio: si no se puede invalidar la sesión, el logout falla.
         const currentSessionHash = sessionHash(session.sessionId);
-        const { error } = await supabase.from("google_app_sessions").delete()
-          .eq("id", currentSessionHash).eq("user_id", session.userId);
-        if (error) throw error;
+        const marked = await revokeSession(currentSessionHash, session.userId);
 
-        await cleanupPush("session", () => supabase.from("push_subscriptions")
+        const sessionPushClean = await cleanupPush("session", () => supabase.from("push_subscriptions")
           .delete().eq("user_id", session.userId).eq("session_id", currentSessionHash));
+        // Si el Push de la sesión ya se limpió, la marca sobra: se borra la fila
+        // para que la tabla quede como antes. Si falla, la purga la borra después.
+        if (marked && sessionPushClean) {
+          try {
+            const { error } = await supabase.from("google_app_sessions").delete()
+              .eq("id", currentSessionHash).eq("user_id", session.userId).not("revoked_at", "is", null);
+            if (error) logger.warn("revoked_session_cleanup_failed", { error_code: error.code ?? null });
+          } catch (error) {
+            logger.warn("revoked_session_cleanup_failed", { error_code: error?.code ?? null });
+          }
+        }
 
         const bodyEndpoint = typeof req.body?.endpoint === "string" ? req.body.endpoint.trim() : "";
         if (bodyEndpoint) {
