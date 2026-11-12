@@ -326,6 +326,11 @@ class Query {
         if (ids.has(gc.current_snapshot_id)) gc.current_snapshot_id = null;
       }
     }
+    // 008: google_app_sessions.google_id tiene on delete cascade (ITN-54 depende de esto).
+    if (this.table === "google_authorizations") {
+      const ids = new Set(borradas.map((r) => r.google_id));
+      this.db.tables.google_app_sessions = this.db.tables.google_app_sessions.filter((s) => !ids.has(s.google_id));
+    }
     if (this.table === "app_users") {
       const ids = new Set(borradas.map((r) => r.id));
       this.db.tables.student_credentials = this.db.tables.student_credentials.filter((c) => !ids.has(c.user_id));
