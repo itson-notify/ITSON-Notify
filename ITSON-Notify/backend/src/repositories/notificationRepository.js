@@ -11,6 +11,10 @@ const PUSH_SUBSCRIPTIONS_ON_CONFLICT = "endpoint";
 const LOG_COLUMNS = "id,user_id,grade_change_id,channel,payload,status,attempts";
 const PUSH_COLUMNS = "id,user_id,session_id,endpoint,p256dh,auth,user_agent";
 
+// Códigos de Postgres para una columna o tabla inexistente (migración sin aplicar).
+const UNDEFINED_COLUMN = "42703";
+const UNDEFINED_TABLE = "42P01";
+
 // Tope de pendientes que se reintentan por corrida; el resto queda para la
 // siguiente.
 const PENDING_LIMIT = 100;
@@ -169,6 +173,45 @@ function createNotificationRepository(supabase) {
     );
   }
 
+  // ITN-54 - Purga las suscripciones Web Push de las sesiones que el logout marcó
+  // con revoked_at (migración 011) y luego borra esas sesiones. Solo toca sesiones
+  // marcadas: Desconectar borra sesiones sin marcarlas y las filas con session_id
+  // null nunca coinciden. Lanza PersistenceError si falla: quien llama decide
+  // fallar cerrado.
+  //   42703 al leer: falta la 011, no puede haber marcas -> no hace nada.
+  //   42P01 al borrar Push: falta la 009, no hay suscripciones -> solo borra sesiones.
+  async function purgeRevokedPushSubscriptions(userId) {
+    const revoked = await supabase
+      .from("google_app_sessions")
+      .select("id")
+      .eq("user_id", userId)
+      .not("revoked_at", "is", null);
+    if (revoked.error?.code === UNDEFINED_COLUMN) return { sessions: 0, subscriptions: 0 };
+    const ids = check("google_app_sessions", revoked).map((row) => row.id);
+    if (ids.length === 0) return { sessions: 0, subscriptions: 0 };
+
+    const deleted = await supabase
+      .from("push_subscriptions")
+      .delete()
+      .eq("user_id", userId)
+      .in("session_id", ids)
+      .select("id");
+    const subscriptions = deleted.error?.code === UNDEFINED_TABLE
+      ? 0
+      : check("push_subscriptions", deleted).length;
+
+    check(
+      "google_app_sessions",
+      await supabase
+        .from("google_app_sessions")
+        .delete()
+        .eq("user_id", userId)
+        .in("id", ids)
+        .not("revoked_at", "is", null),
+    );
+    return { sessions: ids.length, subscriptions };
+  }
+
   return {
     claimNotification,
     updateNotification,
@@ -178,6 +221,7 @@ function createNotificationRepository(supabase) {
     listPushSubscriptions,
     deletePushSubscription,
     deleteSessionPushSubscriptions,
+    purgeRevokedPushSubscriptions,
   };
 }
 
