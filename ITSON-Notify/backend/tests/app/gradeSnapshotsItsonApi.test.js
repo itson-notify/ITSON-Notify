@@ -1,0 +1,117 @@
+// ITN-55 - POST /internal/grade-snapshots con source = itson_api: validación,
+// period por semestre y comparación separada de iVirtual. Datos inventados.
+const { test, describe } = require("node:test");
+const assert = require("node:assert/strict");
+const request = require("supertest");
+
+const { createApp } = require("../../src/app");
+const { createLogger } = require("../../src/utils/logger");
+const { createFakeSupabase } = require("../helpers/fakeSupabase");
+const { API_KEY, CREDENTIALS_KEY, MATERIA_API_A, payload, payloadItsonApi } = require("../helpers/payloads");
+
+const RUTA = "/internal/grade-snapshots";
+
+function setup() {
+  const db = createFakeSupabase();
+  const logs = [];
+  const app = createApp({
+    config: { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY },
+    supabase: db.client,
+    logger: createLogger((line) => logs.push(line)),
+  });
+  const enviar = (body) => request(app).post(RUTA).set("x-api-key", API_KEY).send(body);
+  return { db, logs, enviar };
+}
+
+// Horas sucesivas en el pasado, para que captured_at ordene las corridas.
+const hora = (n) => new Date(Date.UTC(2026, 10, 1, n)).toISOString();
+
+describe("validación de itson_api", () => {
+  const casos = {
+    sin_period: (b) => delete b.period,
+    period_de_un_digito: (b) => (b.period = "7"),
+    dos_items: (b) => b.courses[0].items.push({ externalItemId: "x", label: null, value: null, text: "-" }),
+    item_con_otro_id: (b) => (b.courses[0].items[0].externalItemId = "9999"),
+    con_valor_numerico: (b) => (b.courses[0].items[0].value = 9),
+    codigo_no_valido: (b) => (b.courses[0].items[0].text = "nueve"),
+  };
+  for (const [nombre, mutar] of Object.entries(casos)) {
+    test(`400 ${nombre}, sin escribir`, async () => {
+      const { enviar, db } = setup();
+      const body = payloadItsonApi();
+      mutar(body);
+      const res = await enviar(body);
+      assert.equal(res.status, 400);
+      assert.equal(res.body.error, "cuerpo_invalido");
+      assert.ok(!JSON.stringify(res.body).includes("nueve"));
+      assert.equal(db.tables.grade_snapshots.length, 0);
+    });
+  }
+
+  test("400 si iVirtual trae period", async () => {
+    const { enviar, db } = setup();
+    const body = payload();
+    body.period = "07";
+    const res = await enviar(body);
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body.detalles, [{ path: "period", code: "custom", message: "solo itson_api" }]);
+    assert.equal(db.tables.grade_snapshots.length, 0);
+  });
+});
+
+describe("persistencia de itson_api", () => {
+  test("guarda period en el snapshot y en subjects, y '-' como null", async () => {
+    const { enviar, db } = setup();
+    const res = await enviar(payloadItsonApi({ codigoA: "-", codigoB: "A" }));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.baseline, true);
+
+    const [snap] = db.tables.grade_snapshots;
+    assert.equal(snap.source, "itson_api");
+    assert.equal(snap.period, "07");
+    assert.ok(db.tables.subjects.every((s) => s.period === "07"));
+    const textos = db.tables.snapshot_grades.map((g) => [g.external_item_id, g.grade_text, g.grade_value]);
+    assert.deepEqual(textos.sort(), [["4601", null, null], ["4602", "A", null]]);
+  });
+
+  test("iVirtual sigue guardando period null en snapshot y subjects", async () => {
+    const { enviar, db } = setup();
+    assert.equal((await enviar(payload())).status, 200);
+    assert.equal(db.tables.grade_snapshots[0].period, null);
+    assert.ok(db.tables.subjects.every((s) => s.period === null));
+  });
+});
+
+describe("comparación por fuente y por semestre", () => {
+  test("el primer snapshot de cada semestre es baseline; el segundo del mismo semestre compara", async () => {
+    const { enviar } = setup();
+    const r1 = await enviar(payloadItsonApi({ period: "07", capturedAt: hora(1) }));
+    const r2 = await enviar(payloadItsonApi({ period: "08", capturedAt: hora(2) }));
+    const r3 = await enviar(payloadItsonApi({ period: "07", capturedAt: hora(3), codigoA: "9" }));
+    assert.equal(r1.body.baseline, true);
+    assert.equal(r2.body.baseline, true); // no se compara contra el 07
+    assert.equal(r3.body.baseline, false);
+    assert.equal(r3.body.changes_inserted, 1); // solo 4601: null -> "9"
+  });
+
+  test("iVirtual e itson_api intercalados no generan cambios cruzados", async () => {
+    const { enviar, db } = setup();
+    await enviar(payload({ capturedAt: hora(1) }));
+    const api1 = await enviar(payloadItsonApi({ capturedAt: hora(2) }));
+    const iv2 = await enviar(payload({ capturedAt: hora(3) }));
+    const api2 = await enviar(payloadItsonApi({ capturedAt: hora(4) }));
+    assert.equal(api1.body.baseline, true);
+    assert.equal(iv2.body.baseline, false);
+    assert.equal(iv2.body.changes_detected, 0);
+    assert.equal(api2.body.baseline, false);
+    assert.equal(api2.body.changes_detected, 0);
+    assert.equal(db.tables.grade_changes.length, 0);
+  });
+
+  test("el nombre de la materia no aparece en los logs", async () => {
+    const { enviar, logs } = setup();
+    await enviar(payloadItsonApi({ capturedAt: hora(1) }));
+    await enviar(payloadItsonApi({ capturedAt: hora(2), codigoA: "10" }));
+    assert.ok(!logs.join("\n").includes(MATERIA_API_A));
+  });
+});

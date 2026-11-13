@@ -47,7 +47,31 @@ function payload({ runId = crypto.randomUUID(), capturedAt, email = EMAIL, tarea
   };
 }
 
+// ITN-55 - Snapshot de la API REST de ITSON: una materia por idCatalog con un
+// solo ítem del mismo id; el código de gradeValue va en text ("-" = sin nota).
+const MATERIA_API_A = "Materia API de prueba A";
+const MATERIA_API_B = "Materia API de prueba B";
+
+function payloadItsonApi({ runId = crypto.randomUUID(), capturedAt, email = EMAIL, period = "07", codigoA = "-", codigoB = "-" } = {}) {
+  const materia = (idCatalog, subject, text) => ({
+    externalId: idCatalog,
+    subject,
+    items: [{ externalItemId: idCatalog, label: "Calificación final", value: null, text }],
+  });
+  return {
+    run_id: runId,
+    captured_at: capturedAt ?? new Date().toISOString(),
+    source: "itson_api",
+    period,
+    user: { email },
+    courses: [materia("4601", MATERIA_API_A, codigoA), materia("4602", MATERIA_API_B, codigoB)],
+  };
+}
+
 // Textos que nunca deben aparecer en logs.
 const SENSIBLES = [EMAIL, OTRO_EMAIL, MATERIA_A, MATERIA_B, "Tarea 1", "Proyecto final", "85.5", "78.25", "95.00", API_KEY, OTRA_API_KEY];
 
-module.exports = { API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL, MATERIA_A, payload, SENSIBLES };
+module.exports = {
+  API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL, MATERIA_A, MATERIA_API_A, MATERIA_API_B,
+  payload, payloadItsonApi, SENSIBLES,
+};

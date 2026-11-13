@@ -36,7 +36,9 @@ function createGradeChangeRepository(supabase) {
     }
   }
 
-  // Snapshot inmediatamente anterior del mismo user_id y la misma source:
+  // Snapshot inmediatamente anterior del mismo user_id, la misma source y el
+  // mismo period (ITN-55: cada semestre de itson_api se compara solo consigo
+  // mismo; iVirtual tiene period null y se compara como antes):
   // el de captured_at más reciente menor al actual; con el mismo captured_at,
   // el de id menor. Nunca el mismo snapshot. null si no hay.
   async function getPreviousSnapshotItems(userId, currentSnapshotId) {
@@ -44,7 +46,7 @@ function createGradeChangeRepository(supabase) {
       "grade_snapshots",
       await supabase
         .from("grade_snapshots")
-        .select("id,user_id,source,captured_at")
+        .select("id,user_id,source,period,captured_at")
         .eq("id", currentSnapshotId)
         .maybeSingle(),
     );
@@ -52,13 +54,15 @@ function createGradeChangeRepository(supabase) {
       throw new Error("El snapshot actual no existe o no pertenece al usuario");
     }
 
-    const base = () =>
-      supabase
+    const base = () => {
+      const q = supabase
         .from("grade_snapshots")
         .select("id")
         .eq("user_id", userId)
         .eq("source", current.source)
         .neq("id", currentSnapshotId);
+      return current.period == null ? q.is("period", null) : q.eq("period", current.period);
+    };
 
     // Empate de captured_at: cualquiera con id menor es posterior a todos los
     // de captured_at menor, así que se busca primero aquí.
