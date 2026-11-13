@@ -314,7 +314,7 @@ describe("excepción no controlada al arrancar", () => {
     const correr = async () => {
       throw error;
     };
-    const arrancarCron = () => arrancar({ correr, alertar, logError: (l) => errores.push(l) });
+    const arrancarCron = () => arrancar({ correrApi: async () => 0, correr, alertar, logError: (l) => errores.push(l) });
     return { arrancarCron, alertar, errores };
   }
 
@@ -343,7 +343,7 @@ describe("excepción no controlada al arrancar", () => {
   test("corrida sin excepción: devuelve su código y no alerta", async (t) => {
     const alertar = t.mock.fn(async () => {});
 
-    assert.equal(await arrancar({ correr: async () => 0, alertar, logError: () => {} }), 0);
+    assert.equal(await arrancar({ correrApi: async () => 0, correr: async () => 0, alertar, logError: () => {} }), 0);
     assert.equal(alertar.mock.callCount(), 0);
   });
 
