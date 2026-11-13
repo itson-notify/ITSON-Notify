@@ -4,7 +4,9 @@ import { Button } from '@/components/ui'
 import { STUDENT } from '@/services/mockData'
 import type { Page, Settings } from '@/types'
 
-export function ProfilePage({ settings, onGo, onLogout, onHelp }: { settings: Settings; onGo: (p: Page) => void; onLogout: () => void; onHelp: (q: string) => void }) {
+export function ProfilePage({ matriculaHint = null, onGo, onLogout, onHelp }: {
+  settings: Settings; matriculaHint?: string | null; onGo: (p: Page) => void; onLogout: () => void; onHelp: (q: string) => void
+}) {
   const options: { label: string; icon: ReactElement; action: () => void }[] = [
     { label: 'Cuentas y avisos', icon: I.settings(18), action: () => onGo('configuracion') },
     { label: 'Ayuda y soporte', icon: I.help(18), action: () => onHelp('') },
@@ -15,7 +17,8 @@ export function ProfilePage({ settings, onGo, onLogout, onHelp }: { settings: Se
         <div className="w-16 h-16 rounded-full bg-[#2563EB] flex items-center justify-center text-white text-[22px] font-semibold">{STUDENT.initials}</div>
         <h1 className="mt-3 text-[20px] font-semibold text-[#111827]">{STUDENT.name}</h1>
         <p className="text-[14px] text-[#64748B] mt-0.5">{STUDENT.career}</p>
-        <p className="text-[13px] text-[#94A3B8] mt-1">ID {settings.itsonId || '—'}</p>
+        {/* ITN-55 - Solo la pista de /api/itson-profile, nunca la matrícula completa. */}
+        <p className="text-[13px] text-[#94A3B8] mt-1">Matrícula {matriculaHint || '—'}</p>
       </div>
 
       <ul className="mt-4 bg-white border-y md:border md:rounded-lg border-[#E5E7EB] divide-y divide-[#F1F5F9]">
