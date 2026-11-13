@@ -77,9 +77,14 @@ iVirtual, y el código de salida es 1 si cualquiera de las dos sale con 1.
 | 0 | Sin fallas, sin perfiles, sin `ITSON_API_BASE_URL` (fase deshabilitada) o `RPA_PAUSADO=true` |
 | 1 | Al menos una llamada o entrega fallida (alerta `api_itson_con_fallas` con conteos), `ITSON_API_BASE_URL` inválida o el backend no entrega la lista de perfiles |
 
-Por alumno de `GET /internal/itson-profiles/active`: `getAlumnoInscrito` (si no está inscrito u hoy, en hora de
-Hermosillo, está fuera de las fechas del semestre, se omite; si falla, se sigue y se cuenta en
-`inscripcion_fallida`), `getProgress` y `getGrades` para los semestres distintos de `"0"` con materias pendientes,
+Por alumno de `GET /internal/itson-profiles/active`: `getAlumnoInscrito`, `getProgress` y `getGrades`. Con las
+fechas de `getAlumnoInscrito` (ISO sin zona, en hora de Hermosillo) se arma una **ventana**: se consulta desde
+`ITSON_API_VENTANA_ANTES_DIAS` días antes de `fechaInicioSemestre` hasta `ITSON_API_VENTANA_DESPUES_DIAS` días
+después de `fechaFinSemestre`, inclusive, porque las calificaciones finales suelen publicarse al cierre o después.
+Fuera de la ventana el alumno se omite (`fuera_de_ventana`). `inscrito` no decide: con `false`, dentro de la
+ventana se consulta igual. Si las fechas no se pueden leer, se consulta y se cuenta en `fechas_ilegibles` (no es
+falla). Si `getAlumnoInscrito` falla, se consulta y se cuenta en `inscripcion_fallida` (sí es falla). Después,
+`getGrades` para los semestres distintos de `"0"` con materias pendientes,
 máximo 3. Una respuesta con `subject.program` distinto de la carrera guardada se descarta (`forma_invalida`). Un
 semestre sin materias no se envía. Cada alumno va en su propio try/catch. Al terminar se loguea
 `Fase API de ITSON terminada: alumnos=... entregadas=... fallas_api=...`. Los logs nunca llevan correo, matrícula,
@@ -126,7 +131,9 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
    ([`telegram-alertas.md`](../telegram-alertas.md)); sin ellas los fallos solo quedan en los logs.
    ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_API_BASE_URL` (solo el origen `https://...`,
    sin `/api` ni query; el worker agrega `/api/getGrades` y demás). Sin ella la fase queda deshabilitada. Antes,
-   aplica la migración 012 en el backend.
+   aplica la migración 012 en el backend. Opcionales: `ITSON_API_VENTANA_ANTES_DIAS` (por defecto 7) e
+   `ITSON_API_VENTANA_DESPUES_DIAS` (por defecto 45), enteros de 0 a 365; un valor inválido cancela la fase con
+   una alerta de configuración.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.
 7. Prueba una corrida y revisa los logs:
 

@@ -655,13 +655,15 @@ En `automation/schedulers/extraccion-cron.js`, cada corrida:
 
 **Fase de la API REST de ITSON (ITN-55).** Después de la de iVirtual, en su propio try/catch, el worker pide
 `GET /internal/itson-profiles/active` y, por alumno, consulta `getAlumnoInscrito`, `getProgress` y `getGrades` (hasta
-3 semestres pendientes). Por cada semestre con materias manda `POST /internal/grade-snapshots` con
+3 semestres pendientes), solo dentro de la ventana de fechas del semestre (7 días antes del inicio a 45 después del
+fin, configurable). Por cada semestre con materias manda `POST /internal/grade-snapshots` con
 `source: "itson_api"`, `period` (la clave del semestre) y su propio `run_id`. Detalle en
 [`docs/deployment/cron-railway.md`](../docs/deployment/cron-railway.md).
 
 Variables del servicio `worker-rpa`: **solo** `BACKEND_URL`, `INTERNAL_API_KEY` y, para las alertas,
 `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (más `RPA_PAUSADO` para pausar). ITN-55: `ITSON_API_BASE_URL` habilita la
-fase de la API de ITSON; sin ella, esa fase no corre. Desde ITN-52 `Id_User`, `P_User` y
+fase de la API de ITSON; sin ella, esa fase no corre. `ITSON_API_VENTANA_ANTES_DIAS` (7) e
+`ITSON_API_VENTANA_DESPUES_DIAS` (45) ajustan la ventana. Desde ITN-52 `Id_User`, `P_User` y
 `ALUMNO_EMAIL` ya no se usan en el cron (siguen solo en `cli.js` y `login-demo.js`, que son herramientas locales).
 Nunca `SUPABASE_SERVICE_ROLE_KEY`, `CREDENTIALS_ENCRYPTION_KEY` ni la matrícula en el body. Detalles de despliegue,
 códigos de salida y alertas en [`docs/deployment/cron-railway.md`](../docs/deployment/cron-railway.md).
