@@ -74,11 +74,31 @@ describe("persistencia de itson_api", () => {
     assert.deepEqual(textos.sort(), [["4601", null, null], ["4602", "A", null]]);
   });
 
-  test("iVirtual sigue guardando period null en snapshot y subjects", async () => {
+  test("iVirtual no escribe grade_snapshots.period y deja subjects.period en null", async () => {
     const { enviar, db } = setup();
     assert.equal((await enviar(payload())).status, 200);
-    assert.equal(db.tables.grade_snapshots[0].period, null);
+    assert.ok(!("period" in db.tables.grade_snapshots[0]));
     assert.ok(db.tables.subjects.every((s) => s.period === null));
+  });
+
+  test("sin la migración 012 (no existe grade_snapshots.period), iVirtual sigue funcionando", async () => {
+    const { enviar, db } = setup();
+    db.withoutColumn("grade_snapshots", "period");
+    const r1 = await enviar(payload({ capturedAt: hora(1), tarea2: 70 }));
+    const r2 = await enviar(payload({ capturedAt: hora(2), tarea2: 80 }));
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 200);
+    assert.equal(r2.body.baseline, false);
+    assert.equal(r2.body.changes_inserted, 2); // grade_value y grade_text de 9002
+  });
+
+  test("sin la migración 012, itson_api sí falla (500) y no deja snapshot", async () => {
+    const { enviar, db } = setup();
+    db.withoutColumn("grade_snapshots", "period");
+    const res = await enviar(payloadItsonApi());
+    assert.equal(res.status, 500);
+    assert.deepEqual(res.body, { error: "error_interno" });
+    assert.equal(db.tables.grade_snapshots.length, 0);
   });
 });
 

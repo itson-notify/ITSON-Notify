@@ -22,8 +22,10 @@ explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `0
 `011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54) y
 `012_student_itson_profiles.sql` (perfil ITSON cifrado y `grade_snapshots.period`, ITN-55).
 
-La **012 se aplica ANTES de desplegar** el código de ITN-55: desde esa versión, `POST /internal/grade-snapshots`
-escribe y lee `grade_snapshots.period` también para iVirtual (con `null`). Sin la columna, toda corrida responde 500.
+La **012 se aplica antes de habilitar `itson_api`** (antes de que el worker mande snapshots de la API o de que los
+alumnos guarden su perfil), pero no hace falta antes de desplegar el código de ITN-55: el flujo de iVirtual no lee,
+no filtra ni escribe `grade_snapshots.period`, así que funciona igual en una base sin la 012. Sin ella, solo fallan
+los snapshots `itson_api` (500, sin dejar snapshot), `/api/itson-profile` y `/internal/itson-profiles/active`.
 
 La **011 se aplica ANTES de desplegar** el código de ITN-54. Si el código corre sin ella, el logout recibe
 `42703`, registra `session_revocation_column_missing` y vuelve a borrar la sesión como antes, sin marca. Ese
@@ -155,9 +157,11 @@ Snapshot de un semestre de la API REST de ITSON (`getGrades`). Cada materia es u
 - `"-"` (sin calificación) se guarda como `null`; los demás códigos (`"0"`..`"10"`, `"A"`) se guardan tal cual,
   como texto. Un código que no cumpla `^[0-9A-Z]{1,3}$` responde 400. La interpretación vive solo en
   `src/services/itsonGradeCodes.js`.
-- `period` va a `grade_snapshots.period` y a `subjects.period`.
-- El detector compara cada snapshot con el anterior del **mismo `user_id`, `source` y `period`**: iVirtual
-  (`period` null) y cada semestre de la API se comparan solo consigo mismos. El primero de cada uno es baseline.
+- `period` también va a `subjects.period` (columna de la 001).
+- El detector compara cada snapshot con el anterior del mismo `user_id` y `source`; en `itson_api`, además del
+  **mismo `period`**, así cada semestre de la API se compara solo consigo mismo. iVirtual nunca toca `period`. El
+  primero de cada uno es baseline.
+- `period` va a `grade_snapshots.period` solo en `itson_api`; iVirtual no manda la columna.
 
 Los campos desconocidos se ignoran. Un body inválido responde `400`:
 

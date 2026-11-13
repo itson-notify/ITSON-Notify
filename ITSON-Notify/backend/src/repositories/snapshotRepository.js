@@ -61,6 +61,10 @@ async function upsertSubjects(supabase, userId, courses, period = null) {
   return ids;
 }
 
+// Solo itson_api escribe grade_snapshots.period (migración 012). iVirtual no manda la
+// columna, así sigue funcionando en una base sin la 012.
+const ITSON_API = "itson_api";
+
 // Inserta el snapshot si no existe. ignoreDuplicates no sobrescribe
 // captured_at de una corrida ya guardada; .select() devuelve la fila solo si
 // esta llamada la insertó.
@@ -70,7 +74,14 @@ async function insertSnapshot(supabase, { id, userId, source, period = null, cap
     await supabase
       .from("grade_snapshots")
       .upsert(
-        { id, user_id: userId, source, period, captured_at: capturedAt, raw_payload: null },
+        {
+          id,
+          user_id: userId,
+          source,
+          ...(source === ITSON_API ? { period } : {}),
+          captured_at: capturedAt,
+          raw_payload: null,
+        },
         { onConflict: ON_CONFLICT.grade_snapshots, ignoreDuplicates: true },
       )
       .select("id"),
