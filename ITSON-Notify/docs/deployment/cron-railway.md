@@ -65,6 +65,26 @@ Un fallo que persiste alerta en **cada** corrida, pero a lo más una vez por cor
 para deduplicar. Para detener los avisos, pon `RPA_PAUSADO=true`. La tabla con cada texto está en
 [`telegram-alertas.md`](../telegram-alertas.md#7-qué-fallos-del-rpa-alertan).
 
+### Fase de la API REST de ITSON (ITN-55)
+
+Después de la fase de iVirtual, el mismo proceso corre la de la API REST de ITSON
+(`automation/schedulers/itson-api-fase.js`). Son independientes: cada una tiene su propio try/catch, sus conteos y
+a lo más **una** alerta, así que una corrida puede mandar hasta dos. La de la API corre aunque no haya cuentas de
+iVirtual, y el código de salida es 1 si cualquiera de las dos sale con 1.
+
+| Código | Significado de la fase de la API |
+|--------|----------------------------------|
+| 0 | Sin fallas, sin perfiles, sin `ITSON_API_BASE_URL` (fase deshabilitada) o `RPA_PAUSADO=true` |
+| 1 | Al menos una llamada o entrega fallida (alerta `api_itson_con_fallas` con conteos), `ITSON_API_BASE_URL` inválida o el backend no entrega la lista de perfiles |
+
+Por alumno de `GET /internal/itson-profiles/active`: `getAlumnoInscrito` (si no está inscrito u hoy, en hora de
+Hermosillo, está fuera de las fechas del semestre, se omite; si falla, se sigue y se cuenta en
+`inscripcion_fallida`), `getProgress` y `getGrades` para los semestres distintos de `"0"` con materias pendientes,
+máximo 3. Una respuesta con `subject.program` distinto de la carrera guardada se descarta (`forma_invalida`). Un
+semestre sin materias no se envía. Cada alumno va en su propio try/catch. Al terminar se loguea
+`Fase API de ITSON terminada: alumnos=... entregadas=... fallas_api=...`. Los logs nunca llevan correo, matrícula,
+carrera, materias, calificaciones ni la URL de la API.
+
 El servicio usa `restartPolicyType: "NEVER"`, así que **ningún** código distinto de 0 provoca reintentos: la
 corrida queda marcada como fallida en Railway y espera al siguiente horario. Los logs solo traen conteos, la
 posición de la cuenta (`cuenta 2/5`), status HTTP y errorcode: nunca calificaciones, correo, usuario, contraseña
@@ -104,6 +124,9 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
    `Id_User`, `P_User` y `ALUMNO_EMAIL` ya no se usan: bórralas del servicio. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` ni `CREDENTIALS_ENCRYPTION_KEY` en este servicio.
    Para recibir alertas, captura también `TELEGRAM_BOT_TOKEN` (*sealed*) y `TELEGRAM_CHAT_ID`
    ([`telegram-alertas.md`](../telegram-alertas.md)); sin ellas los fallos solo quedan en los logs.
+   ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_API_BASE_URL` (solo el origen `https://...`,
+   sin `/api` ni query; el worker agrega `/api/getGrades` y demás). Sin ella la fase queda deshabilitada. Antes,
+   aplica la migración 012 en el backend.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.
 7. Prueba una corrida y revisa los logs:
 
