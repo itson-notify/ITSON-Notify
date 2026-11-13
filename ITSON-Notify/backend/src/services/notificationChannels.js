@@ -48,8 +48,8 @@ function emailChannel({ apiKey, from, to, fetchImpl = fetch }) {
   };
 }
 
-// Envía el aviso por Web Push a los dispositivos suscritos del usuario.
-// Si un endpoint responde 404 o 410 (suscripción vencida o revocada), se borra.
+// Envía el aviso por Web Push a los dispositivos suscritos del usuario, después
+// de purgar los de sesiones revocadas (ITN-54). Si un endpoint responde 404 o 410 (suscripción vencida o revocada), se borra.
 function webPushChannel({
   vapidPublicKey,
   vapidPrivateKey,
@@ -64,6 +64,10 @@ function webPushChannel({
     name: "web_push",
     async send(message, { userId, gradeChangeId } = {}) {
       if (!userId) throw new Error("webPushChannel requiere userId");
+      // ITN-54: antes de elegir destinatarios, purga el Push de las sesiones que el
+      // logout marcó como revocadas. Falla cerrado: si la purga lanza, no se envía
+      // a ningún dispositivo y el aviso queda failed para el siguiente reintento.
+      await pushRepo.purgeRevokedPushSubscriptions(userId);
       const subs = await pushRepo.listPushSubscriptions(userId);
       if (!subs || subs.length === 0) {
         throw new Error("Usuario sin suscripciones Web Push");

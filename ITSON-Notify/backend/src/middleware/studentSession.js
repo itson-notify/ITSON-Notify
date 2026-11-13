@@ -1,6 +1,7 @@
 // ITN-53 - Lectura de la sesión de Google del alumno, compartida por /auth/google
 // y /api. La cookie solo identifica la sesión: siempre se confirma contra
 // google_app_sessions para que un logout la invalide en todas las instancias.
+// Una sesión con revoked_at (ITN-54) cuenta como cerrada.
 const crypto = require("crypto");
 const { decrypt } = require("../utils/secureToken");
 
@@ -22,11 +23,14 @@ function createSessionReader({ secret, supabase, now = Date.now }) {
     const session = decrypt(cookieValue(req, SESSION_COOKIE), secret, "google-session");
     if (!session || !Number.isFinite(session.exp) || session.exp <= now() ||
         !session.userId || !session.googleId || typeof session.sessionId !== "string") return null;
+    // "*" y no una lista de columnas: si falta la migración 011, pedir revoked_at
+    // daría 42703 en cada petición. Sin la columna, revoked_at llega undefined.
     const { data, error } = await supabase.from("google_app_sessions")
-      .select("user_id, google_id, expires_at").eq("id", sessionHash(session.sessionId)).maybeSingle();
+      .select("*").eq("id", sessionHash(session.sessionId)).maybeSingle();
     if (error) throw error;
-    return data && data.user_id === session.userId && data.google_id === session.googleId &&
-      Date.parse(data.expires_at) > now() ? session : null;
+    // ITN-54: el logout marca la sesión con revoked_at en lugar de borrarla.
+    return data && !data.revoked_at && data.user_id === session.userId &&
+      data.google_id === session.googleId && Date.parse(data.expires_at) > now() ? session : null;
   };
 }
 

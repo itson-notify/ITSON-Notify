@@ -22,6 +22,26 @@ const logger = { info() {}, warn() {}, error() {} };
 const b64 = data => Buffer.from(JSON.stringify(data)).toString('base64url');
 const testSessionHash = crypto.createHash('sha256').update('test-session').digest('hex');
 
+// Consulta encadenable mínima sobre un Map: eq, in, not(col, 'is', null), select y
+// maybeSingle. `key` es la columna que hace de llave del Map.
+function filterQuery(map, key, run) {
+  const filters = [];
+  const rows = () => [...map].map(([k, row]) => ({ ...row, [key]: k }))
+    .filter(row => filters.every(f => f(row)));
+  const query = {
+    eq(col, value) { filters.push(row => row[col] === value); return query; },
+    in(col, values) { filters.push(row => values.includes(row[col])); return query; },
+    not(col, op, value) {
+      assert.equal(op, 'is'); assert.equal(value, null);
+      filters.push(row => row[col] != null); return query;
+    },
+    select() { return query; },
+    async maybeSingle() { return { data: rows()[0] || null, error: null }; },
+    then(resolve, reject) { return Promise.resolve().then(() => run(rows())).then(resolve, reject); },
+  };
+  return query;
+}
+
 function makeDb() {
   const users = new Map();
   const grants = new Map();
@@ -35,37 +55,28 @@ function makeDb() {
     users, grants, sessions, pushSubscriptions, get deletions() { return deletions; },
     from(table) {
       if (table === 'google_app_sessions') return {
-        select() { return { eq(field, value) { return { async maybeSingle() {
-          return { data: sessions.get(value) || null, error: null };
-        } }; } }; },
+        select() { return filterQuery(sessions, 'id', rows => ({ data: rows, error: null })); },
         async insert(row) { sessions.set(row.id, { ...row }); return { error: null }; },
+        // ITN-54: el logout marca revoked_at en lugar de borrar.
+        update(patch) {
+          return filterQuery(sessions, 'id', rows => {
+            for (const row of rows) sessions.set(row.id, { ...sessions.get(row.id), ...patch });
+            return { data: null, error: null };
+          });
+        },
         delete() {
-          const filters = {};
-          const query = {
-            eq(key, value) { filters[key] = value; return query; },
-            then(resolve, reject) {
-              for (const [id, row] of sessions) {
-                if (Object.entries(filters).every(([key, value]) => (key === 'id' ? id : row[key]) === value)) sessions.delete(id);
-              }
-              return Promise.resolve({ error: null }).then(resolve, reject);
-            },
-          };
-          return query;
+          return filterQuery(sessions, 'id', rows => {
+            for (const row of rows) sessions.delete(row.id);
+            return { data: null, error: null };
+          });
         },
       };
       if (table === 'push_subscriptions') return {
         delete() {
-          const filters = {};
-          const query = {
-            eq(key, value) { filters[key] = value; return query; },
-            then(resolve, reject) {
-              for (const [endpoint, row] of pushSubscriptions) {
-                if (Object.entries(filters).every(([key, value]) => row[key] === value)) pushSubscriptions.delete(endpoint);
-              }
-              return Promise.resolve({ error: null }).then(resolve, reject);
-            },
-          };
-          return query;
+          return filterQuery(pushSubscriptions, 'endpoint', rows => {
+            for (const row of rows) pushSubscriptions.delete(row.endpoint);
+            return { data: rows, error: null };
+          });
         },
       };
       if (table === 'app_users') return {
@@ -462,7 +473,13 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
         .send({ endpoint: 'https://fcm.test/laptop' });
 
       assert.equal(response.status, 204);
-      assert.equal(db.sessions.size, 0);
+      if (target === 'session') {
+        // ITN-54: la marca se conserva para que la purga borre después este Push.
+        assert.equal(db.sessions.size, 1);
+        assert.ok(db.sessions.get(testSessionHash).revoked_at);
+      } else {
+        assert.equal(db.sessions.size, 0);
+      }
       assert.match(response.headers['set-cookie'].join(';'), /Max-Age=0|Expires=Thu, 01 Jan 1970/);
       assert.deepEqual(cookiePaths(response.headers['set-cookie'], 'itn41_google_session').sort(), ['/', '/auth/google']);
       assert.equal((await request(app).get('/auth/google/session').set('Cookie', cookie)).status, 401);
@@ -476,7 +493,8 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
     });
   }
 
-  it('logout responde 500 y conserva la sesión si falla el borrado de google_app_sessions', async () => {
+  // ITN-54: el paso obligatorio ahora es el update que marca revoked_at.
+  it('logout responde 500 y conserva la sesión si falla invalidar google_app_sessions', async () => {
     const db = makeDb();
     const originalFrom = db.from.bind(db);
     db.from = table => {
@@ -484,7 +502,7 @@ describe('ITN-41 - integración con ITN-40 y sesiones revocables', () => {
       if (table !== 'google_app_sessions') return real;
       return {
         ...real,
-        delete() {
+        update() {
           const query = {
             eq() { return query; },
             then(resolve, reject) {
