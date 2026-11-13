@@ -71,6 +71,19 @@ const TABLES = {
     },
     rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
   },
+  // 012 (ITN-55): una fila por alumno; matrícula cifrada como en la 007.
+  student_itson_profiles: {
+    uniques: [["user_id"]],
+    notNull: ["user_id", "matricula_ciphertext", "matricula_nonce", "matricula_auth_tag", "career"],
+    defaults: { key_version: 1 },
+    defaultNow: ["updated_at"],
+    checks: {
+      career: (v) => typeof v === "string" && /^[A-Z]{2,8}$/.test(v),
+      matricula_ciphertext: esBytea(),
+      matricula_nonce: esBytea(12),
+      matricula_auth_tag: esBytea(16),
+    },
+  },
   // 008
   google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"] },
   google_app_sessions: { uniques: [], notNull: ["user_id", "google_id", "expires_at"] },
