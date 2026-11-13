@@ -59,11 +59,22 @@ function booleano(v) {
   return null;
 }
 
-// Fecha del semestre como "AAAA-MM-DD". Acepta ISO (con o sin hora) y dd/mm/aaaa.
+const ZONA = "America/Hermosillo";
+const diaEnHermosillo = (fecha) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: ZONA, year: "numeric", month: "2-digit", day: "2-digit" }).format(fecha);
+
+// Fecha del semestre como "AAAA-MM-DD" en hora de Hermosillo. getAlumnoInscrito la
+// manda en ISO sin zona (aaaa-mm-ddThh:mm:ss), que ya es hora de Hermosillo: se toma
+// el día tal cual. Si trae zona (Z o ±hh:mm) se convierte a Hermosillo. También
+// acepta dd/mm/aaaa. Cualquier otra cosa es null.
 function fechaDia(v) {
   if (typeof v !== "string") return null;
   const t = v.trim();
-  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(t);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/.test(t)) {
+    const fecha = new Date(t);
+    return Number.isNaN(fecha.getTime()) ? null : diaEnHermosillo(fecha);
+  }
+  let m = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.exec(t);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
   if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
@@ -75,17 +86,17 @@ const entero = (v) => {
   return Number.isInteger(n) && n >= 0 ? n : null;
 };
 
-// { inscrito, inicio, fin } o null si la forma no es la esperada.
+// { inscrito, inicio, fin } o null si el cuerpo no es un objeto. inscrito, inicio o
+// fin quedan en null si no se pueden leer: la fase decide con la ventana de fechas y,
+// sin fechas legibles, consulta de todos modos.
 function leerInscripcion(cuerpo) {
   const c = cargaDe(cuerpo);
   if (!esObjeto(c)) return null;
-  const inscrito = booleano(c.inscrito);
-  if (inscrito === null) return null;
-  const inicio = fechaDia(c.fechaInicioSemestre);
-  const fin = fechaDia(c.fechaFinSemestre);
-  // Inscrito sin fechas legibles no permite decidir: se toma como forma inválida.
-  if (inscrito && (!inicio || !fin)) return null;
-  return { inscrito, inicio, fin };
+  return {
+    inscrito: booleano(c.inscrito),
+    inicio: fechaDia(c.fechaInicioSemestre),
+    fin: fechaDia(c.fechaFinSemestre),
+  };
 }
 
 // [{ semesterKey, approvedSubjects, totalSubjects }] o null.
@@ -218,6 +229,7 @@ module.exports = {
   leerInscripcion,
   leerProgreso,
   leerCalificaciones,
+  fechaDia,
   TIMEOUT_MS,
   MAX_REINTENTOS,
   PAUSA_ENTRE_LLAMADAS_MS,

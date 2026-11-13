@@ -3,7 +3,7 @@
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { ejecutarItsonApi, semestresPendientes, normalizarMaterias, hoyEnHermosillo } = require("../itson-api-fase");
+const { ejecutarItsonApi, semestresPendientes, normalizarMaterias, hoyEnHermosillo, sumarDias } = require("../itson-api-fase");
 const { arrancar } = require("../extraccion-cron");
 const { armarPayload, entregarResultados } = require("../entrega-backend");
 const { crearClientePerfilesItson } = require("../perfiles-itson-backend");
@@ -116,17 +116,55 @@ describe("flujo por alumno", () => {
     assert.deepEqual(semestresPendientes(semestres), ["01", "02", "03"]);
   });
 
-  test("no inscrito u hoy fuera de fechas: se omite sin consultar más", async (t) => {
+  test("ventana por defecto: 7 días antes del inicio a 45 después del fin, inclusive", async (t) => {
+    // HOY = 2026-11-13.
+    const ins = (inicio, fin, inscrito = true) => ({ ok: true, inscrito, inicio, fin });
     const s = simular(t, {
       alumnos: [
-        { n: 1, inscripcion: { ok: true, inscrito: false, inicio: null, fin: null } },
-        { n: 2, inscripcion: { ok: true, inscrito: true, inicio: "2027-01-10", fin: "2027-05-30" } },
-        { n: 3, inscripcion: { ok: true, inscrito: true, inicio: "2026-08-10", fin: HOY } }, // último día: sí
+        { n: 1, inscripcion: ins("2026-11-20", "2027-05-30") }, // 7 días antes del inicio: sí
+        { n: 2, inscripcion: ins("2026-11-21", "2027-05-30") }, // 8 días antes: no
+        { n: 3, inscripcion: ins("2026-01-10", "2026-09-29") }, // 45 días después del fin: sí
+        { n: 4, inscripcion: ins("2026-01-10", "2026-09-28") }, // 46 días después: no
+        { n: 5, inscripcion: ins("2026-08-10", "2026-12-12", false) }, // inscrito false dentro: sí
+        { n: 6, inscripcion: { ok: true, inscrito: true, inicio: null, fin: "2026-12-12" } }, // ilegible: sí
       ],
     });
     assert.equal(await s.correr(), 0);
-    assert.deepEqual(s.llamadas.filter((l) => l[0] === "progress").map((l) => l[1]), [matricula(3)]);
-    assert.match(s.lineas.at(-1), /no_inscritos=2/);
+    assert.deepEqual(
+      s.llamadas.filter((l) => l[0] === "progress").map((l) => l[1]),
+      [matricula(1), matricula(3), matricula(5), matricula(6)],
+    );
+    assert.match(s.lineas.at(-1), /fuera_de_ventana=2 fechas_ilegibles=1/);
+    assert.equal(s.alertar.mock.callCount(), 0); // fechas ilegibles no es una falla
+  });
+
+  test("ventana configurable con ITSON_API_VENTANA_ANTES_DIAS y ITSON_API_VENTANA_DESPUES_DIAS", async (t) => {
+    const ins = (inicio, fin) => ({ ok: true, inscrito: true, inicio, fin });
+    const s = simular(t, {
+      env: { ...ENV, ITSON_API_VENTANA_ANTES_DIAS: "0", ITSON_API_VENTANA_DESPUES_DIAS: "60" },
+      alumnos: [
+        { n: 1, inscripcion: ins("2026-11-14", "2027-05-30") }, // empieza mañana: con 0 días antes, no
+        { n: 2, inscripcion: ins("2026-01-10", "2026-09-14") }, // 60 días después del fin: sí
+      ],
+    });
+    assert.equal(await s.correr(), 0);
+    assert.deepEqual(s.llamadas.filter((l) => l[0] === "progress").map((l) => l[1]), [matricula(2)]);
+  });
+
+  test("ventana inválida: 1 y alerta de configuración que nombra la variable sin su valor", async (t) => {
+    for (const valor of ["-1", "abc", "400"]) {
+      const s = simular(t, { env: { ...ENV, ITSON_API_VENTANA_DESPUES_DIAS: valor } });
+      assert.equal(await s.correr(), 1);
+      assert.equal(s.alertar.mock.calls[0].arguments[0].tipo, "configuracion");
+      assert.match(s.errores[0], /ITSON_API_VENTANA_DESPUES_DIAS debe ser un entero/);
+      assert.ok(!s.errores[0].includes(valor));
+      assert.equal(s.llamadas.length, 0);
+    }
+  });
+
+  test("sumarDias cruza meses y años", () => {
+    assert.equal(sumarDias("2026-12-12", 45), "2027-01-26");
+    assert.equal(sumarDias("2026-03-01", -7), "2026-02-22");
   });
 
   test("si getAlumnoInscrito falla, sigue con el alumno y lo cuenta", async (t) => {

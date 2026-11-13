@@ -9,6 +9,7 @@ const {
   leerInscripcion,
   leerProgreso,
   leerCalificaciones,
+  fechaDia,
   MAX_REINTENTOS,
 } = require("../itsonApiClient");
 
@@ -155,13 +156,27 @@ describe("reintentos y errores", () => {
 });
 
 describe("lectura de respuestas", () => {
-  test("leerInscripcion acepta booleanos en texto y fechas dd/mm/aaaa", () => {
+  test("leerInscripcion: ISO sin zona en hora de Hermosillo, booleanos en texto y dd/mm/aaaa", () => {
+    assert.deepEqual(
+      leerInscripcion({ inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T23:59:59" }),
+      { inscrito: true, inicio: "2026-08-10", fin: "2026-12-12" },
+    );
     assert.deepEqual(leerInscripcion({ responseValue: { inscrito: "S", fechaInicioSemestre: "10/8/2026", fechaFinSemestre: "12/12/2026" } }), {
       inscrito: true, inicio: "2026-08-10", fin: "2026-12-12",
     });
+  });
+
+  test("leerInscripcion: lo ilegible queda en null en lugar de invalidar la respuesta", () => {
     assert.deepEqual(leerInscripcion({ inscrito: false }), { inscrito: false, inicio: null, fin: null });
-    assert.equal(leerInscripcion({ inscrito: true, fechaInicioSemestre: "pronto" }), null);
-    assert.equal(leerInscripcion({ inscrito: "tal vez" }), null);
+    assert.deepEqual(leerInscripcion({ inscrito: "tal vez", fechaInicioSemestre: "pronto" }), { inscrito: null, inicio: null, fin: null });
+    assert.equal(leerInscripcion({ responseValue: [] }), null);
+  });
+
+  test("fechaDia: con zona se convierte a Hermosillo (UTC-7)", () => {
+    assert.equal(fechaDia("2026-12-13T03:00:00Z"), "2026-12-12");
+    assert.equal(fechaDia("2026-12-13T03:00:00"), "2026-12-13"); // sin zona: ya es Hermosillo
+    assert.equal(fechaDia("2026-12-13"), "2026-12-13");
+    assert.equal(fechaDia("13 dic"), null);
   });
 
   test("leerProgreso acepta números en texto y rechaza faltantes", () => {

@@ -2,9 +2,13 @@
 // (extraccion-cron.js): su propio try/catch, sus conteos y a lo más una alerta.
 //
 // Por alumno de GET /internal/itson-profiles/active, en secuencia:
-//   1. getAlumnoInscrito: si no está inscrito o hoy (hora de Hermosillo) está fuera de
-//      fechaInicioSemestre..fechaFinSemestre, se omite. Si el endpoint falla, se sigue
-//      con el alumno y se cuenta en inscripcion_fallida.
+//   1. getAlumnoInscrito: se consulta solo si hoy (hora de Hermosillo) cae en la
+//      ventana desde ITSON_API_VENTANA_ANTES_DIAS (7) días antes de fechaInicioSemestre
+//      hasta ITSON_API_VENTANA_DESPUES_DIAS (45) días después de fechaFinSemestre: las
+//      calificaciones finales suelen salir al cierre o después. `inscrito` no decide:
+//      con false, dentro de la ventana se consulta igual. Si las fechas no se pueden
+//      leer, se consulta y se cuenta en fechas_ilegibles. Si el endpoint falla, se
+//      consulta y se cuenta en inscripcion_fallida.
 //   2. getProgress: semestres con semesterKey distinto de "0" y approvedSubjects menor
 //      que totalSubjects, en orden, máximo 3.
 //   3. getGrades por semestre. Si alguna materia trae un subject.program distinto de
@@ -35,6 +39,39 @@ const MAX_SEMESTRES = 3;
 const PAUSA_ENTRE_ALUMNOS_MS = 2_000;
 const ZONA = "America/Hermosillo";
 const RE_SEMESTRE = /^\d{2}$/;
+const VENTANA_ANTES_DIAS = 7;
+const VENTANA_DESPUES_DIAS = 45;
+const MAX_VENTANA_DIAS = 365;
+
+// Días de la ventana desde el env. { ok: true, antes, despues } o { ok: false, error }
+// (el error nombra la variable, nunca el valor).
+function leerVentana(env) {
+  const leer = (nombre, defecto) => {
+    const crudo = env[nombre]?.trim();
+    if (!crudo) return defecto;
+    if (!/^\d{1,3}$/.test(crudo) || Number(crudo) > MAX_VENTANA_DIAS) return null;
+    return Number(crudo);
+  };
+  const antes = leer("ITSON_API_VENTANA_ANTES_DIAS", VENTANA_ANTES_DIAS);
+  const despues = leer("ITSON_API_VENTANA_DESPUES_DIAS", VENTANA_DESPUES_DIAS);
+  const malas = [];
+  if (antes === null) malas.push("ITSON_API_VENTANA_ANTES_DIAS");
+  if (despues === null) malas.push("ITSON_API_VENTANA_DESPUES_DIAS");
+  if (malas.length > 0) return { ok: false, error: `${malas.join(" y ")} debe ser un entero de 0 a ${MAX_VENTANA_DIAS}.` };
+  return { ok: true, antes, despues };
+}
+
+// "AAAA-MM-DD" más n días (n puede ser negativo).
+function sumarDias(dia, n) {
+  const [a, m, d] = dia.split("-").map(Number);
+  return new Date(Date.UTC(a, m - 1, d + n)).toISOString().slice(0, 10);
+}
+
+// true, false, o null si las fechas no se pueden leer.
+function enVentana({ inicio, fin }, hoy, { antes, despues }) {
+  if (!inicio || !fin) return null;
+  return sumarDias(inicio, -antes) <= hoy && hoy <= sumarDias(fin, despues);
+}
 
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -77,9 +114,6 @@ function normalizarMaterias(materias, carrera) {
   return courses;
 }
 
-// Inscrito y hoy dentro de las fechas (inclusive).
-const enSemestre = (inscripcion, hoy) => inscripcion.inscrito && inscripcion.inicio <= hoy && hoy <= inscripcion.fin;
-
 async function ejecutarItsonApi({
   env = process.env,
   crearClienteApi = crearClienteItsonApi,
@@ -111,8 +145,9 @@ async function ejecutarItsonApi({
 
   const base = leerBaseUrl(env);
   const entrega = leerConfigEntrega(env);
-  if (!base.ok || !entrega.ok) {
-    falla(`Fase de la API de ITSON cancelada: ${[base.error, entrega.error].filter(Boolean).join(" ")}`);
+  const ventana = leerVentana(env);
+  if (!base.ok || !entrega.ok || !ventana.ok) {
+    falla(`Fase de la API de ITSON cancelada: ${[base.error, entrega.error, ventana.error].filter(Boolean).join(" ")}`);
     await avisar({ tipo: "configuracion" });
     return EXIT_CODES.error;
   }
@@ -135,7 +170,8 @@ async function ejecutarItsonApi({
 
   const api = crearClienteApi({ baseUrl: base.baseUrl });
   const c = {
-    no_inscritos: 0,
+    fuera_de_ventana: 0,
+    fechas_ilegibles: 0,
     inscripcion_fallida: 0,
     sin_semestres: 0,
     semestres_consultados: 0,
@@ -158,10 +194,16 @@ async function ejecutarItsonApi({
     if (!inscripcion.ok) {
       c.inscripcion_fallida += 1;
       falla(`getAlumnoInscrito fallida (${alumno}): motivo=${inscripcion.motivo}. Se consulta de todos modos.`);
-    } else if (!enSemestre(inscripcion, hoy())) {
-      c.no_inscritos += 1;
-      info(`Alumno sin semestre en curso (${alumno}): se omite.`);
-      return;
+    } else {
+      const dentro = enVentana(inscripcion, hoy(), ventana);
+      if (dentro === null) {
+        c.fechas_ilegibles += 1;
+        info(`Fechas del semestre ilegibles (${alumno}): se consulta de todos modos.`);
+      } else if (!dentro) {
+        c.fuera_de_ventana += 1;
+        info(`Fuera de la ventana del semestre (${alumno}): se omite.`);
+        return;
+      }
     }
 
     const progreso = await api.getProgress({ matricula, career });
@@ -219,7 +261,8 @@ async function ejecutarItsonApi({
 
   const fallidas = c.inscripcion_fallida + c.fallas_api + c.forma_invalida + c.entregas_fallidas + c.excepciones;
   const resumen =
-    `Fase API de ITSON terminada: alumnos=${total} no_inscritos=${c.no_inscritos} ` +
+    `Fase API de ITSON terminada: alumnos=${total} fuera_de_ventana=${c.fuera_de_ventana} ` +
+    `fechas_ilegibles=${c.fechas_ilegibles} ` +
     `sin_semestres=${c.sin_semestres} semestres_consultados=${c.semestres_consultados} ` +
     `sin_materias=${c.sin_materias} entregadas=${c.entregadas} inscripcion_fallida=${c.inscripcion_fallida} ` +
     `fallas_api=${c.fallas_api} forma_invalida=${c.forma_invalida} entregas_fallidas=${c.entregas_fallidas} ` +
@@ -248,6 +291,11 @@ module.exports = {
   ejecutarItsonApi,
   semestresPendientes,
   normalizarMaterias,
+  leerVentana,
+  enVentana,
+  sumarDias,
+  VENTANA_ANTES_DIAS,
+  VENTANA_DESPUES_DIAS,
   hoyEnHermosillo,
   MAX_SEMESTRES,
   EXIT_CODES,
