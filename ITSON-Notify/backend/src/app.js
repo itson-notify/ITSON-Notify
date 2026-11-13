@@ -7,6 +7,7 @@ const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
+const { itsonProfilesInternalRouter } = require("./routes/itsonProfilesInternal");
 const { authGoogleRouter, getGoogleSession, sessionHash } = require("./routes/authGoogle");
 const { studentApiRouter } = require("./routes/studentApi");
 const { buildChannels } = require("./services/notificationChannels");
@@ -73,6 +74,8 @@ function createApp({
     "/internal/credentials",
     credentialsRouter({ supabase, logger, now, credentialCrypto }),
   );
+  // ITN-55 - Perfiles ITSON para la fase de la API REST del worker. Solo lectura.
+  app.use("/internal/itson-profiles", itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto }));
 
   // Autenticación y autorización con Google Classroom (ITN-41)
   app.use(
