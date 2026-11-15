@@ -314,6 +314,63 @@ describe("dos fases independientes en arrancar", () => {
 });
 
 describe("piezas reales con fetch simulado", () => {
+  // Cliente real de la API con fetch simulado; getProgress y getGrades responden bien.
+  async function correrConInscripcion(t, cuerpoInscrito) {
+    const salidas = [];
+    const errores = [];
+    const alertar = t.mock.fn(async () => {});
+    const entregar = t.mock.fn(async () => ({ ok: true }));
+    const respuestaApi = (url) => {
+      const u = new URL(url);
+      if (u.pathname.endsWith("getAlumnoInscrito")) return cuerpoInscrito;
+      if (u.pathname.endsWith("getProgress")) return { response: { progress: [{ semesterKey: "07", approvedSubjects: 0, totalSubjects: 2 }] } };
+      return { message: "OK", responseValue: [{ subject: { name: "Materia X", semester: null, idCatalog: "4601", program: CARRERA }, gradeValue: "-", studying: true }] };
+    };
+    const fetchApi = async (url) => ({ ok: true, status: 200, json: async () => respuestaApi(url), text: async () => "" });
+    const codigo = await ejecutarItsonApi({
+      env: ENV,
+      crearClienteApi: ({ baseUrl }) => crearClienteItsonApi({ baseUrl, fetchFn: fetchApi, sleep: async () => {} }),
+      crearClientePerfiles: () => ({ listarActivos: async () => ({ ok: true, alumnos: [perfil(1)], descartados: 0 }) }),
+      entregar,
+      alertar,
+      pausa: async () => {},
+      hoy: () => HOY,
+      log: (l) => salidas.push(l),
+      logError: (l) => errores.push(l),
+    });
+    return { codigo, salidas, errores, alertar, entregar };
+  }
+
+  test("getAlumnoInscrito con la forma real (arreglo de un objeto): sin inscripcion_fallida, 0 y sin alerta", async (t) => {
+    const r = await correrConInscripcion(t, [
+      { inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T00:00:00" },
+    ]);
+    assert.equal(r.codigo, 0);
+    assert.equal(r.alertar.mock.callCount(), 0);
+    assert.deepEqual(r.errores, []);
+    assert.equal(r.entregar.mock.callCount(), 1);
+    assert.match(r.salidas.at(-1), /fuera_de_ventana=0 fechas_ilegibles=0 .*inscripcion_fallida=0 /);
+  });
+
+  test("getAlumnoInscrito vacío: fechas_ilegibles registrado con info, consulta igual, 0 y sin alerta", async (t) => {
+    const r = await correrConInscripcion(t, { message: "Sin datos", responseValue: null });
+    assert.equal(r.codigo, 0);
+    assert.equal(r.alertar.mock.callCount(), 0);
+    assert.deepEqual(r.errores, []);
+    assert.equal(r.entregar.mock.callCount(), 1);
+    assert.ok(r.salidas.some((l) => /Fechas del semestre ilegibles \(alumno 1\/1\)/.test(l)));
+    assert.match(r.salidas.at(-1), /fechas_ilegibles=1 .*inscripcion_fallida=0 /);
+  });
+
+  test("getAlumnoInscrito con dos objetos: forma_invalida cuenta en inscripcion_fallida y alerta", async (t) => {
+    const uno = { inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T00:00:00" };
+    const r = await correrConInscripcion(t, [uno, uno]);
+    assert.equal(r.codigo, 1);
+    assert.equal(r.alertar.mock.callCount(), 1);
+    assert.equal(r.alertar.mock.calls[0].arguments[0].conteos.inscripcion_fallida, 1);
+    assert.ok(r.errores.some((l) => /getAlumnoInscrito fallida \(alumno 1\/1\): motivo=forma_invalida/.test(l)));
+  });
+
   test("de punta a punta: ninguna línea ni alerta contiene matrícula, carrera, correo ni URL", async () => {
     const salidas = [];
     const alertas = [];

@@ -169,7 +169,50 @@ describe("lectura de respuestas", () => {
   test("leerInscripcion: lo ilegible queda en null en lugar de invalidar la respuesta", () => {
     assert.deepEqual(leerInscripcion({ inscrito: false }), { inscrito: false, inicio: null, fin: null });
     assert.deepEqual(leerInscripcion({ inscrito: "tal vez", fechaInicioSemestre: "pronto" }), { inscrito: null, inicio: null, fin: null });
-    assert.equal(leerInscripcion({ responseValue: [] }), null);
+    assert.equal(leerInscripcion("no es objeto"), null);
+  });
+
+  test("leerInscripcion: arreglo de exactamente un objeto, solo o envuelto (forma real)", () => {
+    const uno = { inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T00:00:00" };
+    const esperado = { inscrito: true, inicio: "2026-08-10", fin: "2026-12-12" };
+    assert.deepEqual(leerInscripcion([uno]), esperado);
+    assert.deepEqual(leerInscripcion({ responseValue: [uno] }), esperado);
+    assert.deepEqual(leerInscripcion({ response: [uno] }), esperado);
+  });
+
+  test("leerInscripcion: arreglo con 0 o 2 elementos, o elemento que no es objeto, es forma_invalida", () => {
+    const uno = { inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T00:00:00" };
+    assert.equal(leerInscripcion([uno, { ...uno, inscrito: false }]), null);
+    assert.equal(leerInscripcion({ responseValue: [uno, uno] }), null);
+    assert.equal(leerInscripcion([]), null);
+    assert.equal(leerInscripcion([true]), null);
+    assert.equal(leerInscripcion({ responseValue: [[uno]] }), null);
+  });
+
+  test("leerInscripcion: respuesta vacía es válida sin datos y el booleano directo es inscrito", () => {
+    const sinDatos = { inscrito: null, inicio: null, fin: null };
+    for (const vacio of [null, [], {}]) {
+      assert.deepEqual(leerInscripcion({ responseValue: vacio }), sinDatos);
+      assert.deepEqual(leerInscripcion({ message: "Sin datos", response: vacio }), sinDatos);
+    }
+    assert.deepEqual(leerInscripcion({ responseValue: false }), { inscrito: false, inicio: null, fin: null });
+    assert.deepEqual(leerInscripcion({ response: true }), { inscrito: true, inicio: null, fin: null });
+  });
+
+  test("getAlumnoInscrito con la forma real: ok con fechas; con dos objetos: forma_invalida", async () => {
+    const uno = { inscrito: true, fechaInicioSemestre: "2026-08-10T00:00:00", fechaFinSemestre: "2026-12-12T00:00:00" };
+    assert.deepEqual(await cliente([json([uno])]).api.getAlumnoInscrito(ALUMNO), {
+      ok: true, inscrito: true, inicio: "2026-08-10", fin: "2026-12-12",
+    });
+    assert.deepEqual(await cliente([json([uno, uno])]).api.getAlumnoInscrito(ALUMNO), {
+      ok: false, motivo: "forma_invalida", status: 200,
+    });
+    assert.deepEqual(await cliente([json([])]).api.getAlumnoInscrito(ALUMNO), {
+      ok: false, motivo: "forma_invalida", status: 200,
+    });
+    assert.deepEqual(await cliente([json({ responseValue: null })]).api.getAlumnoInscrito(ALUMNO), {
+      ok: true, inscrito: null, inicio: null, fin: null,
+    });
   });
 
   test("fechaDia: con zona se convierte a Hermosillo (UTC-7)", () => {

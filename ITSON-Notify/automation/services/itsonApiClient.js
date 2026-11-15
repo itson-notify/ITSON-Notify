@@ -86,11 +86,29 @@ const entero = (v) => {
   return Number.isInteger(n) && n >= 0 ? n : null;
 };
 
-// { inscrito, inicio, fin } o null si el cuerpo no es un objeto. inscrito, inicio o
-// fin quedan en null si no se pueden leer: la fase decide con la ventana de fechas y,
-// sin fechas legibles, consulta de todos modos.
+const vacia = (v) =>
+  v === null || (Array.isArray(v) && v.length === 0) || (esObjeto(v) && Object.keys(v).length === 0);
+
+// { inscrito, inicio, fin } o null (forma_invalida). inscrito, inicio o fin quedan en
+// null si no se pueden leer: la fase decide con la ventana de fechas y, sin fechas
+// legibles, consulta de todos modos (fechas_ilegibles, sin alerta).
+// Formas aceptadas:
+//   - El objeto, solo o dentro de responseValue o response.
+//   - Un arreglo de exactamente un objeto, solo o dentro de responseValue o response
+//     (la forma real: [ { inscrito, fechaInicioSemestre, fechaFinSemestre } ]). Con 0
+//     o más de un elemento, o un elemento que no es objeto, es forma_invalida: no se
+//     elige uno.
+//   - responseValue o response vacío (null, [] u {}): resultado válido sin datos.
+//   - responseValue o response booleano: es inscrito, sin fechas.
 function leerInscripcion(cuerpo) {
-  const c = cargaDe(cuerpo);
+  const envuelto = esObjeto(cuerpo) && (cuerpo.responseValue !== undefined || cuerpo.response !== undefined);
+  let c = Array.isArray(cuerpo) ? cuerpo : cargaDe(cuerpo);
+  if (envuelto && vacia(c)) return { inscrito: null, inicio: null, fin: null };
+  if (envuelto && typeof c === "boolean") return { inscrito: c, inicio: null, fin: null };
+  if (Array.isArray(c)) {
+    if (c.length !== 1 || !esObjeto(c[0])) return null;
+    c = c[0];
+  }
   if (!esObjeto(c)) return null;
   return {
     inscrito: booleano(c.inscrito),
