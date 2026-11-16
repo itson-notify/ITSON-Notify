@@ -38,6 +38,7 @@ function createApp({
   linkLimiter,
   // ITN-55 - Límite de PUT /api/itson-profile (inyectable en pruebas).
   itsonProfileLimiter,
+  classroomFetch,
 }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
   if (!config?.credentialsEncryptionKey) throw new Error("createApp requiere config.credentialsEncryptionKey");
@@ -88,7 +89,7 @@ function createApp({
   app.use(
     "/api",
     frontendCors(config, "GET, POST, PUT, DELETE, OPTIONS"),
-    studentApiRouter({ config, supabase, now, logger, credentialCrypto, exchangeToken, linkLimiter, itsonProfileLimiter }),
+    studentApiRouter({ config, supabase, now, logger, credentialCrypto, exchangeToken, linkLimiter, itsonProfileLimiter, classroomFetch }),
   );
 
   // Suscripciones Web Push del navegador móvil
