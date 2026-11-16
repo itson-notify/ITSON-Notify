@@ -12,6 +12,16 @@ class CoursesError extends Error {
 }
 const relink = () => new CoursesError(409, 'classroom_requiere_autorizacion');
 const upstream = () => new CoursesError(502, 'classroom_respuesta_invalida');
+function numericFields(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw upstream();
+  const result = {};
+  for (const key of keys) {
+    if (value[key] === undefined) continue;
+    if (!Number.isInteger(value[key]) || value[key] < 0) throw upstream();
+    result[key] = value[key];
+  }
+  return result;
+}
 
 function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, timeoutMs = 15000 }) {
   const client = createClassroomClient({ fetchImpl, timeoutMs });
@@ -53,19 +63,34 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     }
   }
 
-  return async function listCourses({ userId, googleId }) {
+  async function getAccessToken({ userId, googleId }) {
     const { data, error } = await supabase.from('google_authorizations')
-      .select('user_id,google_id,scope,refresh_token')
+      .select('user_id,google_id,scope,refresh_token,status')
       .eq('user_id', userId).eq('google_id', googleId).maybeSingle();
     // Discard all external errors, including potentially sensitive error codes.
     if (error) throw new CoursesError(500, 'error_interno');
     if (!data || data.user_id !== userId || data.google_id !== googleId) throw relink();
+    if (data.status === 'needs_relink') throw relink();
     if (typeof data.scope !== 'string' || !data.scope.split(' ').includes(CLASSROOM_SCOPE)) {
       throw new CoursesError(403, 'classroom_sin_permisos');
     }
     const credential = decrypt(data.refresh_token, config.googleAuthSecret, 'google-refresh');
     if (typeof credential?.token !== 'string' || !credential.token) throw relink();
-    const accessToken = await refresh(credential.token);
+    try {
+      return await refresh(credential.token);
+    } catch (error) {
+      if (error instanceof CoursesError && error.status === 409) {
+        const { error: saveError } = await supabase.from('google_authorizations')
+          .update({ status: 'needs_relink' }).eq('user_id', userId).eq('google_id', googleId)
+          .eq('refresh_token', data.refresh_token);
+        if (saveError) throw new CoursesError(500, 'error_interno');
+      }
+      throw error;
+    }
+  }
+
+  async function listCourses(identity) {
+    const accessToken = await getAccessToken(identity);
     try {
       const courses = await client.listCourses(accessToken, { studentId: 'me' });
       return { courses: courses.map(({ id, name, section, courseState }) => ({
@@ -79,7 +104,33 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
       if (error.code === 'PERMISSION_DENIED') throw new CoursesError(403, 'classroom_sin_permisos');
       throw new CoursesError(error.retryable ? 503 : 502, 'classroom_no_disponible');
     }
-  };
+  }
+
+  // Internal worker projection: no tokens, course names, titles or email.
+  async function readForWorker(identity) {
+    const accessToken = await getAccessToken(identity);
+    try {
+      const courses = await client.listCourses(accessToken, { studentId: 'me' });
+      const result = [];
+      for (const course of courses) {
+        const work = await client.listCourseWork(accessToken, course.id);
+        result.push({ id: course.id, coursework: work.map(item => ({
+          id: item.id,
+          ...(item.dueDate ? { dueDate: numericFields(item.dueDate, ['year', 'month', 'day']) } : {}),
+          ...(item.dueTime ? { dueTime: numericFields(item.dueTime, ['hours', 'minutes', 'seconds', 'nanos']) } : {}),
+        })) });
+      }
+      return { courses: result };
+    } catch (error) {
+      if (error instanceof CoursesError) throw error;
+      if (!(error instanceof ClassroomError)) throw upstream();
+      if (error.code === 'UNAUTHENTICATED') throw relink();
+      if (error.code === 'PERMISSION_DENIED') throw new CoursesError(403, 'classroom_sin_permisos');
+      throw new CoursesError(error.retryable ? 503 : 502, 'classroom_no_disponible');
+    }
+  }
+  // Preserve the ITN-42 callable API while exposing reusable backend operations.
+  return Object.assign(listCourses, { getAccessToken, readForWorker });
 }
 
 module.exports = { createCoursesService, CoursesError };

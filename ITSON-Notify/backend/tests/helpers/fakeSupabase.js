@@ -85,7 +85,8 @@ const TABLES = {
     },
   },
   // 008
-  google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"] },
+  google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"],
+    defaults: { status: "active" }, checks: { status: value => ['active', 'needs_relink'].includes(value) } },
   google_app_sessions: { uniques: [], notNull: ["user_id", "google_id", "expires_at"] },
   // 009: Suscripciones Web Push.
   // 009 exige UNIQUE(endpoint) para garantizar propiedad exclusiva por dispositivo.

@@ -7,6 +7,7 @@ const { requireApiKey } = require("./middleware/apiKey");
 const { createLogger } = require("./utils/logger");
 const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
+const { classroomInternalRouter } = require("./routes/classroomInternal");
 const { itsonProfilesInternalRouter } = require("./routes/itsonProfilesInternal");
 const { authGoogleRouter, getGoogleSession, sessionHash } = require("./routes/authGoogle");
 const { studentApiRouter } = require("./routes/studentApi");
@@ -70,6 +71,7 @@ function createApp({
 
   // Rutas del worker. La llave se revisa ANTES de parsear el body.
   app.use("/internal", requireApiKey(config.internalApiKey), express.json({ limit: "1mb" }));
+  app.use("/internal/classroom", classroomInternalRouter({ config, supabase, classroomFetch }));
   app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now, channels: activeChannels }));
   app.use(
     "/internal/credentials",

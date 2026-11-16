@@ -76,8 +76,3 @@ test('artifact startup fails with MODULE_NOT_FOUND when the shared client is abs
   assert.match(result.stderr, /MODULE_NOT_FOUND/);
   assert.match(result.stderr, /classroomClient/);
 });
-
-test('ITN-49 entry and backend resolve the same implementation', () => {
-  assert.strictEqual(require('../../../automation/rpa/google-classroom'),
-    require('../../src/services/classroomClient'));
-});

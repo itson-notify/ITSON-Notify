@@ -131,7 +131,10 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
   // UPDATE separado: un reconsentimiento sin refresh_token no debe borrar
   // el token anterior (upsert de campos omitidos podría ponerlo en NULL).
   const row = { email, scope, updated_at: new Date().toISOString() };
-  if (refreshToken) row.refresh_token = encrypt({ token: refreshToken }, secret, "google-refresh");
+  if (refreshToken) {
+    row.refresh_token = encrypt({ token: refreshToken }, secret, "google-refresh");
+    row.status = "active";
+  }
   const query = existing
     ? supabase.from("google_authorizations").update(row).eq("google_id", googleId)
     : supabase.from("google_authorizations").insert({
