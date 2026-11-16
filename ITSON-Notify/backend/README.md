@@ -58,8 +58,14 @@ Requiere Node 22 o más nuevo (`@supabase/supabase-js` necesita WebSocket nativo
 explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `007_student_credentials.sql`
 (credenciales cifradas; sin ella, solo fallan los endpoints de credenciales), `009_push_subscriptions.sql`
 (suscripciones Web Push; sin ella, `/push` falla y el logout no puede revocar el Push del dispositivo),
-`010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`) y
-`011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54).
+`010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`),
+`011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54) y
+`012_student_itson_profiles.sql` (perfil ITSON cifrado y `grade_snapshots.period`, ITN-55).
+
+La **012 se aplica antes de habilitar `itson_api`** (antes de que el worker mande snapshots de la API o de que los
+alumnos guarden su perfil), pero no hace falta antes de desplegar el código de ITN-55: el flujo de iVirtual no lee,
+no filtra ni escribe `grade_snapshots.period`, así que funciona igual en una base sin la 012. Sin ella, solo fallan
+los snapshots `itson_api` (500, sin dejar snapshot), `/api/itson-profile` y `/internal/itson-profiles/active`.
 
 La **011 se aplica ANTES de desplegar** el código de ITN-54. Si el código corre sin ella, el logout recibe
 `42703`, registra `session_revocation_column_missing` y vuelve a borrar la sesión como antes, sin marca. Ese
@@ -114,6 +120,12 @@ el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca rec
 | `src/services/credentialService.js`          | Cifra y guarda (por `user_id`), lee y descifra               |
 | `src/services/ivirtualToken.js`              | Cliente de `login/token.php` y puerto `exchangeToken` (ITN-52) |
 | `src/repositories/credentialRepository.js`   | Repo de `student_credentials` (solo datos cifrados)          |
+| `src/services/itsonGradeCodes.js`            | Códigos de `gradeValue` de la API de ITSON (ITN-55)          |
+| `src/models/itsonProfile.js`                 | Validación del perfil ITSON y regla del correo institucional |
+| `src/repositories/itsonProfileRepository.js` | Repo de `student_itson_profiles` (matrícula cifrada)         |
+| `src/services/itsonProfileService.js`        | Cifra, descifra y arma la pista de la matrícula              |
+| `src/routes/itsonProfile.js`                 | `/api/itson-profile` (ITN-55)                                |
+| `src/routes/itsonProfilesInternal.js`        | `GET /internal/itson-profiles/active` (ITN-55)               |
 | `src/utils/logger.js`                        | Logs JSON con lista blanca de campos                         |
 
 ## Endpoints
@@ -164,7 +176,8 @@ le agrega los datos de la corrida.
 | ----------------------------- | --------------------------------------------------------------------------------------- |
 | `run_id`                      | **Obligatorio.** UUID que el worker genera una vez por corrida (`crypto.randomUUID()`). Se usa como `grade_snapshots.id`. Si se reintenta el envío de la misma corrida, debe ir el **mismo** `run_id` |
 | `captured_at`                 | **Obligatorio.** ISO 8601 con zona (`Z` o `±hh:mm`). Momento de la extracción. Si está más de 5 minutos en el futuro respecto al reloj del backend, se rechaza: el snapshot previo se elige por esta fecha |
-| `source`                      | Opcional, por ahora solo `"ivirtual"` (valor por defecto)                                |
+| `source`                      | Opcional: `"ivirtual"` (valor por defecto) o `"itson_api"` (ITN-55, ver abajo)           |
+| `period`                      | Solo `itson_api`, obligatorio ahí: clave de semestre consultada (`"01"`..`"08"`). En iVirtual debe faltar o ser `null` |
 | `user.email`                  | **Obligatorio.** Correo del alumno. Desde ITN-52 el worker manda el de cada cuenta de `/internal/credentials/active` (antes era `ALUMNO_EMAIL`). Se guarda en minúsculas. **Nunca la matrícula** |
 | `courses`                     | **Obligatorio.** Al menos 1 curso y a lo más 200. Vacío se rechaza, porque haría ver como borradas todas las calificaciones |
 | `courses[].externalId`        | **Obligatorio.** Id del curso en Moodle (texto o número). No se puede repetir en el body |
@@ -175,6 +188,23 @@ le agrega los datos de la corrida.
 | `items[].value`               | Número o `null`. Debe caber en `numeric(5,2)` (±999.99)                                  |
 | `items[].text`                | Texto o `null`. `"-"` cuando no hay calificación                                         |
 | `type`, `min`, `max`, `percentage`, `categoryId`, `cmid`, `hidden` | Opcionales. Se guardan en `snapshot_grades.raw_payload` |
+
+#### `source = "itson_api"` (ITN-55)
+
+Snapshot de un semestre de la API REST de ITSON (`getGrades`). Cada materia es un curso con **un solo ítem** cuyo
+`externalItemId` es el mismo `idCatalog` que `externalId`, `value: null` y el código de `gradeValue` en `text`.
+
+- `"-"` (sin calificación) se guarda como `null`; los demás códigos (`"0"`..`"10"`, `"A"`) se guardan tal cual,
+  como texto. Un código que no cumpla `^[0-9A-Z]{1,3}$` responde 400. El tratamiento de los códigos vive solo en
+  `src/services/itsonGradeCodes.js`.
+- **El significado de `"A"` sigue sin confirmarse.** No se interpreta: se guarda, se compara y se muestra como el
+  texto literal `"A"` (en el aviso, en `/api/notifications` y en la app), sin convertirla a número ni a otra
+  palabra.
+- `period` también va a `subjects.period` (columna de la 001).
+- El detector compara cada snapshot con el anterior del mismo `user_id` y `source`; en `itson_api`, además del
+  **mismo `period`**, así cada semestre de la API se compara solo consigo mismo. iVirtual nunca toca `period`. El
+  primero de cada uno es baseline.
+- `period` va a `grade_snapshots.period` solo en `itson_api`; iVirtual no manda la columna.
 
 Los campos desconocidos se ignoran. Un body inválido responde `400`:
 
@@ -260,6 +290,15 @@ Después de `detectChanges`, en cada llamada:
    `(grade_change_id, channel)` de la 002). `payload` guarda `subject`, `text` y `grade_change_ids` (todos los
    ids del grupo). Lo que ya quedó `sent` no se vuelve a enviar.
 
+**Avisos de `itson_api` (ITN-55).** Solo se avisa cuando la calificación de una materia que ya existía pasa de
+`null` a un valor o de un valor a otro. No se avisa por materia nueva (con o sin nota), materia que desaparece,
+calificación que vuelve a `null` ni cambio de nombre: esos cambios quedan en `grade_changes` sin fila en
+`notifications_log`. El asunto es `ITSON Notify: calificación final` y el texto
+`"Calificación final: 9 en <materia>."`; el código va literal, así que `"A"` se avisa como
+`"Calificación final: A en <materia>."` (de `null` a `"A"` sí avisa). El `payload` guarda `source: "itson_api"`;
+`/api/notifications` lo usa para el título ("Calificación final" o "Calificación final actualizada"). Los avisos de
+iVirtual no cambian y su `payload` no lleva `source`.
+
 El nombre de la materia sale de `subjects` y el de la actividad de `snapshot_grades` (del snapshot anterior si
 el ítem se borró). Si no se encuentran, el mensaje usa "Una actividad" y omite la materia. El total del curso
 (`grade_label` `null`) se notifica como "Total del curso".
@@ -306,6 +345,21 @@ Las combinaciones válidas son `ivirtual` con `ivirtual_token` y `google_classro
 | `POST /internal/credentials/needs-relink` | `reason` opcional: `credenciales` o `cambio_password` | `{ portal, kind, status: "needs_relink" }` |
 
 Estas rutas nunca crean estudiantes.
+
+#### `GET /internal/itson-profiles/active` (ITN-55)
+
+Sin body. Devuelve a quién debe consultar el worker en la API REST de ITSON:
+
+```json
+{ "students": [{ "email": "alumno@example.test", "matricula": "00000123456", "career": "INSOF" }] }
+```
+
+- Solo lectura, siguiendo la decisión de mínimo privilegio de ITN-51: no hay `PUT`, `POST` ni `DELETE` (responden
+  404). El alumno guarda y borra en `/api/itson-profile`.
+- Ordenada por correo. Un perfil que no se puede descifrar se omite y se registra `perfil_itson_no_descifrable` con
+  `count`; si no se descifra ninguno (llave equivocada), responde 500 en lugar de una lista vacía.
+- El log `perfiles_itson_listados` lleva `count` y `failed`, nunca correos, matrículas ni carreras.
+- Mismos `401` y `500` que las demás rutas internas, y `Cache-Control: no-store`.
 
 #### `GET /internal/credentials/active?portal=ivirtual` (ITN-52)
 
@@ -385,7 +439,10 @@ usaba. Desde ITN-52 el worker llama a `GET /internal/credentials/active`, `POST 
 
 - listar los correos de las cuentas activas con `GET /internal/credentials/active` (ITN-52),
 - leer el token descifrado de cualquier estudiante con `POST /internal/credentials/get`, y
-- marcar cualquier cuenta como `needs_relink`, lo que detiene sus avisos hasta que vuelva a vincular.
+- marcar cualquier cuenta como `needs_relink`, lo que detiene sus avisos hasta que vuelva a vincular, y
+- leer la matrícula y la carrera de todos los alumnos con `GET /internal/itson-profiles/active` (ITN-55). Con la
+  matrícula se pueden consultar en la API de ITSON sus calificaciones, que no pide autenticación. Si se sospecha una
+  fuga de la llave, además de rotarla hay que avisar a los alumnos: la matrícula no se puede "revocar".
 
 Ya no puede plantar un token propio en la cuenta de otro ni borrar credenciales. Cifrar en la base protege contra una
 fuga de la base, no contra una fuga del worker o de esta llave.
@@ -438,6 +495,9 @@ origen exacto de `FRONTEND_URL`.
 | `GET /api/credentials/ivirtual`        | `{ available, linked, status, lastValidatedAt }` (ITN-51)                   |
 | `PUT /api/credentials/ivirtual`        | Vincula iVirtual (ITN-51, ver abajo)                                        |
 | `DELETE /api/credentials/ivirtual`     | 204. 404 `no_encontrado` si no había vinculación (ITN-51)                   |
+| `GET /api/itson-profile`               | `{ configured, matriculaHint, career, updatedAt }` (ITN-55)                 |
+| `PUT /api/itson-profile`               | Guarda matrícula y carrera (ITN-55, ver abajo)                              |
+| `DELETE /api/itson-profile`            | 204. 404 `no_encontrado` si no había perfil (ITN-55)                        |
 
 Sin sesión vigente responden 401 `{"error":"no_autenticado"}`. POST, PUT, PATCH y DELETE exigen que `Origin` sea
 exactamente el del frontend; si no, responden 403 `{"error":"origen_no_permitido"}`. El Origin se revisa antes que la
@@ -530,6 +590,37 @@ El alumno siempre es el de la sesión (`req.student.userId`). Un `userId`, `emai
   409 y 502 (no los 400 ni el 501). Una vinculación exitosa reinicia el contador. Vive en memoria: se reinicia con el proceso y no se comparte
   entre instancias. Con más de una réplica hará falta moverlo a la base o a Redis.
 
+### Perfil ITSON (ITN-55)
+
+La API REST de ITSON devuelve las calificaciones de cualquier matrícula sin autenticar, así que la matrícula funciona
+como credencial. El alumno siempre es el de la sesión; `userId`, `email` o `user` en el body se descartan.
+
+- **Almacenamiento:** `student_itson_profiles` (migración 012), una fila por alumno. La matrícula va cifrada con
+  `credentialCrypto` (AES-256-GCM, AAD `user_id:itson_api:matricula`, misma llave y rotación que las credenciales).
+  La carrera va en claro.
+- **`GET`** nunca devuelve la matrícula: `matriculaHint` trae solo los últimos 4 dígitos. Sin perfil responde
+  `{ configured: false, matriculaHint: null, career: null, updatedAt: null }`.
+- **`PUT`** recibe `{ "matricula": "00000123456", "career": "INSOF" }` (máximo 4 KB). `matricula` cumple
+  `^00000\d{6}$`; `career` se recorta, se pasa a mayúsculas y cumple `^[A-Z]{2,8}$`. Responde lo mismo que `GET`.
+- **Regla del correo:** el correo de la sesión debe ser de `potros.itson.edu.mx` y su parte local debe terminar con
+  al menos 6 dígitos iguales a los últimos 6 de la matrícula (`nombre.apellido252587@...` con `00000252587`). Un
+  correo de Gmail no sirve aunque termine con esos dígitos: cualquiera puede crear uno. La lista de dominios está en
+  `src/models/itsonProfile.js`. En `itson-notify-dev` (2026-11-13) el único correo institucional cumple el patrón;
+  la muestra es de 1, así que la regla falta confirmarla con más alumnos.
+
+  | Código | Body                                    | Cuándo                                                  |
+  | ------ | --------------------------------------- | ------------------------------------------------------- |
+  | 400    | `{"error":"cuerpo_invalido", ...}`      | Formato inválido. `detalles` solo trae ruta y código     |
+  | 400    | `{"error":"correo_no_institucional"}`   | El correo de la sesión no es de un dominio institucional |
+  | 400    | `{"error":"correo_sin_matricula"}`      | La parte local no termina con al menos 6 dígitos         |
+  | 400    | `{"error":"matricula_no_coincide"}`     | Los últimos 6 dígitos no son los del correo              |
+  | 413    | `{"error":"cuerpo_demasiado_grande"}`   | Más de 4 KB                                              |
+  | 429    | `{"error":"demasiados_intentos"}`       | Más de 10 `PUT` en 15 minutos (cuentan los 400). Trae `Retry-After` |
+
+  El límite vive en memoria, como el de iVirtual. Un guardado exitoso reinicia el contador.
+- **Logs:** `perfil_itson_guardado`, `perfil_itson_rechazado` (con `reason`, el código), `perfil_itson_limitado` y
+  `perfil_itson_borrado`, solo con `user_id`. Nunca la matrícula, la carrera ni el correo.
+
 ### Notificaciones de ejemplo en dev
 
 Una corrida real no genera avisos hasta que cambia una calificación. Para probar el frontend antes de eso:
@@ -606,8 +697,19 @@ En `automation/schedulers/extraccion-cron.js`, cada corrida:
 6. Loguea solo conteos, la posición de la cuenta, status HTTP y errorcode. Alerta al equipo a lo más una vez por
    corrida, solo con conteos.
 
+**Fase de la API REST de ITSON (ITN-55).** Después de la de iVirtual, en su propio try/catch, el worker pide
+`GET /internal/itson-profiles/active` y, por alumno, consulta `getAlumnoInscrito`, `getProgress` y `getGrades` (hasta
+3 semestres pendientes), solo dentro de la ventana de fechas del semestre (7 días antes del inicio a 45 después del
+fin, configurable). Por cada semestre con materias manda `POST /internal/grade-snapshots` con
+`source: "itson_api"`, `period` (la clave del semestre) y su propio `run_id`. Detalle en
+[`docs/deployment/cron-railway.md`](../docs/deployment/cron-railway.md).
+
 Variables del servicio `worker-rpa`: **solo** `BACKEND_URL`, `INTERNAL_API_KEY` y, para las alertas,
-`TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (más `RPA_PAUSADO` para pausar). Desde ITN-52 `Id_User`, `P_User` y
+`TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (más `RPA_PAUSADO` para pausar). ITN-55: `ITSON_API_BASE_URL` habilita la
+fase de la API de ITSON; sin ella, esa fase no corre. Solo acepta `https://webapi.itson.edu.mx` (lista cerrada en
+`automation/services/itsonApiClient.js`): otro host, `http`, credenciales, puerto distinto de 443, punto final o
+ruta cancelan la fase con alerta de configuración, y las redirecciones 3xx nunca se siguen. `ITSON_API_VENTANA_ANTES_DIAS` (7) e
+`ITSON_API_VENTANA_DESPUES_DIAS` (45) ajustan la ventana. Desde ITN-52 `Id_User`, `P_User` y
 `ALUMNO_EMAIL` ya no se usan en el cron (siguen solo en `cli.js` y `login-demo.js`, que son herramientas locales).
 Nunca `SUPABASE_SERVICE_ROLE_KEY`, `CREDENTIALS_ENCRYPTION_KEY` ni la matrícula en el body. Detalles de despliegue,
 códigos de salida y alertas en [`docs/deployment/cron-railway.md`](../docs/deployment/cron-railway.md).

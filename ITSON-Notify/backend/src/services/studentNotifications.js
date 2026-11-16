@@ -1,6 +1,7 @@
 // ITN-53 - Convierte filas de notifications_log a la interfaz Notif del frontend.
 // El texto del aviso ya está en payload.text (ver notificationService); el resto
 // sale de grade_changes y subjects.
+const { describirCodigo } = require("./itsonGradeCodes");
 
 // notifications_log no tiene columna de tipo y hoy solo registra cambios de
 // calificación. Tareas, cupos y trámites llegarán cuando exista un detector que
@@ -18,21 +19,29 @@ function changeIdsOf(row) {
   return row.grade_change_id ? [row.grade_change_id] : [];
 }
 
-function titleOf(changes) {
+// ITN-55 - Los avisos de la API REST de ITSON guardan source en el payload.
+const ITSON_API = "itson_api";
+
+function titleOf(changes, source) {
+  if (source === ITSON_API) {
+    const nota = changes.find((c) => c.field_name === "grade_text");
+    return nota?.previous_value == null ? "Calificación final" : "Calificación final actualizada";
+  }
   if (changes.length === 0) return "Cambio de calificación";
   if (changes.every((c) => c.change_type === "created")) return "Nueva calificación disponible";
   if (changes.every((c) => c.change_type === "deleted")) return "Calificación eliminada";
   return "Calificación actualizada";
 }
 
-function rowsOf(subjectName, changes) {
+function rowsOf(subjectName, changes, source) {
+  const mostrar = (v) => (source === ITSON_API && v != null ? describirCodigo(v) : v);
   const rows = [];
   if (subjectName) rows.push({ label: "Materia", value: subjectName });
   // grade_value y grade_text describen la misma nota, igual que en buildGroupedMessage.
   const nota = changes.find((c) => c.field_name === "grade_value") ?? changes.find((c) => c.field_name === "grade_text");
   if (nota) {
-    rows.push({ label: "Calificación", value: nota.current_value ?? SIN_VALOR });
-    if (nota.previous_value != null) rows.push({ label: "Anterior", value: nota.previous_value });
+    rows.push({ label: "Calificación", value: mostrar(nota.current_value) ?? SIN_VALOR });
+    if (nota.previous_value != null) rows.push({ label: "Anterior", value: mostrar(nota.previous_value) });
   }
   return rows;
 }
@@ -41,16 +50,17 @@ function toNotif(row, changesById, subjectNames) {
   const changes = changeIdsOf(row).map((id) => changesById.get(id)).filter(Boolean);
   const subjectId = changes.find((c) => c.subject_id)?.subject_id;
   const subjectName = subjectId ? subjectNames.get(subjectId) : undefined;
+  const source = row.payload?.source;
   return {
     id: row.id,
     type: NOTIFICATION_TYPE,
-    title: titleOf(changes),
+    title: titleOf(changes, source),
     subject: subjectName ?? SIN_MATERIA,
     // PostgREST devuelve +00:00: se normaliza a ISO con Z.
     time: new Date(row.created_at).toISOString(),
     unread: row.read_at == null,
     body: row.payload?.text ?? "Hubo un cambio en tus calificaciones.",
-    rows: rowsOf(subjectName, changes),
+    rows: rowsOf(subjectName, changes, source),
   };
 }
 

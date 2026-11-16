@@ -8,14 +8,17 @@ const { parseNotificationId } = require("../models/studentApi");
 const { createStudentRepository } = require("../repositories/studentRepository");
 const { listStudentNotifications } = require("../services/studentNotifications");
 const { studentCredentialsRouter } = require("./studentCredentials");
-const { createCoursesService, CoursesError } = require('../services/classroomCourses');
+const { itsonProfileRouter } = require("./itsonProfile");
+const { createCoursesService, CoursesError } = require("../services/classroomCourses");
 
 const ITSON_STATUS_ERROR = "needs_relink";
 
 // ITN-51 - Todos los métodos que cambian estado exigen el Origin exacto.
 const METODOS_CON_ESCRITURA = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-function studentApiRouter({ config, supabase, now = Date.now, logger, credentialCrypto, exchangeToken, linkLimiter, classroomFetch }) {
+function studentApiRouter({
+  config, supabase, now = Date.now, logger, credentialCrypto, exchangeToken, linkLimiter, itsonProfileLimiter, classroomFetch,
+}) {
   const router = express.Router();
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
   const repo = createStudentRepository(supabase);
@@ -83,6 +86,13 @@ function studentApiRouter({ config, supabase, now = Date.now, logger, credential
   router.use(
     "/credentials",
     studentCredentialsRouter({ supabase, logger, now, credentialCrypto, exchangeToken, limiter: linkLimiter }),
+  );
+
+  // ITN-55 - Matrícula y carrera para la API REST de ITSON. Hereda Origin y sesión
+  // de arriba; el router parsea su propio body (4 KB).
+  router.use(
+    "/itson-profile",
+    itsonProfileRouter({ supabase, logger, now, credentialCrypto, limiter: itsonProfileLimiter }),
   );
 
   return router;

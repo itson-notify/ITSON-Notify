@@ -4,6 +4,8 @@
 // envío en notifications_log. La persistencia va detrás de un repo inyectado
 // (contrato en README.md), igual que gradeChangeService.
 
+const { describirCodigo } = require("./itsonGradeCodes");
+
 // Después de este número de intentos fallidos ya no se reintenta el canal.
 const MAX_ATTEMPTS = 5;
 const MAX_ERROR_LENGTH = 500;
@@ -14,6 +16,9 @@ const RETRY_REPO_METHODS = ["listPendingNotifications", "updateNotification"];
 
 const SUBJECT = "ITSON Notify: cambio de calificación";
 const NEW_TASK_SUBJECT = "ITSON Notify: nueva tarea";
+// ITN-55 - Avisos de la API REST de ITSON (source = itson_api).
+const ITSON_API = "itson_api";
+const FINAL_GRADE_SUBJECT = "ITSON Notify: calificación final";
 
 const FIELD_LABELS = {
   grade_value: "calificación",
@@ -129,6 +134,22 @@ function buildGroupedMessage(rows, context = {}) {
   return { subject: SUBJECT, text: `${actividadDe(context)}${donde}: ${partes.join("; ")}.` };
 }
 
+// ITN-55 - Mensaje de un grupo de itson_api, o null si no se avisa. Solo se
+// avisa cuando la calificación (grade_text, el código de gradeValue) existía y
+// pasa de null a un valor o de un valor a otro. No se avisa por materia nueva
+// ('created'), materia que desaparece ('deleted'), calificación que vuelve a
+// null ni cambio de nombre. Mismas reglas de privacidad que buildMessage.
+function buildItsonApiMessage(rows, context = {}) {
+  const nota = rows.find((r) => r.field_name === "grade_text");
+  if (!nota || nota.change_type !== "updated") return null;
+  if (nota.current_value === null || nota.current_value === undefined) return null;
+  const donde = context.subjectName ? ` en ${context.subjectName}` : "";
+  return {
+    subject: FINAL_GRADE_SUBJECT,
+    text: `Calificación final: ${describirCodigo(nota.current_value)}${donde}.`,
+  };
+}
+
 // Agrupa filas de grade_changes por (subject_id, external_item_id). Cada grupo
 // se reclama en notifications_log con su id menor (claimId), así la misma
 // llave sale siempre igual aunque cambie el orden de `inserted`.
@@ -233,6 +254,9 @@ const contar = (resultados) => ({
 //   inserted       filas de grade_changes con id y user_id
 //   deps.repo      claimNotification, updateNotification, getItemContext
 //   deps.channels  canales de buildChannels()
+//   deps.source    source del snapshot (ITN-55). Con "itson_api" el texto es el
+//                  de calificación final, los grupos que no se avisan se omiten
+//                  sin reclamar fila y el payload guarda source.
 //
 // Cada grupo se reclama con grade_change_id = claimId y el payload guarda el
 // mensaje armado más grade_change_ids (todos los ids del grupo), para que un
@@ -240,8 +264,8 @@ const contar = (resultados) => ({
 // Supabase: si falla el contexto se usan los textos de respaldo; si falla el
 // reclamo de un grupo, cuenta como fallido y se sigue con el resto.
 //
-// Devuelve { notified, failed, results: [{ grade_change_id, grade_change_ids, channel, status, attempts }] }.
-async function notifyGroupedChanges(inserted, { repo, channels } = {}) {
+// Devuelve { notified, failed, omitted, results: [{ grade_change_id, grade_change_ids, channel, status, attempts }] }.
+async function notifyGroupedChanges(inserted, { repo, channels, source } = {}) {
   assertRepo(repo, GROUPED_REPO_METHODS);
   assertChannels(channels, "notifyGroupedChanges");
   if (inserted.some((r) => !r?.id || !r?.user_id)) {
@@ -256,10 +280,16 @@ async function notifyGroupedChanges(inserted, { repo, channels } = {}) {
     // Sin materia ni label: buildGroupedMessage usa sus textos de respaldo.
   }
 
+  const esApi = source === ITSON_API;
   const results = [];
+  let omitted = 0;
   for (const grupo of grupos) {
     const ctx = contexto.get(`${grupo.subjectId}\u0000${grupo.externalItemId}`) ?? {};
-    const message = buildGroupedMessage(grupo.rows, ctx);
+    const message = esApi ? buildItsonApiMessage(grupo.rows, ctx) : buildGroupedMessage(grupo.rows, ctx);
+    if (!message) {
+      omitted += 1;
+      continue;
+    }
     const meta = { userId: grupo.userId, gradeChangeId: grupo.claimId, gradeChangeIds: grupo.ids };
 
     for (const channel of channels) {
@@ -269,7 +299,7 @@ async function notifyGroupedChanges(inserted, { repo, channels } = {}) {
           user_id: grupo.userId,
           grade_change_id: grupo.claimId,
           channel: channel.name,
-          payload: { ...message, grade_change_ids: grupo.ids },
+          payload: { ...message, grade_change_ids: grupo.ids, ...(esApi ? { source: ITSON_API } : {}) },
         });
         resultado = await entregar(row, channel, message, meta, repo);
       } catch (err) {
@@ -279,7 +309,7 @@ async function notifyGroupedChanges(inserted, { repo, channels } = {}) {
     }
   }
 
-  return { ...contar(results), results };
+  return { ...contar(results), omitted, results };
 }
 
 // Reintenta las notificaciones 'pending' o 'failed' de un usuario con
@@ -319,6 +349,7 @@ module.exports = {
   retryPendingNotifications,
   buildMessage,
   buildGroupedMessage,
+  buildItsonApiMessage,
   groupChanges,
   REPO_METHODS,
   GROUPED_REPO_METHODS,
@@ -326,4 +357,5 @@ module.exports = {
   MAX_ATTEMPTS,
   SUBJECT,
   NEW_TASK_SUBJECT,
+  FINAL_GRADE_SUBJECT,
 };

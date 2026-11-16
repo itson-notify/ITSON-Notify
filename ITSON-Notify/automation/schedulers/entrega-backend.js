@@ -55,11 +55,14 @@ function leerConfigEntrega(env = process.env) {
 
 // Body del contrato. courses va tal cual sale de extractGrades(): ya tiene la
 // forma que valida backend/src/models/gradeSnapshotPayload.js.
-function armarPayload({ runId, capturedAt, email, courses }) {
+// ITN-55 - La fase de la API REST de ITSON manda source "itson_api" y el semestre en
+// period. iVirtual sigue igual: source "ivirtual" y sin period.
+function armarPayload({ runId, capturedAt, email, courses, source = "ivirtual", period = null }) {
   return {
     run_id: runId,
     captured_at: capturedAt,
-    source: "ivirtual",
+    source,
+    ...(period !== null && period !== undefined ? { period } : {}),
     user: { email },
     courses,
   };
@@ -98,6 +101,8 @@ async function entregarResultados(
     config,
     email,
     capturedAt = new Date().toISOString(),
+    source = "ivirtual",
+    period = null,
     log = console.log,
     logError = console.error,
     fetchFn = globalThis.fetch,
@@ -123,7 +128,7 @@ async function entregarResultados(
   // idempotente por run_id.
   const runId = randomUUID();
   const body = JSON.stringify(
-    armarPayload({ runId, capturedAt, email: email.trim(), courses: result.courses }),
+    armarPayload({ runId, capturedAt, email: email.trim(), courses: result.courses, source, period }),
   );
 
   const totalIntentos = maxReintentos + 1;

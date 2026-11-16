@@ -7,6 +7,10 @@ const { check } = require("../utils/errors");
 const GRADE_CHANGES_ON_CONFLICT =
   "previous_snapshot_id,current_snapshot_id,subject_id,external_item_id,field_name";
 
+// Solo itson_api usa grade_snapshots.period (migración 012). iVirtual nunca lo lee
+// ni lo filtra, así sigue funcionando en una base sin la 012.
+const ITSON_API = "itson_api";
+
 // PostgREST corta las respuestas en max-rows (1000 por defecto en Supabase).
 const PAGE = 1000;
 
@@ -36,7 +40,9 @@ function createGradeChangeRepository(supabase) {
     }
   }
 
-  // Snapshot inmediatamente anterior del mismo user_id y la misma source:
+  // Snapshot inmediatamente anterior del mismo user_id y la misma source; en
+  // itson_api, además del mismo period (ITN-55: cada semestre se compara solo
+  // consigo mismo). iVirtual se compara como antes, sin tocar period:
   // el de captured_at más reciente menor al actual; con el mismo captured_at,
   // el de id menor. Nunca el mismo snapshot. null si no hay.
   async function getPreviousSnapshotItems(userId, currentSnapshotId) {
@@ -52,13 +58,25 @@ function createGradeChangeRepository(supabase) {
       throw new Error("El snapshot actual no existe o no pertenece al usuario");
     }
 
-    const base = () =>
-      supabase
+    let period = null;
+    if (current.source === ITSON_API) {
+      const fila = check(
+        "grade_snapshots",
+        await supabase.from("grade_snapshots").select("period").eq("id", currentSnapshotId).maybeSingle(),
+      );
+      period = fila?.period ?? null;
+    }
+
+    const base = () => {
+      const q = supabase
         .from("grade_snapshots")
         .select("id")
         .eq("user_id", userId)
         .eq("source", current.source)
         .neq("id", currentSnapshotId);
+      if (current.source !== ITSON_API) return q;
+      return period === null ? q.is("period", null) : q.eq("period", period);
+    };
 
     // Empate de captured_at: cualquiera con id menor es posterior a todos los
     // de captured_at menor, así que se busca primero aquí.

@@ -19,7 +19,7 @@ beforeEach(t => {
   t.mock.method(require('node:https'), 'request', () => { assert.fail('External HTTPS forbidden'); });
 });
 
-function setup(responses = []) {
+function setup(responses = [], { itsonProfileLimiter } = {}) {
   const db = createFakeSupabase();
   const config = { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY,
     googleAuthSecret: SECRET, googleOAuth: { enabled: true, clientId: 'synthetic-client', clientSecret: 'synthetic-secret' } };
@@ -36,6 +36,7 @@ function setup(responses = []) {
     return value;
   };
   const app = createApp({ config, supabase: db.client, classroomFetch: fetchImpl, now: () => NOW,
+    itsonProfileLimiter,
     channels: [], logger: { error: (...args) => logs.push(args), info() {}, warn() {} } });
   const cookie = value => `itn41_google_session=${encrypt(value, SECRET, 'google-session')}`;
   const get = (value = student) => request(app).get('/api/classroom/courses?userId=student-b&googleId=google-b')
@@ -73,6 +74,30 @@ test('API: authenticated empty list and no-store', async () => {
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, { courses: [] });
   assert.equal(res.headers['cache-control'], 'no-store');
+});
+
+test('ITN-42 and ITN-55 coexist: injected profile limiter preserves Classroom transport', async () => {
+  const attempts = [];
+  const s = setup([token(), json({})], { itsonProfileLimiter: {
+    take(userId) {
+      attempts.push(userId);
+      return { allowed: false, retryAfterSeconds: 60 };
+    },
+  } });
+  const cookie = `itn41_google_session=${encrypt(student, SECRET, 'google-session')}`;
+  const profile = await request(s.app).get('/api/itson-profile').set('Cookie', cookie);
+  assert.equal(profile.status, 200);
+  assert.equal(profile.body.configured, false);
+  const limited = await request(s.app).put('/api/itson-profile')
+    .set('Origin', 'http://localhost:5173').set('Cookie', cookie)
+    .send({ matricula: '00000123456', career: 'INSOF' });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers['retry-after'], '60');
+  assert.deepEqual(attempts, [student.userId]);
+  assert.equal(s.calls.length, 0);
+  assert.equal((await s.get()).status, 200);
+  assert.equal(s.calls.length, 2);
+  assert.deepEqual(attempts, [student.userId]);
 });
 
 for (const mode of ['missing', 'tampered', 'expired', 'revoked', 'deleted', 'wrong-owner', 'wrong-google', 'db-expired']) {

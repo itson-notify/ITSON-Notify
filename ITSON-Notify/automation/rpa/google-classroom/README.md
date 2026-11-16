@@ -9,6 +9,12 @@ entrada de ITN-49 como adaptador. Las herramientas que importen este cliente
 desde automation necesitan también ese archivo del repositorio; el cron actual
 de iVirtual no importa este módulo. No hay una segunda copia del cliente.
 
+El adaptador es únicamente para compatibilidad local con el repositorio completo:
+un artefacto aislado de `automation/` no puede resolverlo y no debe importarlo.
+El backend es la implementación principal de Classroom. El worker consumirá un
+endpoint interno del backend en ITN-59; esa integración y sus rutas quedan fuera
+de ITN-42. No se amplían los scopes OAuth.
+
 ```js
 const { createClassroomClient } = require('./automation/rpa/google-classroom');
 const client = createClassroomClient();

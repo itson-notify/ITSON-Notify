@@ -71,6 +71,19 @@ const TABLES = {
     },
     rowCheck: (r) => KINDS_POR_PORTAL[r.portal]?.includes(r.kind),
   },
+  // 012 (ITN-55): una fila por alumno; matrícula cifrada como en la 007.
+  student_itson_profiles: {
+    uniques: [["user_id"]],
+    notNull: ["user_id", "matricula_ciphertext", "matricula_nonce", "matricula_auth_tag", "career"],
+    defaults: { key_version: 1 },
+    defaultNow: ["updated_at"],
+    checks: {
+      career: (v) => typeof v === "string" && /^[A-Z]{2,8}$/.test(v),
+      matricula_ciphertext: esBytea(),
+      matricula_nonce: esBytea(12),
+      matricula_auth_tag: esBytea(16),
+    },
+  },
   // 008
   google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"] },
   google_app_sessions: { uniques: [], notNull: ["user_id", "google_id", "expires_at"] },
@@ -119,6 +132,7 @@ class Query {
     this.columns = "*";
     this.returning = false;
     this.filters = [];
+    this.usados = [];
     this.orders = [];
     this.limitN = null;
     this.rangeAB = null;
@@ -146,34 +160,41 @@ class Query {
     return this;
   }
   in(column, values) {
+    this.usados.push(column);
     this.filters.push((r) => norm(r[column]) !== null && values.includes(r[column]));
     return this;
   }
   // Solo la forma que usa el backend: .not(column, "is", null).
   not(column, operator, value) {
+    this.usados.push(column);
     if (operator !== "is" || value !== null) throw new Error(`not(${operator}) no soportado en el fake`);
     this.filters.push((r) => norm(r[column]) !== null);
     return this;
   }
   // Solo la forma que usa el backend: .is(column, null).
   is(column, value) {
+    this.usados.push(column);
     if (value !== null) throw new Error("is() solo admite null en el fake");
     this.filters.push((r) => norm(r[column]) === null);
     return this;
   }
   eq(column, value) {
+    this.usados.push(column);
     this.filters.push((r) => compare(column, norm(r[column]), value) === 0 && norm(r[column]) !== null);
     return this;
   }
   neq(column, value) {
+    this.usados.push(column);
     this.filters.push((r) => norm(r[column]) !== null && compare(column, r[column], value) !== 0);
     return this;
   }
   lt(column, value) {
+    this.usados.push(column);
     this.filters.push((r) => norm(r[column]) !== null && compare(column, r[column], value) < 0);
     return this;
   }
   order(column, { ascending = true } = {}) {
+    this.usados.push(column);
     this.orders.push({ column, ascending });
     return this;
   }
@@ -202,6 +223,15 @@ class Query {
 
   execute() {
     this.db.calls.push({ table: this.table, op: this.op });
+    // ITN-55 - Columna que todavía no existe (migración sin aplicar): 42703 si la
+    // consulta la selecciona, la filtra o la escribe.
+    const faltan = this.db.missingColumns[this.table];
+    if (faltan) {
+      const leidas = this.columns === "*" ? [] : this.columns.split(",").map((c) => c.trim());
+      const escritas = (this.rows ?? []).flatMap((r) => Object.keys(r));
+      const usada = [...leidas, ...escritas, ...this.usados, ...Object.keys(this.patch ?? {})].find((c) => faltan.has(c));
+      if (usada) return pgError("42703", `column ${this.table}.${usada} does not exist`);
+    }
     const fallo = this.db.takeFailure(this.table, this.op);
     // El mensaje simulado trae datos del body, como lo haría Postgres
     // ("Key (email)=(...)"), para probar que nunca llega a logs ni respuestas.
@@ -345,6 +375,11 @@ function createFakeSupabase() {
     tables: Object.fromEntries(Object.keys(TABLES).map((t) => [t, []])),
     calls: [],
     failures: [],
+    // ITN-55 - { tabla: Set(columnas) } que simulan una migración sin aplicar.
+    missingColumns: {},
+    withoutColumn(table, column) {
+      (db.missingColumns[table] ??= new Set()).add(column);
+    },
     // Hace fallar la siguiente operación `op` sobre `table`.
     failNext(table, op, code = "XX000") {
       db.failures.push({ table, op, code });
