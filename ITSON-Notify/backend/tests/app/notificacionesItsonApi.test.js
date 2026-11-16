@@ -49,10 +49,12 @@ describe("cuándo se avisa en itson_api", () => {
     assert.ok(db.tables.notifications_log.every((f) => f.payload.source === "itson_api"));
   });
 
-  test("'A' se avisa como acreditada", async () => {
+  test("de null a 'A' avisa con 'A' literal, sin interpretarla (significado sin confirmar)", async () => {
     const { enviados, enviar } = setup();
     await dosCorridas(enviar, { codigoA: "-" }, { codigoA: "A" });
-    assert.equal(enviados[0].text, `Calificación final: acreditada en ${MATERIA_API_A}.`);
+    assert.equal(enviados.length, 1);
+    assert.equal(enviados[0].text, `Calificación final: A en ${MATERIA_API_A}.`);
+    assert.ok(!/acreditad/i.test(enviados[0].text));
   });
 
   test("de un valor a otro también avisa, con 10 de dos caracteres", async () => {
@@ -118,10 +120,15 @@ describe("título en /api/notifications", () => {
       new Map([["s1", MATERIA_API_A]]),
     );
 
-  test("itson_api: 'Calificación final' y 'acreditada' en la fila", () => {
+  test("itson_api: 'Calificación final' y 'A' literal en la fila", () => {
     const n = notif(null, "A");
     assert.equal(n.title, "Calificación final");
-    assert.deepEqual(n.rows, [{ label: "Materia", value: MATERIA_API_A }, { label: "Calificación", value: "acreditada" }]);
+    assert.deepEqual(n.rows, [{ label: "Materia", value: MATERIA_API_A }, { label: "Calificación", value: "A" }]);
+  });
+
+  test("itson_api de 'A' a '9': la fila anterior también muestra 'A' literal", () => {
+    const n = notif("A", "9");
+    assert.deepEqual(n.rows.at(-1), { label: "Anterior", value: "A" });
   });
 
   test("itson_api con valor previo: 'Calificación final actualizada'", () => {

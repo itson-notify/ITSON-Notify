@@ -155,8 +155,11 @@ Snapshot de un semestre de la API REST de ITSON (`getGrades`). Cada materia es u
 `externalItemId` es el mismo `idCatalog` que `externalId`, `value: null` y el código de `gradeValue` en `text`.
 
 - `"-"` (sin calificación) se guarda como `null`; los demás códigos (`"0"`..`"10"`, `"A"`) se guardan tal cual,
-  como texto. Un código que no cumpla `^[0-9A-Z]{1,3}$` responde 400. La interpretación vive solo en
+  como texto. Un código que no cumpla `^[0-9A-Z]{1,3}$` responde 400. El tratamiento de los códigos vive solo en
   `src/services/itsonGradeCodes.js`.
+- **El significado de `"A"` sigue sin confirmarse.** No se interpreta: se guarda, se compara y se muestra como el
+  texto literal `"A"` (en el aviso, en `/api/notifications` y en la app), sin convertirla a número ni a otra
+  palabra.
 - `period` también va a `subjects.period` (columna de la 001).
 - El detector compara cada snapshot con el anterior del mismo `user_id` y `source`; en `itson_api`, además del
   **mismo `period`**, así cada semestre de la API se compara solo consigo mismo. iVirtual nunca toca `period`. El
@@ -251,7 +254,8 @@ Después de `detectChanges`, en cada llamada:
 `null` a un valor o de un valor a otro. No se avisa por materia nueva (con o sin nota), materia que desaparece,
 calificación que vuelve a `null` ni cambio de nombre: esos cambios quedan en `grade_changes` sin fila en
 `notifications_log`. El asunto es `ITSON Notify: calificación final` y el texto
-`"Calificación final: 9 en <materia>."` (`"acreditada"` para `"A"`). El `payload` guarda `source: "itson_api"`;
+`"Calificación final: 9 en <materia>."`; el código va literal, así que `"A"` se avisa como
+`"Calificación final: A en <materia>."` (de `null` a `"A"` sí avisa). El `payload` guarda `source: "itson_api"`;
 `/api/notifications` lo usa para el título ("Calificación final" o "Calificación final actualizada"). Los avisos de
 iVirtual no cambian y su `payload` no lleva `source`.
 

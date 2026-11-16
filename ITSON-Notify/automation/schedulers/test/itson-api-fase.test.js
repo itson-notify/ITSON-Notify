@@ -457,6 +457,11 @@ describe("piezas reales con fetch simulado", () => {
     });
   });
 
+  test("normalizarMaterias: gradeValue 'A' llega literal al payload (significado sin confirmar)", () => {
+    const [curso] = normalizarMaterias([materia("4601", " A ")], CARRERA);
+    assert.deepEqual(curso.items[0], { externalItemId: "4601", label: "Calificación final", value: null, text: "A" });
+  });
+
   test("normalizarMaterias: idCatalog repetido descarta la respuesta", () => {
     assert.equal(normalizarMaterias([materia("1"), materia("1")], CARRERA), null);
   });

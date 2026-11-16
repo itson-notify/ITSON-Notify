@@ -35,6 +35,8 @@ const FUENTE = "itson-api";
 const SOURCE = "itson_api";
 const LABEL = "Calificación final";
 const SIN_CALIFICACION = "-";
+// Los demás códigos ("0".."10", "A") van literales en text. El significado de "A" sigue
+// sin confirmarse: el worker no la interpreta (ver backend/src/services/itsonGradeCodes.js).
 const MAX_SEMESTRES = 3;
 const PAUSA_ENTRE_ALUMNOS_MS = 2_000;
 const ZONA = "America/Hermosillo";

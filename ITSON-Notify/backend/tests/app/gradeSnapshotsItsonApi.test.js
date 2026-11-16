@@ -103,6 +103,31 @@ describe("persistencia de itson_api", () => {
 });
 
 describe("comparación por fuente y por semestre", () => {
+  test("regresión: gradeValue 'A' se conserva literal y no se interpreta", async () => {
+    const { enviar, db } = setup();
+    await enviar(payloadItsonApi({ capturedAt: hora(1), codigoA: "-" }));
+    const res = await enviar(payloadItsonApi({ capturedAt: hora(2), codigoA: "A" }));
+    assert.equal(res.status, 200);
+    assert.equal(res.body.changes_inserted, 1);
+    // En el snapshot: texto "A", sin número.
+    const conA = db.tables.snapshot_grades.filter((g) => g.grade_text === "A");
+    assert.equal(conA.length, 1);
+    assert.equal(conA[0].grade_value, null);
+    // En grade_changes: de null a "A", literal.
+    const [cambio] = db.tables.grade_changes;
+    assert.deepEqual([cambio.field_name, cambio.change_type, cambio.previous_value, cambio.current_value], ["grade_text", "updated", null, "A"]);
+    assert.ok(!JSON.stringify(db.tables).match(/acreditad/i));
+  });
+
+  test("itsonGradeCodes: 'A' no se traduce; '-' sigue siendo null", () => {
+    const { normalizarCodigo, describirCodigo } = require("../../src/services/itsonGradeCodes");
+    assert.equal(normalizarCodigo(" A "), "A");
+    assert.equal(describirCodigo("A"), "A");
+    assert.equal(describirCodigo("9"), "9");
+    assert.equal(normalizarCodigo("-"), null);
+    assert.equal(describirCodigo(null), "sin calificación");
+  });
+
   test("el primer snapshot de cada semestre es baseline; el segundo del mismo semestre compara", async () => {
     const { enviar } = setup();
     const r1 = await enviar(payloadItsonApi({ period: "07", capturedAt: hora(1) }));
