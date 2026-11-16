@@ -59,8 +59,14 @@ explícitos; obligatoria en entornos creados desde el 30 de octubre de 2026), `0
 (credenciales cifradas; sin ella, solo fallan los endpoints de credenciales), `009_push_subscriptions.sql`
 (suscripciones Web Push; sin ella, `/push` falla y el logout no puede revocar el Push del dispositivo),
 `010_notifications_read_at.sql` (estado de lectura; sin ella, fallan las notificaciones de `/api`),
-`011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54) y
-`012_student_itson_profiles.sql` (perfil ITSON cifrado y `grade_snapshots.period`, ITN-55).
+`011_google_app_sessions_revoked_at.sql` (marca de revocación de ITN-54),
+`012_student_itson_profiles.sql` (perfil ITSON cifrado y `grade_snapshots.period`, ITN-55) y
+`013_snapshot_grades_fechas_tarea.sql` (fechas de entrega de las tareas de iVirtual, ITN-56).
+
+La **013 se aplica ANTES de desplegar** el código de ITN-56. Si el código corre sin ella, `POST
+/internal/grade-snapshots` recibe `42703` al escribir las fechas, guarda el snapshot sin ellas, registra
+`fechas_sin_migracion` y sigue (la extracción de iVirtual no se rompe); los avisos de tarea nueva salen sin la
+fecha. Es solo una red de seguridad: sin la 013 no se guarda ninguna fecha.
 
 La **012 se aplica antes de habilitar `itson_api`** (antes de que el worker mande snapshots de la API o de que los
 alumnos guarden su perfil), pero no hace falta antes de desplegar el código de ITN-55: el flujo de iVirtual no lee,
@@ -95,6 +101,20 @@ Opcionales (notificaciones, ITN-28). Sin ellas el servidor arranca igual y solo 
 | `RESEND_API_KEY`    | Llave de Resend. Sin ella, el canal `email` se omite                       |
 | `NOTIFY_EMAIL_TO`   | Destinatario de prueba. Sin él, el canal `email` se omite                  |
 | `NOTIFY_EMAIL_FROM` | Remitente. Vacío usa `ITSON Notify <onboarding@resend.dev>`                |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Llaves de Web Push (las dos o ninguna). Sin ellas, el canal `web_push` se omite |
+| `VAPID_SUBJECT`     | Contacto VAPID (`mailto:`). Vacío usa `mailto:notificaciones@itson.edu.mx`  |
+
+**Correo: un solo destinatario.** El canal `email` manda **todos** los avisos a `NOTIFY_EMAIL_TO`, no al correo de
+cada alumno. Con el remitente de pruebas `onboarding@resend.dev`, Resend solo entrega al correo de la cuenta de
+Resend y responde `403` a cualquier otro destinatario
+([Resend: error 403 del dominio resend.dev](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)).
+Para la demo basta con que `NOTIFY_EMAIL_TO` sea el correo de la cuenta de Resend. Para mandar a otros
+destinatarios hay que verificar un dominio propio en <https://resend.com/domains> y usar un `NOTIFY_EMAIL_FROM`
+de ese dominio.
+
+**Push.** El canal `web_push` solo se arma con las dos llaves VAPID. El aviso llega solo a los dispositivos con
+suscripción guardada (`push_subscriptions`, migración 009): el alumno debe entrar a la app y aceptar las
+notificaciones. Sin suscripción, la fila de ese canal queda `failed` ("Usuario sin suscripciones Web Push").
 
 Las tablas tienen RLS activado y sin políticas, así que solo la `service_role` puede leer y escribir. Por eso
 el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca reciben esa llave.
@@ -127,6 +147,8 @@ el cliente de Supabase vive únicamente aquí: el worker y el frontend nunca rec
 | `src/routes/itsonProfile.js`                 | `/api/itson-profile` (ITN-55)                                |
 | `src/routes/itsonProfilesInternal.js`        | `GET /internal/itson-profiles/active` (ITN-55)               |
 | `src/utils/logger.js`                        | Logs JSON con lista blanca de campos                         |
+| `src/utils/fechaHermosillo.js`               | Fecha de entrega en hora de Hermosillo para los avisos (ITN-56) |
+| `scripts/ensayo-tarea-nueva.js`              | Ensayo sintético del aviso de tarea nueva contra el backend local (ITN-56) |
 
 ## Endpoints
 
@@ -188,6 +210,7 @@ le agrega los datos de la corrida.
 | `items[].value`               | Número o `null`. Debe caber en `numeric(5,2)` (±999.99)                                  |
 | `items[].text`                | Texto o `null`. `"-"` cuando no hay calificación                                         |
 | `type`, `min`, `max`, `percentage`, `categoryId`, `cmid`, `hidden` | Opcionales. Se guardan en `snapshot_grades.raw_payload` |
+| `items[].dueAt`, `opensAt`, `closesAt` | Opcionales, solo iVirtual (ITN-56). ISO 8601 con zona o `null`. Entrega, apertura y cierre de la tarea (columnas `due_at`, `opens_at`, `closes_at`, migración 013). **Omitida significa "desconocida"**: el backend copia la fecha del snapshot anterior del mismo ítem (o `null` si no había). **`null` significa "sin fecha"** y se guarda así. En `itson_api` se descartan |
 
 #### `source = "itson_api"` (ITN-55)
 
@@ -274,6 +297,12 @@ Después corre `detectChanges({ userId, currentSnapshotId }, repo)`, que inserta
   calificaciones) para no dejar un snapshot incompleto. Si el `run_id` ya existía (reenvío), no se borra:
   destruiría una corrida que ya estaba completa.
 
+- **Fechas de la tarea (ITN-56).** En iVirtual, antes de escribir `snapshot_grades` se leen las fechas del
+  snapshot anterior del mismo alumno (el de `captured_at` más reciente menor al actual) para copiar las que
+  llegan omitidas. Así una falla de `mod_assign_get_assignments` en el worker no borra fechas ya guardadas. Sin
+  la 013 (`42703`) el snapshot se guarda sin columnas de fecha y se registra `fechas_sin_migracion`. Las fechas
+  **no** se comparan en el detector: un cambio de fecha de entrega no genera `grade_changes` ni aviso (pendiente).
+
 Así, enviar dos veces el mismo payload no duplica filas ni cambios.
 
 ## Notificaciones (ITN-28)
@@ -298,6 +327,16 @@ calificación que vuelve a `null` ni cambio de nombre: esos cambios quedan en `g
 `"Calificación final: A en <materia>."` (de `null` a `"A"` sí avisa). El `payload` guarda `source: "itson_api"`;
 `/api/notifications` lo usa para el título ("Calificación final" o "Calificación final actualizada"). Los avisos de
 iVirtual no cambian y su `payload` no lleva `source`.
+
+**Tarea nueva de iVirtual (ITN-28, ITN-56).** Un ítem nuevo (todas sus filas `created`) sin nota se avisa con el
+asunto `ITSON Notify: nueva tarea` y el texto
+`"Nueva tarea publicada: <actividad> en <materia>. Fecha de entrega: viernes 20 de noviembre de 2026, 23:59 (hora de Hermosillo)."`.
+Moodle manda `"-"` en `gradeformatted` cuando no hay nota, así que `grade_text` `"-"` (o vacío) cuenta como sin
+nota; antes salía `"calificación nueva: -"`. La fecha sale de `snapshot_grades.due_at` en hora de Hermosillo
+(UTC-7 todo el año): con `null` el texto dice `"Sin fecha de entrega."`; si la fecha es desconocida (sin la 013)
+queda el texto de antes, sin fecha. El `payload` de esos avisos guarda además `due_at` (ISO o `null`), y
+`/api/notifications` lo muestra como la fila `Entrega` y usa el título "Nueva tarea publicada". El mismo texto
+va por log, correo y Push. `itson_api` no cambia.
 
 El nombre de la materia sale de `subjects` y el de la actividad de `snapshot_grades` (del snapshot anterior si
 el ítem se borró). Si no se encuentran, el mensaje usa "Una actividad" y omite la materia. El total del curso
@@ -675,6 +714,10 @@ Los eventos de notificación (`notificacion_enviada`, `notificacion_fallida`,
 - **`INTERNAL_API_KEY` todavía lee todos los tokens.** Desde ITN-51 ya no guarda ni borra, pero sigue leyendo y
   marcando cualquier cuenta. Riesgo residual y rotación en
   [`INTERNAL_API_KEY`: mínimo privilegio](#internal_api_key-mínimo-privilegio-itn-51).
+- **Pendiente: aviso por cambio de fecha de entrega (ITN-56).** Las fechas se guardan pero no se comparan: si el
+  maestro mueve la fecha de una tarea que ya existía, no hay aviso. Para avisarlo habría que agregar `due_at` al
+  diff (`grade_changes.field_name = 'due_at'` no choca con la llave de la 004) y leerlo en `getSnapshotItems`,
+  que hoy funciona sin la 013. **Ticket aparte.**
 - **Pendiente: alertas al equipo desde el backend.** `sendTeamAlert` (Telegram) vive en
   `automation/monitors/telegram.js` y el backend no puede importarlo. Para avisar al equipo de notificaciones
   fallidas hay que sacar ese módulo a algo compartido. **Ticket aparte.** Mientras tanto, los fallos solo
@@ -696,6 +739,29 @@ En `automation/schedulers/extraccion-cron.js`, cada corrida:
 5. Reintenta solo en errores de red o `5xx`. No reintenta en `400`, `401` ni `409`.
 6. Loguea solo conteos, la posición de la cuenta, status HTTP y errorcode. Alerta al equipo a lo más una vez por
    corrida, solo con conteos.
+
+**Fechas de entrega (ITN-56).** Después de leer las notas de todos los cursos, `fetchGradesDetalle` (en
+`automation/rpa/ivirtual-api/grades.js`) hace **una** llamada a `mod_assign_get_assignments` con todos los
+`courseids` y une cada tarea con su grade item por `cmid`. Moodle manda las fechas en segundos Unix con `0` cuando
+no hay: se convierten a ISO 8601 y `0` queda `null`. Por ítem van `dueAt` (`duedate`), `opensAt`
+(`allowsubmissionsfromdate`) y `closesAt` (`cutoffdate`); un ítem que no es tarea va con las tres en `null`.
+
+- **Si la llamada de tareas falla** (permiso, `5xx` tras los reintentos de `callWs`, red), la extracción **no**
+  falla: se entregan las notas **sin** campos de fecha (`fechas: "no_disponibles"`), el backend conserva las
+  fechas anteriores y el cron loguea `Fechas de entrega no disponibles (cuenta n/total): errorcode=...` por stdout
+  (no cuenta como falla ni alerta). Un curso que Moodle omite de la respuesta (con un `warning`) también va sin
+  campos de fecha. Si fallan las notas, falla como antes y no se llama a tareas.
+- **Ítems ocultos (`shouldKeep`).** Un ítem con la nota oculta (`gradeishidden`) y sin valor se sigue omitiendo,
+  **salvo** que `mod_assign_get_assignments` lo devuelva: entonces la tarea es visible para el alumno y se
+  conserva para no perder el aviso de tarea nueva (una tarea recién publicada puede llegar así). Sin fechas
+  (la llamada falló) se aplica la regla de antes. **Riesgo de la primera corrida tras el despliegue:** las tareas
+  con la nota oculta que ya existían y antes se omitían aparecerán **una vez** como tareas nuevas y generarán su
+  aviso. Por eso el despliegue y esa primera corrida deben hacerse **antes** del ensayo con el profesor.
+- **Verificación con una cuenta real:** `node automation/scripts/verificar-ivirtual-fechas.js` (desde
+  `ITSON-Notify/`, con `Id_User` y `P_User` del `.env`) imprime solo conteos y sí/no: si `moodle_mobile_app`
+  permite cada función, cursos, ítems sin nota, ítems con `hidden`, tareas unidas por `cmid` y con fecha. Con
+  `--curso <id>` da el detalle por actividad (nombre, tipo, nota sí/no, oculta, entrega en hora de Hermosillo).
+  El token no se imprime. Para ver la salida completa con fechas: `npm run extract:grades`.
 
 **Fase de la API REST de ITSON (ITN-55).** Después de la de iVirtual, en su propio try/catch, el worker pide
 `GET /internal/itson-profiles/active` y, por alumno, consulta `getAlumnoInscrito`, `getProgress` y `getGrades` (hasta

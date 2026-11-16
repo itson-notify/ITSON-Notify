@@ -2,6 +2,8 @@
 // El texto del aviso ya está en payload.text (ver notificationService); el resto
 // sale de grade_changes y subjects.
 const { describirCodigo } = require("./itsonGradeCodes");
+const { esGrupoTareaNueva } = require("./notificationService");
+const { formatearFechaHermosillo, ZONA } = require("../utils/fechaHermosillo");
 
 // notifications_log no tiene columna de tipo y hoy solo registra cambios de
 // calificación. Tareas, cupos y trámites llegarán cuando exista un detector que
@@ -28,12 +30,17 @@ function titleOf(changes, source) {
     return nota?.previous_value == null ? "Calificación final" : "Calificación final actualizada";
   }
   if (changes.length === 0) return "Cambio de calificación";
+  // ITN-56 - Ítem nuevo sin nota ("-" de Moodle incluido): tarea nueva, igual que el aviso.
+  if (esGrupoTareaNueva(changes)) return "Nueva tarea publicada";
   if (changes.every((c) => c.change_type === "created")) return "Nueva calificación disponible";
   if (changes.every((c) => c.change_type === "deleted")) return "Calificación eliminada";
   return "Calificación actualizada";
 }
 
-function rowsOf(subjectName, changes, source) {
+// ITN-56 - payload.due_at: lo guarda notifyGroupedChanges en los avisos de iVirtual
+// cuando conoce la fecha (ISO o null). Si no viene (avisos viejos, itson_api o
+// fecha desconocida), no se agrega la fila.
+function rowsOf(subjectName, changes, source, payload = null) {
   const mostrar = (v) => (source === ITSON_API && v != null ? describirCodigo(v) : v);
   const rows = [];
   if (subjectName) rows.push({ label: "Materia", value: subjectName });
@@ -42,6 +49,10 @@ function rowsOf(subjectName, changes, source) {
   if (nota) {
     rows.push({ label: "Calificación", value: mostrar(nota.current_value) ?? SIN_VALOR });
     if (nota.previous_value != null) rows.push({ label: "Anterior", value: mostrar(nota.previous_value) });
+  }
+  if (source !== ITSON_API && payload && "due_at" in payload) {
+    const fecha = formatearFechaHermosillo(payload.due_at);
+    rows.push({ label: "Entrega", value: fecha ? `${fecha} (${ZONA})` : "Sin fecha de entrega" });
   }
   return rows;
 }
@@ -60,7 +71,7 @@ function toNotif(row, changesById, subjectNames) {
     time: new Date(row.created_at).toISOString(),
     unread: row.read_at == null,
     body: row.payload?.text ?? "Hubo un cambio en tus calificaciones.",
-    rows: rowsOf(subjectName, changes, source),
+    rows: rowsOf(subjectName, changes, source, row.payload),
   };
 }
 

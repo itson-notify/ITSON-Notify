@@ -33,6 +33,19 @@ const idExterno = z
 
 const numeroONull = z.number().finite().nullish();
 
+// ITN-56 - Campos de fecha del ítem y su columna en snapshot_grades (migración 013).
+const FECHAS_TAREA = [
+  { key: "dueAt", column: "due_at" },
+  { key: "opensAt", column: "opens_at" },
+  { key: "closesAt", column: "closes_at" },
+];
+
+// ITN-56 - Fechas de una tarea de iVirtual (ISO 8601 con zona). Omitida significa
+// "desconocida" (el backend copia la del snapshot anterior del mismo ítem); null
+// significa "la tarea no tiene esa fecha". Por eso es optional() + nullable() y
+// no nullish() con default: zod deja la llave ausente si no vino.
+const fechaTarea = z.iso.datetime({ offset: true }).nullable().optional();
+
 const item = z.object({
   externalItemId: idExterno.refine((v) => !v.startsWith(LEGACY_PREFIX), {
     message: "prefijo reservado",
@@ -52,6 +65,10 @@ const item = z.object({
   categoryId: z.union([z.string().max(100), z.number()]).nullish(),
   cmid: z.union([z.string().max(100), z.number()]).nullish(),
   hidden: z.boolean().nullish(),
+  // ITN-56 - Solo iVirtual (en itson_api se descartan): entrega, apertura y cierre.
+  dueAt: fechaTarea,
+  opensAt: fechaTarea,
+  closesAt: fechaTarea,
 });
 
 const course = z.object({
@@ -140,7 +157,8 @@ function normalizarItsonApi(data) {
     ...data,
     courses: data.courses.map((c) => ({
       ...c,
-      items: c.items.map((it) => ({ ...it, value: null, text: normalizarCodigo(it.text) })),
+      // ITN-56 - itson_api no tiene fechas de entrega: se descartan si llegaran.
+      items: c.items.map(({ dueAt, opensAt, closesAt, ...it }) => ({ ...it, value: null, text: normalizarCodigo(it.text) })),
     })),
   };
 }
@@ -161,4 +179,4 @@ function parseGradeSnapshotPayload(body, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { parseGradeSnapshotPayload, MAX_FUTURO_MS, SOURCES, ITSON_API };
+module.exports = { parseGradeSnapshotPayload, MAX_FUTURO_MS, SOURCES, ITSON_API, FECHAS_TAREA };

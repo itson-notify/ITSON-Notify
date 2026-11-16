@@ -5,6 +5,7 @@
 // (contrato en README.md), igual que gradeChangeService.
 
 const { describirCodigo } = require("./itsonGradeCodes");
+const { fraseEntrega } = require("../utils/fechaHermosillo");
 
 // Después de este número de intentos fallidos ya no se reintenta el canal.
 const MAX_ATTEMPTS = 5;
@@ -41,6 +42,12 @@ function assertChannels(channels, fn) {
 
 const show = (value) => (value === null || value === undefined ? "sin valor" : value);
 
+// ITN-56 - En iVirtual Moodle manda "-" en gradeformatted cuando no hay nota. Para
+// decidir si un ítem nuevo es una tarea sin calificar, "-" y vacío cuentan como
+// sin nota. itson_api ya normaliza "-" a null antes de guardar (ITN-55).
+const esSinNota = (value) =>
+  value === null || value === undefined || String(value).trim() === "" || String(value).trim() === "-";
+
 const actividadDe = (context) =>
   context.itemLabel === null ? "Total del curso" : context.itemLabel || "Una actividad";
 
@@ -49,10 +56,21 @@ const actividadDe = (context) =>
 function esTareaNuevaRow(gradeChange) {
   if (gradeChange.change_type !== "created") return false;
   if (gradeChange.field_name === "grade_label") return true;
+  if (gradeChange.field_name === "grade_text") return esSinNota(gradeChange.current_value);
   return (
     gradeChange.field_name === "grade_value" &&
     (gradeChange.current_value === null || gradeChange.current_value === undefined)
   );
+}
+
+// ITN-56 - Texto del aviso de tarea nueva, con la fecha de entrega si se conoce:
+// "Nueva tarea publicada: Tarea 3 en Cálculo. Fecha de entrega: viernes 20 de
+// noviembre de 2026, 23:59 (hora de Hermosillo)." o "... Sin fecha de entrega.".
+// Si la fecha es desconocida (dueAt undefined) queda el texto de antes.
+function textoTareaNueva(ctx) {
+  const donde = ctx.subjectName ? ` en ${ctx.subjectName}` : "";
+  const entrega = fraseEntrega(ctx.dueAt);
+  return `Nueva tarea publicada: ${actividadDe(ctx)}${donde}.${entrega ? ` ${entrega}` : ""}`;
 }
 
 // Arma el mensaje. Solo usa la materia, la actividad y los valores: nunca
@@ -68,7 +86,7 @@ function buildMessage(gradeChange, context = {}) {
       context.itemLabel === undefined && gradeChange.field_name === "grade_label" && gradeChange.current_value
         ? { ...context, itemLabel: gradeChange.current_value }
         : context;
-    return { subject: NEW_TASK_SUBJECT, text: `Nueva tarea publicada: ${actividadDe(ctx)}${donde}.` };
+    return { subject: NEW_TASK_SUBJECT, text: textoTareaNueva(ctx) };
   }
 
   let detalle;
@@ -98,6 +116,15 @@ function describirCampo(row, campo) {
   }
 }
 
+// ITN-56 - Un grupo es una tarea nueva si todas sus filas son 'created' y ni
+// grade_value ni grade_text traen nota ("-" y vacío cuentan como sin nota).
+function esGrupoTareaNueva(rows) {
+  if (rows.length === 0 || !rows.every((r) => r.change_type === "created")) return false;
+  return rows
+    .filter((r) => r.field_name === "grade_value" || r.field_name === "grade_text")
+    .every((r) => esSinNota(r.current_value));
+}
+
 // Mensaje de un grupo de filas del mismo ítem, p. ej.
 // "Tarea 3 en Cálculo: calificación de 8 a 9."
 // Si el ítem es nuevo ('created') y aún no tiene nota, se avisa como tarea nueva.
@@ -112,14 +139,13 @@ function buildGroupedMessage(rows, context = {}) {
   const nota = porCampo.get("grade_value") ?? porCampo.get("grade_text");
   const labelRow = porCampo.get("grade_label");
 
-  const sinNota = !nota || nota.current_value === null || nota.current_value === undefined;
-  if (rows.length > 0 && rows.every((r) => r.change_type === "created") && sinNota) {
+  // ITN-56 - Un ítem nuevo de iVirtual llega con grade_text "-": también es "sin nota".
+  if (esGrupoTareaNueva(rows)) {
     const ctx =
       context.itemLabel === undefined && labelRow?.current_value
         ? { ...context, itemLabel: labelRow.current_value }
         : context;
-    const donde = ctx.subjectName ? ` en ${ctx.subjectName}` : "";
-    return { subject: NEW_TASK_SUBJECT, text: `Nueva tarea publicada: ${actividadDe(ctx)}${donde}.` };
+    return { subject: NEW_TASK_SUBJECT, text: textoTareaNueva(ctx) };
   }
 
   if (nota) partes.push(describirCampo(nota, "calificación"));
@@ -299,7 +325,14 @@ async function notifyGroupedChanges(inserted, { repo, channels, source } = {}) {
           user_id: grupo.userId,
           grade_change_id: grupo.claimId,
           channel: channel.name,
-          payload: { ...message, grade_change_ids: grupo.ids, ...(esApi ? { source: ITSON_API } : {}) },
+          // ITN-56 - En iVirtual se guarda también due_at (ISO o null) si se conoce,
+          // para mostrar la fecha de entrega en la app sin volver a leer el snapshot.
+          payload: {
+            ...message,
+            grade_change_ids: grupo.ids,
+            ...(esApi ? { source: ITSON_API } : {}),
+            ...(!esApi && ctx.dueAt !== undefined ? { due_at: ctx.dueAt } : {}),
+          },
         });
         resultado = await entregar(row, channel, message, meta, repo);
       } catch (err) {
@@ -350,6 +383,7 @@ module.exports = {
   buildMessage,
   buildGroupedMessage,
   buildItsonApiMessage,
+  esGrupoTareaNueva,
   groupChanges,
   REPO_METHODS,
   GROUPED_REPO_METHODS,

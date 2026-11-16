@@ -10,6 +10,13 @@
 // snapshot ya existía (reenvío), no se toca: borrarlo destruiría una corrida
 // que ya estaba completa. Limitación conocida en backend/README.md.
 const { check, SnapshotOwnershipError } = require("../utils/errors");
+const { FECHAS_TAREA } = require("../models/gradeSnapshotPayload");
+
+// ITN-56 - Código de Postgres para una columna inexistente (013 sin aplicar).
+const UNDEFINED_COLUMN = "42703";
+const COLUMNAS_FECHA = FECHAS_TAREA.map((f) => f.column);
+// PostgREST corta las respuestas en max-rows (1000 por defecto en Supabase).
+const PAGE = 1000;
 
 // Llaves de conflicto, exactamente las de las migraciones.
 const ON_CONFLICT = {
@@ -89,9 +96,22 @@ async function insertSnapshot(supabase, { id, userId, source, period = null, cap
   return rows.length === 1;
 }
 
-function gradeRows(snapshotId, courses, subjectIds) {
+// ITN-56 - Fechas de la tarea en las columnas de la 013. Una fecha que vino en
+// el ítem (ISO o null) se guarda tal cual; una omitida es "desconocida" y se copia
+// del snapshot anterior del mismo ítem (`previas`), o null si no había.
+// Con `previas` = null (itson_api o 013 sin aplicar) no se escriben las columnas.
+function fechaColumns(it, subjectId, previas) {
+  if (!previas) return {};
+  const previa = previas.get(`${subjectId}\u0000${it.externalItemId}`);
+  return Object.fromEntries(
+    FECHAS_TAREA.map(({ key, column }) => [column, it[key] !== undefined ? it[key] : previa?.[column] ?? null]),
+  );
+}
+
+function gradeRows(snapshotId, courses, subjectIds, previas = null) {
   return courses.flatMap((c) =>
     c.items.map((it) => ({
+      ...fechaColumns(it, subjectIds.get(c.externalId), previas),
       snapshot_id: snapshotId,
       subject_id: subjectIds.get(c.externalId),
       external_item_id: it.externalItemId,
@@ -113,15 +133,62 @@ function gradeRows(snapshotId, courses, subjectIds) {
   );
 }
 
-async function upsertSnapshotGrades(supabase, rows) {
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    check(
-      "snapshot_grades",
-      await supabase
-        .from("snapshot_grades")
-        .upsert(rows.slice(i, i + CHUNK), { onConflict: ON_CONFLICT.snapshot_grades }),
-    );
+// ITN-56 - Fechas del snapshot anterior de iVirtual del mismo alumno, para copiar
+// las que lleguen omitidas. El anterior es el de captured_at más reciente menor al
+// actual (como en el detector, sin el desempate por id). Devuelve
+//   { previas: Map(subjectId\0externalItemId -> { due_at, opens_at, closes_at }) }
+//   { previas: null } si la 013 no está aplicada (42703).
+async function leerFechasPrevias(supabase, { userId, snapshotId, capturedAt }) {
+  const anterior = check(
+    "grade_snapshots",
+    await supabase
+      .from("grade_snapshots")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("source", "ivirtual")
+      .neq("id", snapshotId)
+      .lt("captured_at", capturedAt)
+      .order("captured_at", { ascending: false })
+      .limit(1),
+  )[0];
+
+  const previas = new Map();
+  // Sin snapshot anterior igual se prueba la columna, para saber si existe.
+  const ids = anterior ? [anterior.id] : [snapshotId];
+  for (let from = 0; ; from += PAGE) {
+    const res = await supabase
+      .from("snapshot_grades")
+      .select(`id,subject_id,external_item_id,${COLUMNAS_FECHA.join(",")}`)
+      .in("snapshot_id", ids)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (res.error?.code === UNDEFINED_COLUMN) return { previas: null };
+    const rows = check("snapshot_grades", res);
+    if (anterior) {
+      for (const r of rows) previas.set(`${r.subject_id}\u0000${r.external_item_id}`, r);
+    }
+    if (rows.length < PAGE) return { previas };
   }
+}
+
+const sinFechas = (row) => Object.fromEntries(Object.entries(row).filter(([k]) => !COLUMNAS_FECHA.includes(k)));
+
+// Devuelve true si escribió las fechas, false si la 013 no está aplicada (42703)
+// y se reintentó sin las columnas de fecha.
+async function upsertSnapshotGrades(supabase, rows) {
+  let conFechas = rows.some((r) => COLUMNAS_FECHA.some((c) => c in r));
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const enviar = (filas) =>
+      supabase.from("snapshot_grades").upsert(filas, { onConflict: ON_CONFLICT.snapshot_grades });
+    let res = await enviar(conFechas ? chunk : chunk.map(sinFechas));
+    if (conFechas && res.error?.code === UNDEFINED_COLUMN) {
+      conFechas = false;
+      res = await enviar(chunk.map(sinFechas));
+    }
+    check("snapshot_grades", res);
+  }
+  return conFechas;
 }
 
 // Borrado compensatorio. Si también falla, se reporta en el error original
@@ -163,16 +230,30 @@ async function saveSnapshot(supabase, payload) {
     if (!actual || actual.user_id !== userId) throw new SnapshotOwnershipError(snapshotId);
   }
 
-  const rows = gradeRows(snapshotId, payload.courses, subjectIds);
+  // ITN-56 - Fechas de las tareas, solo iVirtual. fechas: "ok", "sin_migracion"
+  // (la 013 no está aplicada: el snapshot se guarda sin fechas) o "no_aplica".
+  let fechas = "no_aplica";
+  let rows;
   try {
-    await upsertSnapshotGrades(supabase, rows);
+    let previas = null;
+    if (payload.source !== ITSON_API) {
+      ({ previas } = await leerFechasPrevias(supabase, {
+        userId,
+        snapshotId,
+        capturedAt: payload.captured_at,
+      }));
+      fechas = previas ? "ok" : "sin_migracion";
+    }
+    rows = gradeRows(snapshotId, payload.courses, subjectIds, previas);
+    const escritas = await upsertSnapshotGrades(supabase, rows);
+    if (fechas === "ok" && !escritas) fechas = "sin_migracion";
   } catch (error) {
     // Solo se borra lo que esta llamada creó.
     error.compensation = created ? await deleteSnapshot(supabase, snapshotId) : "omitida";
     throw error;
   }
 
-  return { snapshotId, userId, created, courses: payload.courses.length, items: rows.length };
+  return { snapshotId, userId, created, courses: payload.courses.length, items: rows.length, fechas };
 }
 
-module.exports = { saveSnapshot, upsertUser, ON_CONFLICT };
+module.exports = { saveSnapshot, upsertUser, gradeRows, ON_CONFLICT };

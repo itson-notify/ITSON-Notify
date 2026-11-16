@@ -441,3 +441,37 @@ describe("privacidad de logs y alertas (ITN-39, ITN-52)", () => {
     m.revisar([...Object.values(tokens), ...cuentas]);
   });
 });
+
+// ITN-56 - Si mod_assign_get_assignments falló, se entregan las notas sin fechas y
+// solo el errorcode llega al log (por stdout: no es una falla de la corrida).
+describe("fechas de entrega no disponibles", () => {
+  test("entrega igual, sale con 0 y registra solo el errorcode", async (t) => {
+    const s = simular(t, {
+      cuentas: [1],
+      resultados: { [token(1)]: { status: "ok", courses: CURSOS, fechas: "no_disponibles", fechasErrorcode: "accessexception" } },
+    });
+
+    assert.equal(await s.correr(), 0);
+    assert.equal(s.entregar.mock.callCount(), 1);
+    assert.ok(s.lineas.includes("Fechas de entrega no disponibles (cuenta 1/1): errorcode=accessexception. Se entregan las notas sin fechas."));
+    assert.deepEqual(s.errores, []);
+    assert.equal(s.alertar.mock.callCount(), 0);
+  });
+
+  test("un errorcode con texto raro no llega al log", async (t) => {
+    const s = simular(t, {
+      cuentas: [1],
+      resultados: { [token(1)]: { status: "ok", courses: CURSOS, fechas: "no_disponibles", fechasErrorcode: `x ${token(1)}` } },
+    });
+
+    await s.correr();
+    assert.ok(s.lineas.some((l) => l.includes("errorcode=sin_codigo")));
+    assert.ok(!s.lineas.join("\n").includes(token(1)));
+  });
+
+  test("con fechas ok no agrega la línea", async (t) => {
+    const s = simular(t, { cuentas: [1], resultados: { [token(1)]: { status: "ok", courses: CURSOS, fechas: "ok" } } });
+    await s.correr();
+    assert.ok(!s.lineas.some((l) => l.startsWith("Fechas de entrega")));
+  });
+});

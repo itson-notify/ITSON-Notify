@@ -475,7 +475,8 @@ describe("Rutas y ciclo de vida de Suscripciones Web Push", () => {
     assert.strictEqual(recibidos[0].payload.title, "ITSON Notify: nueva tarea");
     assert.strictEqual(
       recibidos[0].payload.body,
-      "Nueva tarea publicada: Entrega Final en Ingeniería de Software.",
+      // ITN-56: la fila de snapshot_grades no tiene due_at, así que el aviso lo dice.
+      "Nueva tarea publicada: Entrega Final en Ingeniería de Software. Sin fecha de entrega.",
     );
     assert.strictEqual(recibidos[0].payload.tag, "itson-change-gc-10");
 
