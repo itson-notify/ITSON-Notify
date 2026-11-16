@@ -35,6 +35,7 @@ function createApp({
   // token. Sin él, PUT /api/credentials/ivirtual responde 501.
   exchangeToken,
   linkLimiter,
+  classroomFetch,
 }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
   if (!config?.credentialsEncryptionKey) throw new Error("createApp requiere config.credentialsEncryptionKey");
@@ -83,7 +84,7 @@ function createApp({
   app.use(
     "/api",
     frontendCors(config, "GET, POST, PUT, DELETE, OPTIONS"),
-    studentApiRouter({ config, supabase, now, logger, credentialCrypto, exchangeToken, linkLimiter }),
+    studentApiRouter({ config, supabase, now, logger, credentialCrypto, exchangeToken, linkLimiter, classroomFetch }),
   );
 
   // Suscripciones Web Push del navegador móvil

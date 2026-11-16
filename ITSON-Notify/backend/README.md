@@ -1,5 +1,45 @@
 # Backend de ITSON Notify (ITN-27)
 
+## Consulta de cursos de Classroom (ITN-42)
+
+`GET /api/classroom/courses` exige la cookie de sesión de Google vigente en
+`google_app_sessions`. No acepta identidad del alumno por query ni body. Lee
+`google_authorizations` por ambos identificadores de la sesión (`user_id` y
+`google_id`), descifra con el propósito `google-refresh` de ITN-41 y obtiene un
+access token temporal exclusivamente en backend. No guarda tokens ni cursos.
+
+Respuesta: `{ "courses": [{ "id": "001", "name": "Curso", "section": "A",
+"courseState": "ACTIVE" }] }`. Los dos últimos campos son opcionales. Mantiene
+los IDs de Google como texto y devuelve todas las páginas mediante el cliente
+de ITN-49, con `studentId=me` en cada página para excluir cursos donde solo se es
+docente. No expone curso parcial si falla una página. La paginación es interna:
+no acepta `pageToken` ni devuelve `nextPageToken` al consumidor.
+
+Respuestas con `Cache-Control: no-store`: 401 sesión ausente/inválida; 409
+`classroom_requiere_autorizacion` si falta autorización, falla su descifrado,
+Google rechaza el refresh token con `invalid_grant` o Classroom responde 401;
+403 `classroom_sin_permisos`; 502 respuesta inválida o error HTTP no recuperable;
+503 configuración deshabilitada, red, timeout, 429 o fallo temporal del proveedor;
+500 fallo de persistencia. No hay reintentos automáticos. Un 409 requiere volver
+a autorizar; un 401 de Classroom no permite distinguir expiración de revocación.
+Se conserva el consentimiento existente de solo lectura de cursos.
+
+Pruebas con transportes externos bloqueados (HTTP local permitido a Supertest):
+
+```sh
+node --require ./tests/helpers/offlineNetwork.cjs --test
+```
+
+La implementación única de ITN-49 vive en `src/services/classroomClient.js`.
+El backend puede empaquetarse solo con `backend/`: no importa `automation/`.
+La entrada anterior de automation conserva un adaptador a la misma implementación.
+`.railway/railway.ts` administra únicamente el worker; no garantiza el contexto
+de construcción del backend. Esta integración no necesita cambiar ese contexto.
+`tests/packaging/backendArtifact.test.js` copia solo `src/` y `package.json`,
+resuelve las dependencias npm instaladas, arranca `src/server.js` con configuración
+sintética y verifica `/health` sin red externa. También retira el cliente de esa
+copia para comprobar que el arranque detecta `MODULE_NOT_FOUND`.
+
 Servidor Express que recibe cada extracción del worker (ITN-25), la guarda en Supabase, corre el detector de
 cambios de ITN-24 y notifica los cambios nuevos (ITN-28).
 

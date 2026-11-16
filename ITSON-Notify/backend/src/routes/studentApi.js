@@ -8,16 +8,18 @@ const { parseNotificationId } = require("../models/studentApi");
 const { createStudentRepository } = require("../repositories/studentRepository");
 const { listStudentNotifications } = require("../services/studentNotifications");
 const { studentCredentialsRouter } = require("./studentCredentials");
+const { createCoursesService, CoursesError } = require('../services/classroomCourses');
 
 const ITSON_STATUS_ERROR = "needs_relink";
 
 // ITN-51 - Todos los métodos que cambian estado exigen el Origin exacto.
 const METODOS_CON_ESCRITURA = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-function studentApiRouter({ config, supabase, now = Date.now, logger, credentialCrypto, exchangeToken, linkLimiter }) {
+function studentApiRouter({ config, supabase, now = Date.now, logger, credentialCrypto, exchangeToken, linkLimiter, classroomFetch }) {
   const router = express.Router();
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
   const repo = createStudentRepository(supabase);
+  const listCourses = createCoursesService({ config, supabase, fetchImpl: classroomFetch });
   const nowIso = () => new Date(now()).toISOString();
 
   router.use((req, res, next) => {
@@ -37,6 +39,15 @@ function studentApiRouter({ config, supabase, now = Date.now, logger, credential
   router.use(requireStudentSession({
     readSession: createSessionReader({ secret: config.googleAuthSecret, supabase, now }),
   }));
+
+  router.get('/classroom/courses', async (req, res) => {
+    try {
+      return res.json(await listCourses(req.student));
+    } catch (error) {
+      if (error instanceof CoursesError) return res.status(error.status).json({ error: error.code });
+      throw error;
+    }
+  });
 
   router.get("/me", async (req, res) => {
     const { userId, googleId } = req.student;

@@ -3,6 +3,12 @@
 Cliente CommonJS pequeño para Node.js 22, sin dependencias adicionales. Sigue
 el patrón de fixtures sintéticos y `node:test` de `../ivirtual-api/`.
 
+La implementación única está en `backend/src/services/classroomClient.js` para
+que el backend se pueda desplegar de forma aislada. `client.js` conserva la
+entrada de ITN-49 como adaptador. Las herramientas que importen este cliente
+desde automation necesitan también ese archivo del repositorio; el cron actual
+de iVirtual no importa este módulo. No hay una segunda copia del cliente.
+
 ```js
 const { createClassroomClient } = require('./automation/rpa/google-classroom');
 const client = createClassroomClient();
@@ -23,6 +29,9 @@ Solo se permiten GET a endpoints fijos oficiales y se rechazan redirecciones.
 `listCourses` usa `/v1/courses`; `listCourseWork` usa
 `/v1/courses/{courseId}/courseWork` (PUBLISHED por defecto según Google).
 Los parámetros opcionales por llamada son `{ pageSize: 100 }`.
+Para cursos, ITN-42 añade `{ studentId: 'me' }` como filtro opcional de alumno
+en todas las páginas. Se rechazan otros valores y su uso con `listCourseWork`.
+Sin esta opción se conserva el contrato anterior.
 La fábrica admite `{ fetchImpl, timeoutMs: 15000, maxPages: 1000 }`.
 El timeout cubre petición y lectura del cuerpo con fetch nativo. Un transporte
 inyectado debe respetar la señal. Ciclos o exceso de páginas fallan sin devolver

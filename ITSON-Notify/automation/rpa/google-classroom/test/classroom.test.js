@@ -5,6 +5,13 @@ const path = require('node:path');
 const { createClassroomClient, ClassroomError, READONLY_SCOPES } = require('..');
 
 const TOKEN = 'synthetic-access-token';
+test('listCourses: optional student filter survives every page', async () => {
+  const { client, calls } = mock([json({ nextPageToken: 'next' }), json({})]);
+  assert.deepEqual(await client.listCourses(TOKEN, { studentId: 'me' }), []);
+  for (const [url] of calls) assert.equal(new URL(url).searchParams.get('studentId'), 'me');
+  await assert.rejects(client.listCourses(TOKEN, { studentId: 'other' }), TypeError);
+  await assert.rejects(client.listCourseWork(TOKEN, 'course', { studentId: 'me' }), TypeError);
+});
 const fixture = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${name}.json`), 'utf8'));
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
 // Cualquier uso accidental del transporte real hace fallar la prueba.
