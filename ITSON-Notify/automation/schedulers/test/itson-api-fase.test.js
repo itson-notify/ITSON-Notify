@@ -10,7 +10,7 @@ const { crearClientePerfilesItson } = require("../perfiles-itson-backend");
 const { notificarFalloCritico } = require("../../monitors/alertas");
 const { crearClienteItsonApi } = require("../../services/itsonApiClient");
 
-const BASE = "https://api-prueba.example.test";
+const BASE = "https://webapi.itson.edu.mx";
 const ENV = {
   BACKEND_URL: "http://backend.test",
   INTERNAL_API_KEY: "llave-de-prueba-".padEnd(40, "x"),
@@ -84,7 +84,7 @@ const sinDatosPersonales = (texto, ns = [1, 2, 3]) => {
   for (const n of ns) {
     for (const d of [matricula(n), String(100000 + n), correo(n)]) assert.ok(!texto.includes(d), "apareció un dato del alumno");
   }
-  assert.ok(!texto.includes(BASE) && !texto.includes("api-prueba"), "apareció la URL de la API");
+  assert.ok(!texto.includes(BASE) && !texto.includes("webapi.itson"), "apareció la URL de la API");
 };
 
 describe("flujo por alumno", () => {
@@ -247,10 +247,42 @@ describe("configuración y backend", () => {
   });
 
   test("URL inválida: 1 y alerta de configuración, sin citar la URL", async (t) => {
-    const s = simular(t, { env: { ...ENV, ITSON_API_BASE_URL: "http://api-prueba.example.test" } });
+    const s = simular(t, { env: { ...ENV, ITSON_API_BASE_URL: "http://webapi.itson.edu.mx" } });
     assert.equal(await s.correr(), 1);
     assert.equal(s.alertar.mock.calls[0].arguments[0].tipo, "configuracion");
     sinDatosPersonales(s.errores.join("\n"));
+  });
+
+  test("host no autorizado, credenciales, puerto o punto final: 1, alerta de configuración y ninguna llamada", async (t) => {
+    const casos = [
+      "https://otro-host.example.test",
+      "https://usuario-x:clave-secreta@webapi.itson.edu.mx",
+      "https://webapi.itson.edu.mx:8443",
+      "https://webapi.itson.edu.mx.",
+    ];
+    for (const valor of casos) {
+      const s = simular(t, { env: { ...ENV, ITSON_API_BASE_URL: valor } });
+      assert.equal(await s.correr(), 1);
+      assert.equal(s.llamadas.length, 0);
+      assert.equal(s.alertar.mock.callCount(), 1);
+      assert.equal(s.alertar.mock.calls[0].arguments[0].tipo, "configuracion");
+      const texto = [...s.lineas, ...s.errores].join("\n") + JSON.stringify(s.alertar.mock.calls[0].arguments[0]);
+      for (const parte of ["otro-host", "usuario-x", "clave-secreta", "8443", "webapi"]) assert.ok(!texto.includes(parte), "se citó la URL");
+      sinDatosPersonales(texto);
+    }
+  });
+
+  test("mayúsculas en el host se aceptan", async (t) => {
+    const s = simular(t, { env: { ...ENV, ITSON_API_BASE_URL: "https://WEBAPI.ITSON.EDU.MX" } });
+    assert.equal(await s.correr(), 0);
+    assert.ok(s.llamadas.length > 0);
+  });
+
+  test("una redirección en una llamada cuenta como falla de la API y alerta", async (t) => {
+    const s = simular(t, { alumnos: [{ n: 1, progreso: { ok: false, motivo: "redireccion", status: 302 } }] });
+    assert.equal(await s.correr(), 1);
+    assert.match(s.errores.join("\n"), /getProgress fallida \(alumno 1\/1\): motivo=redireccion status=302/);
+    assert.equal(s.alertar.mock.calls[0].arguments[0].conteos.fallas_api, 1);
   });
 
   test("el backend no entrega la lista de perfiles: 1 y alerta de backend", async (t) => {

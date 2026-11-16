@@ -6,6 +6,8 @@ const assert = require("node:assert/strict");
 const {
   crearClienteItsonApi,
   leerBaseUrl,
+  validarBaseUrl,
+  HOSTS_PERMITIDOS,
   leerInscripcion,
   leerProgreso,
   leerCalificaciones,
@@ -13,7 +15,7 @@ const {
   MAX_REINTENTOS,
 } = require("../itsonApiClient");
 
-const BASE = "https://api-prueba.example.test";
+const BASE = "https://webapi.itson.edu.mx";
 const MATRICULA = "00000123456";
 const CARRERA = "INSOF";
 const ALUMNO = { matricula: MATRICULA, career: CARRERA };
@@ -56,7 +58,7 @@ const INSCRITO = { inscrito: true, fechaInicioSemestre: "2026-08-10", fechaFinSe
 
 const sinDatos = (resultado) => {
   const texto = JSON.stringify(resultado);
-  for (const d of [MATRICULA, "123456", CARRERA, BASE, "api-prueba"]) assert.ok(!texto.includes(d), "apareció un dato sensible");
+  for (const d of [MATRICULA, "123456", CARRERA, BASE, "webapi.itson"]) assert.ok(!texto.includes(d), "apareció un dato sensible");
 };
 
 describe("método y parámetros por endpoint", () => {
@@ -237,13 +239,123 @@ describe("lectura de respuestas", () => {
   });
 });
 
-describe("ITSON_API_BASE_URL", () => {
-  test("valida sin citar el valor", () => {
-    assert.deepEqual(leerBaseUrl({ ITSON_API_BASE_URL: `${BASE}/` }), { ok: true, baseUrl: BASE });
-    for (const valor of [undefined, "", "no es url", "http://api-prueba.example.test", `${BASE}?id=${MATRICULA}`]) {
-      const r = leerBaseUrl({ ITSON_API_BASE_URL: valor });
-      assert.equal(r.ok, false);
-      assert.ok(!r.error.includes("api-prueba") && !r.error.includes(MATRICULA));
+describe("ITSON_API_BASE_URL: solo hosts autorizados", () => {
+  // Ningún mensaje de error puede citar la URL ni sus partes.
+  const sinPartes = (error, partes) => {
+    for (const p of partes) assert.ok(!error.toLowerCase().includes(p.toLowerCase()), "el error citó parte de la URL");
+  };
+
+  test("la lista cerrada es solo webapi.itson.edu.mx", () => {
+    assert.deepEqual([...HOSTS_PERMITIDOS], ["webapi.itson.edu.mx"]);
+    assert.ok(Object.isFrozen(HOSTS_PERMITIDOS));
+  });
+
+  test("host permitido: con o sin / final, :443 explícito y mayúsculas normalizadas al origen", () => {
+    for (const valor of [BASE, `${BASE}/`, `  ${BASE}  `, "https://webapi.itson.edu.mx:443", "https://WEBAPI.ITSON.EDU.MX", "HTTPS://WebApi.Itson.Edu.Mx/"]) {
+      assert.deepEqual(leerBaseUrl({ ITSON_API_BASE_URL: valor }), { ok: true, baseUrl: BASE }, "debió aceptarse");
     }
+  });
+
+  test("se rechazan http, otro host, punto final, subdominio parecido, credenciales, puerto, ruta y query", () => {
+    const casos = [
+      ["http://webapi.itson.edu.mx", ["webapi"], /https/],
+      ["https://otro-host.example.test", ["otro-host", "example"], /host no autorizado/],
+      ["https://webapi.itson.edu.mx.", ["webapi"], /host no autorizado/],
+      ["https://WEBAPI.ITSON.EDU.MX.", ["webapi"], /host no autorizado/],
+      ["https://webapi.itson.edu.mx.evil.test", ["webapi", "evil"], /host no autorizado/],
+      ["https://evil.test/webapi.itson.edu.mx", ["webapi", "evil"], /host no autorizado/],
+      ["https://api.itson.edu.mx", ["api.itson"], /host no autorizado/],
+      ["https://usuario-x:clave-secreta@webapi.itson.edu.mx", ["usuario-x", "clave-secreta", "webapi"], /usuario ni contraseña/],
+      ["https://usuario-x@webapi.itson.edu.mx", ["usuario-x", "webapi"], /usuario ni contraseña/],
+      ["https://webapi.itson.edu.mx:8443", ["8443", "webapi"], /puerto/],
+      ["https://webapi.itson.edu.mx/api", ["webapi", "/api"], /sin ruta/],
+      [`https://webapi.itson.edu.mx?id=${MATRICULA}`, ["webapi", MATRICULA, "123456"], /query/],
+      ["https://webapi.itson.edu.mx/#x", ["webapi"], /query ni fragmento/],
+    ];
+    for (const [valor, partes, motivo] of casos) {
+      const r = leerBaseUrl({ ITSON_API_BASE_URL: valor });
+      assert.equal(r.ok, false, "debió rechazarse");
+      assert.match(r.error, motivo);
+      sinPartes(r.error, partes);
+    }
+    for (const valor of [undefined, "", "   ", "no es url"]) assert.equal(leerBaseUrl({ ITSON_API_BASE_URL: valor }).ok, false);
+  });
+
+  test("crearClienteItsonApi con un host no permitido no se crea y no sale ninguna petición con la matrícula", async () => {
+    for (const baseUrl of ["https://otro-host.example.test", "http://webapi.itson.edu.mx", "https://u:p@webapi.itson.edu.mx", "https://webapi.itson.edu.mx."]) {
+      const { fetchFn, llamadas } = fetchSimulado([json(PROGRESS)]);
+      assert.throws(() => crearClienteItsonApi({ baseUrl, fetchFn, sleep: async () => {} }), (e) => {
+        assert.ok(!e.message.includes("otro-host") && !e.message.includes("webapi"));
+        return true;
+      });
+      assert.equal(llamadas.length, 0);
+    }
+    assert.equal(validarBaseUrl(BASE).ok, true);
+  });
+
+  test("todas las llamadas del cliente van al host permitido", async () => {
+    const { api, llamadas } = cliente([json(INSCRITO), json(PROGRESS), json(GRADES)]);
+    await api.getAlumnoInscrito(ALUMNO);
+    await api.getProgress(ALUMNO);
+    await api.getGrades({ ...ALUMNO, semester: "07" });
+    assert.equal(llamadas.length, 3);
+    for (const l of llamadas) assert.equal(l.url.origin, BASE);
+  });
+});
+
+describe("redirecciones: nunca se siguen", () => {
+  const redireccion = (status, location) => {
+    let leido = false;
+    return {
+      res: {
+        ok: false,
+        status,
+        headers: { get: (h) => { if (String(h).toLowerCase() === "location") leido = true; return location; } },
+        json: async () => ({}),
+        text: async () => "",
+      },
+      fueLeido: () => leido,
+    };
+  };
+  const OTRO = "https://destino-redireccion.example.test/robar";
+  const llamar = {
+    getAlumnoInscrito: (api) => api.getAlumnoInscrito(ALUMNO),
+    getProgress: (api) => api.getProgress(ALUMNO),
+    getGrades: (api) => api.getGrades({ ...ALUMNO, semester: "07" }),
+  };
+
+  for (const status of [301, 302, 303, 307, 308]) {
+    for (const [nombre, fn] of Object.entries(llamar)) {
+      test(`${status} en ${nombre}: falla redireccion, una sola llamada y el Location no se lee`, async () => {
+        const r3xx = redireccion(status, `${OTRO}?id=${MATRICULA}`);
+        const { fetchFn, llamadas } = fetchSimulado([r3xx.res, json(GRADES)]);
+        const inits = [];
+        const espia = async (url, init) => { inits.push(init); return fetchFn(url, init); };
+        const api = crearClienteItsonApi({ baseUrl: BASE, fetchFn: espia, sleep: async () => {} });
+        const r = await fn(api);
+        assert.deepEqual(r, { ok: false, motivo: "redireccion", status });
+        assert.equal(llamadas.length, 1);
+        assert.equal(inits[0].redirect, "manual");
+        assert.equal(r3xx.fueLeido(), false);
+        assert.ok(llamadas.every((l) => l.url.origin === BASE));
+        sinDatos(r);
+        assert.ok(!JSON.stringify(r).includes("destino-redireccion"));
+      });
+    }
+  }
+
+  test("redirección a otro host: ninguna petición con la matrícula llega al destino", async () => {
+    const urls = [];
+    const fetchFn = async (url, init) => {
+      urls.push(String(url));
+      // Un fetch que siguiera la redirección pediría el destino; con redirect manual no.
+      if (init.redirect !== "manual") return fetchFn(`${OTRO}?id=${MATRICULA}`, { ...init, redirect: "manual" });
+      return redireccion(302, `${OTRO}?id=${MATRICULA}`).res;
+    };
+    const api = crearClienteItsonApi({ baseUrl: BASE, fetchFn, sleep: async () => {} });
+    for (const fn of Object.values(llamar)) assert.equal((await fn(api)).motivo, "redireccion");
+    assert.equal(urls.length, 3);
+    assert.ok(urls.every((u) => new URL(u).origin === BASE));
+    assert.ok(!urls.some((u) => u.includes("destino-redireccion")));
   });
 });

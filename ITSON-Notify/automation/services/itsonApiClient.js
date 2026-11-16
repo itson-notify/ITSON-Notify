@@ -2,12 +2,18 @@
 //   getAlumnoInscrito  GET,  query emplid y carrera          ¿inscrito y fechas del semestre?
 //   getProgress        POST, query id y career               semestres y materias aprobadas
 //   getGrades          POST, query id, semester y career     calificación final por materia
-// La URL base sale de ITSON_API_BASE_URL (variable del servicio worker-rpa).
+// La URL base sale de ITSON_API_BASE_URL (variable del servicio worker-rpa) y solo puede
+// apuntar a un host de HOSTS_PERMITIDOS: la matrícula viaja en la query, así que nunca
+// se manda a otro destino. Se exige https, sin usuario ni contraseña, sin puerto
+// distinto de 443 y sin ruta, query ni fragmento. El host se compara en minúsculas (new
+// URL ya lo normaliza) y un punto final ("webapi.itson.edu.mx.") se rechaza.
+// Las redirecciones no se siguen: un 3xx es una falla (motivo redireccion) y el
+// Location no se lee ni se registra.
 //
 // Cada llamada: timeout de 15 s, hasta 2 reintentos solo en red, timeout o 5xx (nunca
 // en 4xx) y una pausa entre llamadas. Nunca lanza por fallas esperadas: devuelve
 // { ok: true, ...datos } o { ok: false, motivo, status }. motivo es uno de
-// red, timeout, http_4xx, http_5xx, no_json o forma_invalida.
+// red, timeout, redireccion, http_4xx, http_5xx, no_json o forma_invalida.
 //
 // Privacidad: la matrícula y la carrera viajan en la query, así que ni la URL ni el
 // mensaje de un error de fetch (que puede citarla) salen de aquí. Los resultados solo
@@ -20,20 +26,36 @@ const PAUSA_ENTRE_LLAMADAS_MS = 1_000;
 
 const esperar = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Valida ITSON_API_BASE_URL. Devuelve { ok: true, baseUrl } o { ok: false, error }; el
-// error nunca cita el valor.
-function leerBaseUrl(env = process.env) {
-  const valor = env.ITSON_API_BASE_URL?.trim();
-  if (!valor) return { ok: false, error: "Falta ITSON_API_BASE_URL." };
+// Lista cerrada de destinos autorizados. Agregar uno es un cambio de código revisado,
+// no de configuración.
+const HOSTS_PERMITIDOS = Object.freeze(["webapi.itson.edu.mx"]);
+
+// Valida una URL base. Devuelve { ok: true, baseUrl } (el origen normalizado, p. ej.
+// "https://webapi.itson.edu.mx") o { ok: false, error }. El error nunca cita la URL,
+// el host, el usuario, la contraseña ni el puerto.
+function validarBaseUrl(valor) {
+  const texto = typeof valor === "string" ? valor.trim() : "";
+  if (!texto) return { ok: false, error: "Falta ITSON_API_BASE_URL." };
   let url;
   try {
-    url = new URL(valor);
+    url = new URL(texto);
   } catch {
     return { ok: false, error: "ITSON_API_BASE_URL no es una URL válida." };
   }
   if (url.protocol !== "https:") return { ok: false, error: "ITSON_API_BASE_URL debe empezar con https://." };
-  if (url.search || url.hash) return { ok: false, error: "ITSON_API_BASE_URL no debe llevar query ni fragmento." };
-  return { ok: true, baseUrl: valor.replace(/\/+$/, "") };
+  if (url.username || url.password) return { ok: false, error: "ITSON_API_BASE_URL no debe llevar usuario ni contraseña." };
+  if (!HOSTS_PERMITIDOS.includes(url.hostname)) return { ok: false, error: "ITSON_API_BASE_URL apunta a un host no autorizado." };
+  if (url.port) return { ok: false, error: "ITSON_API_BASE_URL no debe llevar un puerto distinto de 443." };
+  if (url.pathname !== "/") return { ok: false, error: "ITSON_API_BASE_URL debe ser solo el origen, sin ruta." };
+  if (url.search || url.hash || texto.includes("?") || texto.includes("#")) {
+    return { ok: false, error: "ITSON_API_BASE_URL no debe llevar query ni fragmento." };
+  }
+  return { ok: true, baseUrl: url.origin };
+}
+
+// Valida ITSON_API_BASE_URL del env.
+function leerBaseUrl(env = process.env) {
+  return validarBaseUrl(env.ITSON_API_BASE_URL);
 }
 
 // --- Lectura tolerante de las respuestas -------------------------------------
@@ -167,6 +189,10 @@ function crearClienteItsonApi({
   backoffBaseMs = BACKOFF_BASE_MS,
   pausaMs = PAUSA_ENTRE_LLAMADAS_MS,
 }) {
+  // Segunda barrera: aunque alguien llame sin pasar por leerBaseUrl, no sale ninguna
+  // petición a un host no autorizado.
+  const destino = validarBaseUrl(baseUrl);
+  if (!destino.ok) throw new Error(`Cliente de la API de ITSON no creado: ${destino.error}`);
   let llamadas = 0;
 
   // Un intento. { ok, status, cuerpo } o { ok: false, status: null, motivo }.
@@ -176,12 +202,18 @@ function crearClienteItsonApi({
       res = await fetchFn(url, {
         method: metodo,
         headers: { Accept: "application/json" },
+        redirect: "manual",
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       // Solo el tipo: el mensaje de un error de fetch puede traer la URL.
       const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
       return { ok: false, status: null, motivo: timeout ? "timeout" : "red" };
+    }
+    if (res.status >= 300 && res.status < 400) {
+      // No se sigue ni se lee el Location: podría apuntar a otro host.
+      await res.text?.().catch(() => null);
+      return { ok: false, status: res.status, motivo: "redireccion" };
     }
     if (!res.ok) {
       await res.text().catch(() => null);
@@ -198,7 +230,7 @@ function crearClienteItsonApi({
   async function pedir(metodo, ruta, params) {
     if (llamadas > 0) await sleep(pausaMs);
     llamadas += 1;
-    const url = new URL(`${baseUrl}/${ruta}`);
+    const url = new URL(`${destino.baseUrl}/${ruta}`);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
     let ultimo;
@@ -244,6 +276,8 @@ function crearClienteItsonApi({
 module.exports = {
   crearClienteItsonApi,
   leerBaseUrl,
+  validarBaseUrl,
+  HOSTS_PERMITIDOS,
   leerInscripcion,
   leerProgreso,
   leerCalificaciones,

@@ -90,6 +90,19 @@ semestre sin materias no se envía. Cada alumno va en su propio try/catch. Al te
 `Fase API de ITSON terminada: alumnos=... entregadas=... fallas_api=...`. Los logs nunca llevan correo, matrícula,
 carrera, materias, calificaciones ni la URL de la API.
 
+**Destino restringido.** La matrícula viaja en la query, así que `ITSON_API_BASE_URL` solo puede apuntar a un
+host de la lista cerrada `HOSTS_PERMITIDOS` de `automation/services/itsonApiClient.js`, hoy únicamente
+`webapi.itson.edu.mx`. Agregar otro es un cambio de código revisado, no de configuración. Se rechazan `http://`,
+cualquier otro host (incluido un subdominio parecido como `webapi.itson.edu.mx.otro.dominio`), el host con punto
+final (`webapi.itson.edu.mx.`), usuario o contraseña en la URL, un puerto distinto de 443, y cualquier ruta, query
+o fragmento. Las mayúsculas se aceptan porque el host se normaliza a minúsculas. Con un valor rechazado la fase no
+corre: código 1 y alerta de configuración, con un mensaje que nunca cita la URL ni sus partes. El cliente repite
+la validación al crearse, así que ninguna petición sale a otro host.
+
+**Sin redirecciones.** Las llamadas usan `redirect: "manual"`: cualquier respuesta 3xx (301, 302, 303, 307, 308),
+en GET o POST, cuenta como falla de la llamada (`motivo=redireccion`, en `fallas_api` o `inscripcion_fallida`) y no
+se reintenta. El `Location` no se sigue, no se lee y no se registra.
+
 El servicio usa `restartPolicyType: "NEVER"`, así que **ningún** código distinto de 0 provoca reintentos: la
 corrida queda marcada como fallida en Railway y espera al siguiente horario. Los logs solo traen conteos, la
 posición de la cuenta (`cuenta 2/5`), status HTTP y errorcode: nunca calificaciones, correo, usuario, contraseña
@@ -129,8 +142,9 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
    `Id_User`, `P_User` y `ALUMNO_EMAIL` ya no se usan: bórralas del servicio. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` ni `CREDENTIALS_ENCRYPTION_KEY` en este servicio.
    Para recibir alertas, captura también `TELEGRAM_BOT_TOKEN` (*sealed*) y `TELEGRAM_CHAT_ID`
    ([`telegram-alertas.md`](../telegram-alertas.md)); sin ellas los fallos solo quedan en los logs.
-   ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_API_BASE_URL` (solo el origen `https://...`,
-   sin `/api` ni query; el worker agrega `/api/getGrades` y demás). Sin ella la fase queda deshabilitada. Antes,
+   ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_API_BASE_URL=https://webapi.itson.edu.mx`
+   (solo ese origen: otro host, `http`, credenciales, puerto o ruta cancelan la fase; el worker agrega
+   `/api/getGrades` y demás). Sin ella la fase queda deshabilitada. Antes,
    aplica la migración 012 en el backend. Opcionales: `ITSON_API_VENTANA_ANTES_DIAS` (por defecto 7) e
    `ITSON_API_VENTANA_DESPUES_DIAS` (por defecto 45), enteros de 0 a 365; un valor inválido cancela la fase con
    una alerta de configuración.

@@ -662,7 +662,9 @@ fin, configurable). Por cada semestre con materias manda `POST /internal/grade-s
 
 Variables del servicio `worker-rpa`: **solo** `BACKEND_URL`, `INTERNAL_API_KEY` y, para las alertas,
 `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` (más `RPA_PAUSADO` para pausar). ITN-55: `ITSON_API_BASE_URL` habilita la
-fase de la API de ITSON; sin ella, esa fase no corre. `ITSON_API_VENTANA_ANTES_DIAS` (7) e
+fase de la API de ITSON; sin ella, esa fase no corre. Solo acepta `https://webapi.itson.edu.mx` (lista cerrada en
+`automation/services/itsonApiClient.js`): otro host, `http`, credenciales, puerto distinto de 443, punto final o
+ruta cancelan la fase con alerta de configuración, y las redirecciones 3xx nunca se siguen. `ITSON_API_VENTANA_ANTES_DIAS` (7) e
 `ITSON_API_VENTANA_DESPUES_DIAS` (45) ajustan la ventana. Desde ITN-52 `Id_User`, `P_User` y
 `ALUMNO_EMAIL` ya no se usan en el cron (siguen solo en `cli.js` y `login-demo.js`, que son herramientas locales).
 Nunca `SUPABASE_SERVICE_ROLE_KEY`, `CREDENTIALS_ENCRYPTION_KEY` ni la matrícula en el body. Detalles de despliegue,
