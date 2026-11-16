@@ -3,8 +3,8 @@
 //
 // Fuentes:
 //   - ivirtual: último snapshot de grade_snapshots con source = 'ivirtual' y sus
-//     filas en snapshot_grades. La calificación final de la materia sale del ítem
-//     de total del curso (raw_payload.type === 'course' o grade_label null).
+//     filas en snapshot_grades. La calificación final de la materia prefiere el ítem
+//     con raw_payload.type === 'course' y usa grade_label null solo como respaldo.
 //   - itson_api: último snapshot por semestre (period) con source = 'itson_api'.
 //     Cada materia trae su calificación final en grade_text (código normalizado).
 //   - classroom: tablas classroom_courses y classroom_coursework (migración 006).
@@ -35,7 +35,21 @@ function numeroONull(value) {
 }
 
 // En Moodle (iVirtual) el total del curso llega con itemtype 'course' y sin
-// itemname (grade_label null).
+// itemname (grade_label null). Para finalGrade se prefiere primero la fila con
+// raw_payload.type === 'course' y se deja grade_label null (sin otro type) como
+// respaldo por si un snapshot antiguo no guardó type.
+function encontrarTotalCurso(filas) {
+  return (
+    filas.find((row) => row.raw_payload?.type === "course") ??
+    filas.find(
+      (row) =>
+        (row.grade_label === null || row.grade_label === undefined) &&
+        (!row.raw_payload?.type || row.raw_payload.type === "course"),
+    ) ??
+    null
+  );
+}
+
 function esTotalCurso(row) {
   return row.raw_payload?.type === "course" || row.grade_label === null || row.grade_label === undefined;
 }
@@ -150,7 +164,7 @@ async function listStudentCourses(userId, repo) {
           updatedAt,
         });
       } else {
-        const totalRow = filas.find(esTotalCurso);
+        const totalRow = encontrarTotalCurso(filas);
         courses.push({
           id: subject.id,
           name: subject.name,
@@ -225,6 +239,7 @@ async function listStudentCourseItems(userId, courseId, repo) {
 module.exports = {
   listStudentCourses,
   listStudentCourseItems,
+  encontrarTotalCurso,
   COURSE_SOURCES,
   ITEM_KINDS,
 };

@@ -217,6 +217,47 @@ describe("ITN-57 - GET /api/courses", () => {
       ],
     );
   });
+
+  test("finalGrade prefiere raw_payload.type === 'course' sobre otras filas sin nombre y usa grade_label null como respaldo", async () => {
+    const { app, db } = setup();
+
+    await guardarSnapshot(db, {
+      run_id: uuid(),
+      captured_at: hora(-1),
+      source: "ivirtual",
+      user: { email: ALUMNA.email },
+      courses: [
+        {
+          externalId: "601",
+          subject: "Redes de Computadoras",
+          items: [
+            // Una categoría o actividad sin nombre aparece antes del total real.
+            { externalItemId: "1001", label: null, type: "category", value: 50, text: "50.00" },
+            { externalItemId: "1002", label: null, type: "course", value: 92, text: "92.00" },
+          ],
+        },
+        {
+          externalId: "602",
+          subject: "Sistemas Distribuidos",
+          items: [
+            // Respaldo: fila de total sin raw_payload.type pero con label null.
+            { externalItemId: "2001", label: "Proyecto", type: "mod", value: 88, text: "88.00" },
+            { externalItemId: "2002", label: null, type: null, value: 88, text: "88.00" },
+          ],
+        },
+      ],
+    });
+
+    const res = await request(app).get("/api/courses").set("Cookie", cookie(ALUMNA));
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      res.body.courses.map(({ name, finalGrade }) => ({ name, finalGrade })),
+      [
+        { name: "Redes de Computadoras", finalGrade: "92" },
+        { name: "Sistemas Distribuidos", finalGrade: "88" },
+      ],
+    );
+  });
 });
 
 describe("ITN-57 - GET /api/courses/:id/items", () => {
