@@ -38,12 +38,14 @@ async function findSnapshot(supabase, snapshotId) {
 }
 
 // Devuelve Map(externalId del curso -> subjects.id).
-async function upsertSubjects(supabase, userId, courses) {
+// period: semestre consultado en itson_api (ITN-55); null en iVirtual, que no
+// trae periodo.
+async function upsertSubjects(supabase, userId, courses, period = null) {
   const rows = courses.map((c) => ({
     user_id: userId,
     external_subject_id: c.externalId,
     name: c.subject,
-    period: null, // la extracción de iVirtual no trae periodo
+    period,
   }));
   const saved = check(
     "subjects",
@@ -59,16 +61,27 @@ async function upsertSubjects(supabase, userId, courses) {
   return ids;
 }
 
+// Solo itson_api escribe grade_snapshots.period (migración 012). iVirtual no manda la
+// columna, así sigue funcionando en una base sin la 012.
+const ITSON_API = "itson_api";
+
 // Inserta el snapshot si no existe. ignoreDuplicates no sobrescribe
 // captured_at de una corrida ya guardada; .select() devuelve la fila solo si
 // esta llamada la insertó.
-async function insertSnapshot(supabase, { id, userId, source, capturedAt }) {
+async function insertSnapshot(supabase, { id, userId, source, period = null, capturedAt }) {
   const rows = check(
     "grade_snapshots",
     await supabase
       .from("grade_snapshots")
       .upsert(
-        { id, user_id: userId, source, captured_at: capturedAt, raw_payload: null },
+        {
+          id,
+          user_id: userId,
+          source,
+          ...(source === ITSON_API ? { period } : {}),
+          captured_at: capturedAt,
+          raw_payload: null,
+        },
         { onConflict: ON_CONFLICT.grade_snapshots, ignoreDuplicates: true },
       )
       .select("id"),
@@ -134,12 +147,14 @@ async function saveSnapshot(supabase, payload) {
     throw new SnapshotOwnershipError(snapshotId);
   }
 
-  const subjectIds = await upsertSubjects(supabase, userId, payload.courses);
+  const period = payload.period ?? null;
+  const subjectIds = await upsertSubjects(supabase, userId, payload.courses, period);
 
   const created = await insertSnapshot(supabase, {
     id: snapshotId,
     userId,
     source: payload.source,
+    period,
     capturedAt: payload.captured_at,
   });
   if (!created && !existente) {

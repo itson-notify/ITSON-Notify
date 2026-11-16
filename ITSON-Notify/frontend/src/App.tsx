@@ -2,14 +2,18 @@ import { useEffect, useState } from 'react'
 import { AppLayout } from '@/layouts/AppLayout'
 import { ConfirmDialog, HelpSheet, ToastView } from '@/components/overlays'
 import { IvirtualLinkSheet } from '@/components/IvirtualLinkSheet'
-import { Spinner } from '@/components/ui'
+import { ItsonProfileForm } from '@/components/ItsonProfileForm'
+import { Sheet, Spinner } from '@/components/ui'
 import { Onboarding } from '@/pages/Onboarding'
 import { HomePage } from '@/pages/HomePage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { DEFAULT_SETTINGS, INITIAL_NOTIFS } from '@/services/mockData'
-import { ApiError, getIvirtualLink, getMe, getNotifications, markAllRead, markRead, unlinkIvirtual, type IvirtualLink } from '@/services/api'
+import {
+  ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
+  markRead, unlinkIvirtual, type ItsonProfile, type IvirtualLink,
+} from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
@@ -39,6 +43,10 @@ export default function App() {
   const [linkOpen, setLinkOpen] = useState(false)
   // ITN-51 - Estado real de la vinculación de iVirtual; null mientras no se conoce (o en mock).
   const [ivirtualLink, setIvirtualLink] = useState<IvirtualLink | null>(null)
+  // ITN-55 - Perfil ITSON (matrícula y carrera) de /api/itson-profile; null si no se pudo
+  // leer. Solo trae la pista de la matrícula, nunca la completa.
+  const [itsonProfile, setItsonProfile] = useState<ItsonProfile | null>(mockMode ? EMPTY_ITSON_PROFILE : null)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [helpQuery, setHelpQuery] = useState<string | null>(null)
   const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null)
   const [toast, setToast] = useState<{ id: number; text: string; undo?: () => void } | null>(null)
@@ -59,6 +67,7 @@ export default function App() {
     setOnboarded(false); setSettings(DEFAULT_SETTINGS); setNotifs(EMPTY_NOTIFS)
     setPage('inicio'); setFilter('todas'); setSelectedId(null); setPromptDismissed(false)
     setIvirtualLink(null); setLinkOpen(false)
+    setItsonProfile(mockMode ? EMPTY_ITSON_PROFILE : null); setProfileOpen(false)
   }
   // Un 401 significa que la sesión ya no sirve: se vuelve a Onboarding.
   const sessionExpired = () => {
@@ -88,7 +97,23 @@ export default function App() {
       .finally(() => setLoading(false))
     // Aparte: si falla, Ajustes muestra el estado como desconocido sin romper la carga.
     getIvirtualLink().then(setIvirtualLink).catch(() => setIvirtualLink(null))
+    // ITN-55 - Igual: si falla, Ajustes dice que el estado no está disponible.
+    getItsonProfile().then(setItsonProfile).catch(() => setItsonProfile(null))
   }
+
+  // ITN-55 - Quitar la matrícula con confirmación. Un 404 es "ya no estaba".
+  const removeItsonProfile = () => setConfirmReq({
+    title: '¿Quitar tu matrícula?',
+    body: 'Dejaremos de avisarte tus calificaciones finales desde el portal de ITSON. Puedes volver a agregarla cuando quieras.',
+    label: 'Quitar', danger: true,
+    onConfirm: async () => {
+      try {
+        const result = await deleteItsonProfile()
+        setItsonProfile(EMPTY_ITSON_PROFILE)
+        notify(result === 'already_deleted' ? 'Tu matrícula ya no estaba guardada' : 'Matrícula quitada')
+      } catch (error) { apiFailed(error, 'No se pudo quitar tu matrícula') }
+    },
+  })
 
   // ITN-51 - Desvincular con confirmación. Un 404 es "ya estaba desvinculada".
   const unlinkItson = () => setConfirmReq({
@@ -229,6 +254,18 @@ export default function App() {
         <IvirtualLinkSheet onClose={() => setLinkOpen(false)} onSessionExpired={sessionExpired}
           onLinked={link => { applyIvirtualLink(link); notify('Cuenta de iVirtual vinculada') }} />
       )}
+      {/* ITN-55 - Matrícula y carrera contra /api/itson-profile. */}
+      {profileOpen && (
+        <Sheet labelledBy="itson-profile-title" onClose={() => setProfileOpen(false)}>
+          <h2 id="itson-profile-title" className="text-[18px] font-semibold text-[#111827]">Matrícula para calificaciones finales</h2>
+          <p className="text-[14px] text-[#64748B] mt-1 mb-5">
+            Con tu matrícula y tu carrera te avisamos cuando se publique tu calificación final de cada materia.
+          </p>
+          <ItsonProfileForm initialCareer={itsonProfile?.career ?? ''} onCancel={() => setProfileOpen(false)}
+            onSessionExpired={sessionExpired}
+            onSaved={profile => { setItsonProfile(profile); setProfileOpen(false); notify('Matrícula guardada') }} />
+        </Sheet>
+      )}
       {helpQuery !== null && <HelpSheet initialQuery={helpQuery} onClose={() => setHelpQuery(null)} />}
       {confirmReq && <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />}
       <ToastView toast={toast} onClose={() => setToast(null)} />
@@ -242,7 +279,8 @@ export default function App() {
   if (!onboarded) {
     return (
       <>
-        <Onboarding settings={settings} setSettings={setSettings} onFinish={finishOnboarding} onHelp={setHelpQuery} requireGoogle={!mockMode} />
+        <Onboarding settings={settings} setSettings={setSettings} onFinish={finishOnboarding} onHelp={setHelpQuery} requireGoogle={!mockMode}
+          itsonProfile={itsonProfile} onItsonProfileSaved={setItsonProfile} onSessionExpired={sessionExpired} />
         {overlays}
       </>
     )
@@ -263,9 +301,10 @@ export default function App() {
         {page === 'configuracion' && (
           <SettingsPage settings={settings} setSettings={setSettings} onFix={() => setLinkOpen(true)} askConfirm={setConfirmReq} notify={notify}
             ivirtualLink={mockMode ? undefined : ivirtualLink} onUnlinkItson={unlinkItson}
+            itsonProfile={itsonProfile} onEditItsonProfile={() => setProfileOpen(true)} onRemoveItsonProfile={removeItsonProfile}
             onDisconnected={mockMode ? undefined : endSession} />
         )}
-        {page === 'perfil' && <ProfilePage settings={settings} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
+        {page === 'perfil' && <ProfilePage settings={settings} matriculaHint={itsonProfile?.matriculaHint ?? null} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
       </AppLayout>
       {overlays}
     </>

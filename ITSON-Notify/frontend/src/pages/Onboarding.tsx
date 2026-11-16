@@ -2,6 +2,8 @@ import { useState, type ReactNode } from 'react'
 import { I } from '@/components/icons'
 import { Button, PasswordField, Spinner, SuccessCard, TextField, TypeIcon } from '@/components/ui'
 import { CategoryRows } from '@/components/CategoryRows'
+import { ItsonProfileForm } from '@/components/ItsonProfileForm'
+import type { ItsonProfile } from '@/services/api'
 import { WatchEditor } from '@/components/WatchEditor'
 import { ITSON_RECOVERY_URL, STUDENT } from '@/services/mockData'
 import { connectGoogle as startGoogleAuth } from '@/services/googleAuth'
@@ -9,8 +11,13 @@ import { TYPE_CFG, TYPES } from '@/utils/notifTypes'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { SetSettings, Settings } from '@/types'
 
-export function Onboarding({ settings, setSettings, onFinish, onHelp, requireGoogle = false }: {
+export function Onboarding({
+  settings, setSettings, onFinish, onHelp, requireGoogle = false, itsonProfile = null, onItsonProfileSaved, onSessionExpired,
+}: {
   settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void; requireGoogle?: boolean
+  // ITN-55 - Perfil de /api/itson-profile. Se guarda después de entrar con Google, porque
+  // el PUT necesita la sesión.
+  itsonProfile?: ItsonProfile | null; onItsonProfileSaved?: (p: ItsonProfile) => void; onSessionExpired?: () => void
 }) {
   const [step, setStep] = useState(() =>
     new URLSearchParams(window.location.search).get('from') === 'onboarding' ? 2 : 0)
@@ -158,6 +165,27 @@ export function Onboarding({ settings, setSettings, onFinish, onHelp, requireGoo
         )}
       </div>
     )
+    // ITN-55 - Con sesión (o en mock), matrícula y carrera para las calificaciones finales.
+    // Es opcional: se puede continuar sin guardarla y agregarla después en Configuración.
+    if ((settings.classroomConnected || !requireGoogle) && onItsonProfileSaved) {
+      body = (
+        <div>
+          {body}
+          <div className="mt-6 rounded-lg border border-[#E5E7EB] p-4">
+            <p className="text-[14px] font-semibold text-[#111827]">Calificaciones finales (opcional)</p>
+            <p className="mt-1 mb-4 text-[13px] text-[#64748B]">
+              Con tu matrícula y tu carrera te avisamos cuando se publique tu calificación final de cada materia.
+            </p>
+            {itsonProfile?.configured ? (
+              <SuccessCard title="Matrícula guardada" subtitle={`${itsonProfile.matriculaHint ?? ''} · ${itsonProfile.career ?? ''}`} />
+            ) : (
+              <ItsonProfileForm initialMatricula={settings.itsonId} onSaved={onItsonProfileSaved}
+                onSessionExpired={onSessionExpired ?? (() => {})} />
+            )}
+          </div>
+        </div>
+      )
+    }
     footer = settings.classroomConnected
       ? <Button full onClick={next}>Continuar</Button>
       : <div className="space-y-2">

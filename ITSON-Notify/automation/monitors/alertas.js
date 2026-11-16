@@ -45,11 +45,16 @@ const PLANTILLAS = {
   tokens_en_bloque: (origen, c) =>
     `ITSON Notify: tokens rechazados en bloque (${origen}): ${c.token_invalido ?? 0} de ${c.cuentas ?? 0} cuenta(s). ` +
     "No se marcó ninguna para revincular; revisa iVirtual antes de la siguiente corrida.",
+  // ITN-55 - Fase de la API REST de ITSON: llamadas o entregas fallidas agregadas.
+  api_itson_con_fallas: (origen, c) =>
+    `ITSON Notify: fase de la API de ITSON con fallas (${origen}): ${c.fallidas ?? 0} falla(s) en ${c.cuentas ?? 0} alumno(s) ` +
+    `(API ${c.fallas_api ?? 0}, forma inválida ${c.forma_invalida ?? 0}, inscripción ${c.inscripcion_fallida ?? 0}, ` +
+    `backend ${c.fallas_backend ?? 0}, entregas ${c.entregas_fallidas ?? 0}). Revisa los logs de worker-rpa.`,
   desconocido: (origen) =>
     `ITSON Notify: fallo sin clasificar en la corrida (${origen}). Revisa los logs de worker-rpa en Railway.`,
 };
 
-const FUENTES = new Set(["ivirtual-api", "worker-rpa"]);
+const FUENTES = new Set(["ivirtual-api", "worker-rpa", "itson-api"]);
 const FUENTE_POR_DEFECTO = "worker-rpa";
 
 const RE_ERRORCODE = /^[a-z_]{1,40}$/;
@@ -67,6 +72,10 @@ const CONTEOS_PERMITIDOS = [
   "fallas_backend",
   "entregas_fallidas",
   "token_invalido",
+  // ITN-55
+  "fallas_api",
+  "forma_invalida",
+  "inscripcion_fallida",
 ];
 const conteoSeguro = (v) => Number.isInteger(v) && v >= 0 && v <= 99999;
 

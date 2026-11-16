@@ -3,6 +3,15 @@
 // datos de la corrida que agrega el worker (ITN-25). Documentado en
 // backend/README.md.
 const { z } = require("zod");
+const { CODIGO_VALIDO, normalizarCodigo } = require("../services/itsonGradeCodes");
+
+// ITN-55 - Fuentes aceptadas. itson_api es la API REST de ITSON (getGrades):
+// cada materia es un curso con un solo ítem (su idCatalog) y el semestre
+// consultado va en `period`.
+const SOURCES = ["ivirtual", "itson_api"];
+const ITSON_API = "itson_api";
+// Clave de semestre de la API ("01".."08"); "0" no se consulta.
+const PERIOD = /^[0-9]{2}$/;
 
 // El snapshot previo se elige por captured_at: un reloj adelantado en el
 // worker haría que una corrida vieja pareciera la más reciente.
@@ -58,7 +67,8 @@ function buildSchema(now) {
       captured_at: z.iso
         .datetime({ offset: true })
         .refine((v) => Date.parse(v) <= now + MAX_FUTURO_MS, { message: "en el futuro" }),
-      source: z.enum(["ivirtual"]).default("ivirtual"),
+      source: z.enum(SOURCES).default("ivirtual"),
+      period: z.string().trim().regex(PERIOD).nullish(),
       user: z.object({
         email: z.string().trim().toLowerCase().max(320).pipe(z.email()),
       }),
@@ -67,6 +77,12 @@ function buildSchema(now) {
       courses: z.array(course).min(1).max(200),
     })
     .superRefine((payload, ctx) => {
+      if (payload.source === ITSON_API) refineItsonApi(payload, ctx);
+      else if (payload.period !== null && payload.period !== undefined) {
+        // iVirtual no tiene semestre: un period cambiaría con qué snapshot se compara.
+        ctx.addIssue({ code: "custom", path: ["period"], message: "solo itson_api" });
+      }
+
       const cursos = new Set();
       payload.courses.forEach((c, i) => {
         if (cursos.has(c.externalId)) {
@@ -89,12 +105,52 @@ function buildSchema(now) {
     });
 }
 
+// ITN-55 - Reglas de itson_api: period obligatorio; un solo ítem por materia,
+// con el mismo id que la materia (idCatalog); sin valor numérico (el código va
+// en `text`) y con un código válido o "-".
+function refineItsonApi(payload, ctx) {
+  if (payload.period === null || payload.period === undefined) {
+    ctx.addIssue({ code: "custom", path: ["period"], message: "obligatorio en itson_api" });
+  }
+  payload.courses.forEach((c, i) => {
+    if (c.items.length !== 1) {
+      ctx.addIssue({ code: "custom", path: ["courses", i, "items"], message: "un solo ítem en itson_api" });
+      return;
+    }
+    const it = c.items[0];
+    const base = ["courses", i, "items", 0];
+    if (it.externalItemId !== c.externalId) {
+      ctx.addIssue({ code: "custom", path: [...base, "externalItemId"], message: "debe ser el idCatalog" });
+    }
+    if (it.value !== null && it.value !== undefined) {
+      ctx.addIssue({ code: "custom", path: [...base, "value"], message: "debe ser null en itson_api" });
+    }
+    const codigo = normalizarCodigo(it.text);
+    if (codigo !== null && !CODIGO_VALIDO.test(codigo)) {
+      ctx.addIssue({ code: "custom", path: [...base, "text"], message: "código no válido" });
+    }
+  });
+}
+
+// "-" de la API se guarda como null: así el detector ve "sin calificación" y
+// no un texto. iVirtual queda igual, con period null.
+function normalizarItsonApi(data) {
+  if (data.source !== ITSON_API) return { ...data, period: null };
+  return {
+    ...data,
+    courses: data.courses.map((c) => ({
+      ...c,
+      items: c.items.map((it) => ({ ...it, value: null, text: normalizarCodigo(it.text) })),
+    })),
+  };
+}
+
 // Devuelve { success: true, data } o { success: false, issues }.
 // issues solo trae ruta, código y mensaje fijo: nunca el valor recibido (el
 // body lleva correo, materias y calificaciones).
 function parseGradeSnapshotPayload(body, { now = Date.now() } = {}) {
   const result = buildSchema(now).safeParse(body);
-  if (result.success) return { success: true, data: result.data };
+  if (result.success) return { success: true, data: normalizarItsonApi(result.data) };
   return {
     success: false,
     issues: result.error.issues.slice(0, 20).map((issue) => ({
@@ -105,4 +161,4 @@ function parseGradeSnapshotPayload(body, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { parseGradeSnapshotPayload, MAX_FUTURO_MS };
+module.exports = { parseGradeSnapshotPayload, MAX_FUTURO_MS, SOURCES, ITSON_API };

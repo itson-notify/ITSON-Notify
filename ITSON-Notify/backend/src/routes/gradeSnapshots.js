@@ -17,7 +17,7 @@ const { SnapshotOwnershipError } = require("../utils/errors");
 //   1. Reintenta pendientes del usuario (también en baseline).
 //   2. Si no es baseline, notifica `inserted` agrupado por ítem.
 // Los logs solo llevan ids de grade_changes y conteos.
-async function notificar({ userId, result, repo, channels, logger }) {
+async function notificar({ userId, source, result, repo, channels, logger }) {
   const conteo = { retried: 0, notified: 0, failed: 0 };
   const sumar = (r) => {
     conteo.notified += r.notified;
@@ -41,7 +41,7 @@ async function notificar({ userId, result, repo, channels, logger }) {
 
   if (!result.baseline && result.inserted.length > 0) {
     try {
-      sumar(await notifyGroupedChanges(result.inserted, { repo, channels }));
+      sumar(await notifyGroupedChanges(result.inserted, { repo, channels, source }));
     } catch (error) {
       conteo.failed += 1;
       logger.error("notificacion_no_procesada", { step: error.step ?? null, error_code: error.code ?? null });
@@ -96,6 +96,7 @@ function gradeSnapshotsRouter({ supabase, logger, now, channels }) {
 
     const notificaciones = await notificar({
       userId: saved.userId,
+      source: payload.source,
       result,
       repo: notificationRepo,
       channels,

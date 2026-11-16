@@ -7,6 +7,7 @@ const { extractGradesWithToken } = require("../rpa/ivirtual-api");
 const { notificarFalloCritico, nombreErrorSeguro } = require("../monitors/alertas");
 const { entregarResultados, leerConfigEntrega } = require("./entrega-backend");
 const { crearClienteCredenciales } = require("./credenciales-backend");
+const { ejecutarItsonApi } = require("./itson-api-fase");
 
 // Punto de entrada del cron de Railway (ITN-25). Railway lo arranca según el
 // cronSchedule de .railway/railway.ts; corre UNA pasada y termina.
@@ -34,8 +35,12 @@ const { crearClienteCredenciales } = require("./credenciales-backend");
 //   1  falla de infraestructura o de iVirtual en al menos una cuenta, configuración
 //      incompleta, backend inalcanzable, 401, tokens en bloque o excepción
 //
-// Alertas (ITN-39): a lo más UNA por corrida, solo con conteos y nunca con datos de
+// Alertas (ITN-39): a lo más UNA por fase, solo con conteos y nunca con datos de
 // un alumno. Se espera el envío antes de terminar.
+//
+// ITN-55 - Después de esta fase (ejecutar, alias ejecutarIvirtual, sin cambios) corre
+// la de la API REST de ITSON (itson-api-fase.js). arrancar() corre las dos, cada una
+// en su propio try/catch, y sale con 1 si cualquiera sale con 1.
 //
 // Railway marca como error todo lo que sale por stderr: lo informativo va por
 // log (stdout) y las fallas por logError (stderr). Los logs solo llevan conteos,
@@ -236,13 +241,13 @@ async function ejecutar({
   return EXIT_CODES.ok;
 }
 
-// Última red del proceso. Solo el nombre del error, ni en logs ni en la alerta
+// ITN-55 - Fase de la API REST de ITSON con el env del proceso y la misma limpieza
+// de secretos que la fase de iVirtual.
+const correrItsonApi = () => ejecutarItsonApi({ ocultar: (texto) => ocultarValores(texto, process.env) });
+
+// Última red de una fase. Solo el nombre del error, ni en logs ni en la alerta
 // va error.message: podría traer valores de la configuración o de la respuesta.
-async function arrancar({
-  correr = ejecutar,
-  alertar = notificarFalloCritico,
-  logError = console.error,
-} = {}) {
+async function correrFase(correr, { fuente, alertar, logError }) {
   try {
     return await correr();
   } catch (error) {
@@ -251,7 +256,7 @@ async function arrancar({
     await alertar(
       {
         tipo: "excepcion",
-        fuente: "worker-rpa",
+        fuente,
         nombre_error: nombre,
         fecha: new Date().toISOString(),
       },
@@ -261,10 +266,34 @@ async function arrancar({
   }
 }
 
+// ITN-55 - Dos fases independientes, una después de la otra: iVirtual (sin cambios)
+// y la API REST de ITSON. Cada una en su propio try/catch, así una excepción en una
+// no impide la otra, y la de la API corre aunque no haya cuentas de iVirtual. El
+// código de salida es 1 si cualquiera de las dos sale con 1.
+async function arrancar({
+  correr = ejecutar,
+  correrApi = correrItsonApi,
+  alertar = notificarFalloCritico,
+  logError = console.error,
+} = {}) {
+  const ivirtual = await correrFase(correr, { fuente: "worker-rpa", alertar, logError });
+  const api = await correrFase(correrApi, { fuente: "itson-api", alertar, logError });
+  return ivirtual === EXIT_CODES.ok && api === EXIT_CODES.ok ? EXIT_CODES.ok : EXIT_CODES.error;
+}
+
 if (require.main === module) {
   arrancar().then((code) => {
     process.exitCode = code;
   });
 }
 
-module.exports = { ejecutar, arrancar, ocultarValores, EXIT_CODES, PAUSA_ENTRE_CUENTAS_MS, MINIMO_PARA_BLOQUE };
+module.exports = {
+  ejecutar,
+  // ITN-55 - Mismo flujo, con el nombre de su fase.
+  ejecutarIvirtual: ejecutar,
+  arrancar,
+  ocultarValores,
+  EXIT_CODES,
+  PAUSA_ENTRE_CUENTAS_MS,
+  MINIMO_PARA_BLOQUE,
+};

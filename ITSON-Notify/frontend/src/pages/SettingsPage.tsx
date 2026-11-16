@@ -6,7 +6,7 @@ import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
-import type { IvirtualLink } from '@/services/api'
+import type { ItsonProfile, IvirtualLink } from '@/services/api'
 import { timeAgo } from '@/utils/time'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
@@ -35,9 +35,14 @@ function itsonView(link: IvirtualLink | null | undefined, itsonError: boolean) {
   return { tone: 'ok' as const, text, action: 'Actualizar contraseña', canUnlink: true }
 }
 
-export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify, onDisconnected, ivirtualLink, onUnlinkItson }: {
+export function SettingsPage({
+  settings, setSettings, onFix, askConfirm, notify, onDisconnected, ivirtualLink, onUnlinkItson,
+  itsonProfile, onEditItsonProfile, onRemoveItsonProfile,
+}: {
   settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify; onDisconnected?: () => void
   ivirtualLink?: IvirtualLink | null; onUnlinkItson?: () => void
+  // ITN-55 - Perfil de /api/itson-profile: undefined mientras no se conoce, null si no se pudo leer.
+  itsonProfile?: ItsonProfile | null; onEditItsonProfile?: () => void; onRemoveItsonProfile?: () => void
 }) {
   const itsonError = settings.itsonStatus === 'error'
   const itson = itsonView(ivirtualLink, itsonError)
@@ -99,12 +104,31 @@ export function SettingsPage({ settings, setSettings, onFix, askConfirm, notify,
           <SettingRow icon={<SmallIcon tone="blue">{I.lock(18)}</SmallIcon>} title="Cuenta ITSON"
             subtitle={
               <div className="flex flex-col items-start gap-0.5">
-                {ivirtualLink === undefined && <span>ID {settings.itsonId || '—'}</span>}
                 <StatusPill tone={itson.tone} text={itson.text} />
                 {/* [H4] Misma acción, mismas palabras que en el aviso de error */}
                 <button onClick={onFix} className={`${linkCls} ${itson.tone === 'warn' ? 'text-[#C2410C]' : 'text-[#2563EB]'}`}>{itson.action}</button>
                 {itson.canUnlink && onUnlinkItson && (
                   <button onClick={onUnlinkItson} className={`${linkCls} text-[#DC2626]`}>Desvincular</button>
+                )}
+              </div>
+            } />
+          {/* ITN-55 - Solo la pista de la matrícula que da la API, nunca la completa. */}
+          <SettingRow icon={<SmallIcon tone="blue">{I.check(18)}</SmallIcon>} title="Calificaciones finales"
+            subtitle={
+              <div className="flex flex-col items-start gap-0.5">
+                {itsonProfile?.configured && (
+                  <span>Matrícula {itsonProfile.matriculaHint ?? '—'} · {itsonProfile.career ?? '—'}</span>
+                )}
+                <StatusPill
+                  tone={itsonProfile?.configured ? 'ok' : 'neutral'}
+                  text={itsonProfile === null ? 'Estado no disponible' : itsonProfile === undefined ? 'Revisando…' : itsonProfile.configured ? 'Configurada' : 'Sin matrícula'} />
+                {itsonProfile !== undefined && onEditItsonProfile && (
+                  <button onClick={onEditItsonProfile} className={`${linkCls} text-[#2563EB]`}>
+                    {itsonProfile?.configured ? 'Editar matrícula' : 'Agregar matrícula'}
+                  </button>
+                )}
+                {itsonProfile?.configured && onRemoveItsonProfile && (
+                  <button onClick={onRemoveItsonProfile} className={`${linkCls} text-[#DC2626]`}>Quitar matrícula</button>
                 )}
               </div>
             } />

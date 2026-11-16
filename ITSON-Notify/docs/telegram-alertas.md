@@ -113,7 +113,9 @@ no puede detectarlos.
 
 ## 7. Qué fallos del RPA alertan
 
-Desde ITN-52 la corrida es multi-alumno y manda **a lo más una alerta por corrida**, solo con conteos. Cada alerta
+Desde ITN-52 la corrida es multi-alumno y manda **a lo más una alerta por fase**, solo con conteos. Desde ITN-55
+hay dos fases (iVirtual y la API de ITSON), así que una corrida puede mandar hasta dos; las de la API llevan la
+fuente `itson-api`. Cada alerta
 deja una línea `ALERTA_RPA` en los logs de `worker-rpa` y manda este texto al grupo:
 
 | Fallo | Código de salida | Texto |
@@ -123,6 +125,7 @@ deja una línea `ALERTA_RPA` en los logs de `worker-rpa` y manda este texto al g
 | Tokens rechazados en bloque (3 o más cuentas, todas `invalidtoken`) | 1 | `ITSON Notify: tokens rechazados en bloque (ivirtual-api): 4 de 4 cuenta(s). No se marcó ninguna para revincular; revisa iVirtual antes de la siguiente corrida.` |
 | Excepción no controlada | 1 | `ITSON Notify: excepción no controlada en la corrida (worker-rpa, error TypeError). Revisa los logs de worker-rpa en Railway.` |
 | Falta configuración o es inválida | 1 | `ITSON Notify: corrida cancelada, falta configuración o es inválida (worker-rpa). Revisa las variables del servicio en Railway.` |
+| ITN-55: llamadas o entregas fallidas en la fase de la API de ITSON | 1 | `ITSON Notify: fase de la API de ITSON con fallas (itson-api): 3 falla(s) en 5 alumno(s) (API 2, forma inválida 1, inscripción 0, backend 0, entregas 0). Revisa los logs de worker-rpa.` |
 
 **No alertan:** la corrida sin fallas, sin cuentas activas, `RPA_PAUSADO=true` y el token rechazado de un alumno
 (`invalidtoken`): ese caso es normal, solo lo arregla el alumno volviendo a vincular, y queda contado en el log

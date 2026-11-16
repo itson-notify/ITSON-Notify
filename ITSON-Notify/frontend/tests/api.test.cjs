@@ -51,7 +51,8 @@ test('sin mock y con sesión carga notificaciones y estado de ITSON desde la API
     assert.equal(find(h.render(), 'Onboarding'), null);
     for (const call of apiCalls(calls)) assert.equal(call.credentials, 'include');
     // ITN-51: también lee el estado de la vinculación de iVirtual.
-    assert.deepEqual(apiCalls(calls).map(c => c.ruta).sort(), ['/api/credentials/ivirtual', '/api/me', '/api/notifications']);
+    // ITN-55: y el perfil ITSON.
+    assert.deepEqual(apiCalls(calls).map(c => c.ruta).sort(), ['/api/credentials/ivirtual', '/api/itson-profile', '/api/me', '/api/notifications']);
   } finally { h.restore(); }
 });
 
@@ -91,7 +92,7 @@ test('al volver de Google a medio Onboarding sigue ahí y ya carga los datos', a
     await h.start();
     const onboarding = find(h.render(), 'Onboarding');
     assert.ok(onboarding);
-    assert.equal(apiCalls(b.calls).length, 3);
+    assert.equal(apiCalls(b.calls).length, 4); // ITN-55: incluye /api/itson-profile
     onboarding.props.onFinish();
     assert.deepEqual(home(h).props.notifs.map(n => n.id), ['a', 'b']);
     assert.equal(home(h).props.sync.firstRun, false);
