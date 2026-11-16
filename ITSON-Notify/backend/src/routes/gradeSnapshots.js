@@ -80,6 +80,11 @@ function gradeSnapshotsRouter({ supabase, logger, now, channels }) {
       return res.status(500).json({ error: "error_interno" });
     }
 
+    // ITN-56 - Sin la migración 013 el snapshot se guarda sin fechas de entrega.
+    if (saved.fechas === "sin_migracion") {
+      logger.warn("fechas_sin_migracion", { snapshot_id: saved.snapshotId });
+    }
+
     let result;
     try {
       result = await detectChanges({ userId: saved.userId, currentSnapshotId: saved.snapshotId }, repo);

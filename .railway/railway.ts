@@ -9,14 +9,14 @@
 //
 // Las variables NO se declaran aquí: viven solo en Railway (Variables del
 // servicio) y nunca en el repo. worker-rpa necesita:
-//   Id_User, P_User           cuenta de iVirtual (sealed)
 //   RPA_PAUSADO               true detiene las extracciones
 //   BACKEND_URL               URL base del backend (ITN-27), obligatoria
 //   INTERNAL_API_KEY          llave x-api-key, igual a la del backend (sealed)
-//   ALUMNO_EMAIL              correo del alumno para user.email, obligatoria
 //   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   alertas al equipo (opcionales)
-// Si falta BACKEND_URL, INTERNAL_API_KEY o ALUMNO_EMAIL el cron sale con 1
-// sin consultar iVirtual.
+//   ITSON_API_BASE_URL        habilita la fase de la API REST de ITSON (ITN-55)
+// Desde ITN-52 el cron ya no usa Id_User, P_User ni ALUMNO_EMAIL: las cuentas
+// y sus tokens salen del backend. Si falta BACKEND_URL o INTERNAL_API_KEY el
+// cron sale con 1 sin consultar iVirtual.
 import { defineRailway, github, project, service } from "railway/iac";
 
 export const partial = "worker-rpa";

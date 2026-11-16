@@ -1,0 +1,16 @@
+{
+  "courses": [
+    {
+      "id": 501,
+      "fullname": "Materia de prueba A",
+      "assignments": [
+        { "id": 801, "cmid": 3001, "course": 501, "name": "Tarea 1", "duedate": 1795244340, "allowsubmissionsfromdate": 1794582000, "cutoffdate": 1795330740 },
+        { "id": 802, "cmid": 3002, "course": 501, "name": "Tarea 1", "duedate": 0, "allowsubmissionsfromdate": 0, "cutoffdate": 0 },
+        { "id": 807, "cmid": 3007, "course": 501, "name": "Tarea nueva con nota oculta", "duedate": 1795244340, "allowsubmissionsfromdate": 0, "cutoffdate": 0 }
+      ]
+    }
+  ],
+  "warnings": [
+    { "item": "course", "itemid": 502, "warningcode": "1", "message": "No access rights in module context" }
+  ]
+}

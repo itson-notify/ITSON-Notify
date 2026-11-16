@@ -35,7 +35,74 @@ ITN_CRON_SCHEDULE="0 * * * *" railway config plan
 ```
 
 Reglas de Railway: al menos 5 minutos entre corridas, la hora exacta puede variar unos minutos, y si la corrida
-anterior sigue activa se salta la siguiente.
+anterior sigue activa se salta la siguiente
+([Railway: Cron Jobs](https://docs.railway.com/cron-jobs#service-execution-requirements); en
+`railway cron list` aparece como omitida porque la anterior seguía en curso).
+
+### Intervalo de prueba y latencia (ITN-56)
+
+Para el ensayo y la prueba con el profesor se propone correr **cada 5 minutos**, el mínimo que permite Railway.
+Primero revisa el plan; **no** lo apliques hasta decidirlo:
+
+```bash
+ITN_CRON_SCHEDULE="*/5 * * * *" railway config plan
+```
+
+Para volver al horario normal después de la demo, corre `railway config plan` sin la variable (usa
+`0 0-6/2,14-22/2 * * *`) y aplícalo.
+
+**Duración de una corrida.** Cada corrida ejecuta las dos fases en secuencia: iVirtual y después la API de ITSON.
+Si una corrida tarda más que el intervalo, Railway **se salta** la siguiente: no se acumulan, pero la latencia
+crece en un intervalo. Lo que suma cada fase, según el código (son cotas, no mediciones):
+
+| Paso | Normal | Peor caso por llamada |
+|------|--------|-----------------------|
+| iVirtual, por cuenta | pausa de 2 s + `get` del token + 2 llamadas fijas + 1 por curso + 1 de tareas (ITN-56) + 1 entrega | Moodle: 15 s × 3 intentos + 1.5 s de espera ≈ 46.5 s; entrega: 30 s × 4 + 7 s ≈ 127 s |
+| API de ITSON, por alumno | pausa de 2 s + `getAlumnoInscrito` + `getProgress` + hasta 3 `getGrades` + 1 entrega por semestre | 15 s × 3 intentos por llamada; entrega igual que arriba |
+
+Con las pocas cuentas de la demo, una corrida normal debería durar segundos, muy por debajo de 5 minutos; solo
+con iVirtual o el backend caídos (timeouts y reintentos) podría pasar del intervalo. **Hay que medirlo:** en
+Railway, **worker-rpa → Deployments** (o `railway cron list`) muestra la hora de inicio y fin de cada corrida.
+Anota la duración de varias corridas antes del ensayo:
+
+| Corrida | Inicio (UTC) | Fin (UTC) | Duración | Cuentas iVirtual | Alumnos API |
+|---------|--------------|-----------|----------|------------------|-------------|
+| _por medir_ | | | | | |
+
+**Latencia del aviso.** Es el tiempo desde que el profesor crea la tarea en iVirtual hasta que llega el aviso:
+
+- **Peor caso** = intervalo del cron + duración de la extracción (hasta que se entrega el snapshot de esa
+  cuenta) + entrega y notificación en el backend (incluye Resend y Web Push).
+- Con `*/5`: peor caso ≈ 5 min + extracción + entrega. Si la corrida anterior todavía estaba activa cuando tocaba
+  la siguiente, suma otro intervalo.
+- En promedio, la tarea se crea a la mitad de un intervalo: ≈ 2.5 min + extracción + entrega.
+
+Cómo medirla en el ensayo:
+
+1. Anota la hora exacta en que se crea la tarea en iVirtual (o usa `timecreated`/`timemodified` de la tarea si
+   la ves en Moodle).
+2. En el SQL Editor del proyecto, toma el snapshot que la detectó y el envío de cada canal:
+
+   ```sql
+   -- Avisos de tarea nueva más recientes, con su snapshot y su envío por canal.
+   select s.captured_at, gc.detected_at, n.channel, n.status, n.created_at, n.sent_at,
+          n.sent_at - s.captured_at as captura_a_envio
+   from notifications_log n
+   join grade_changes gc on gc.id = n.grade_change_id
+   join grade_snapshots s on s.id = gc.current_snapshot_id
+   where n.payload->>'subject' = 'ITSON Notify: nueva tarea'
+   order by n.created_at desc
+   limit 10;
+   ```
+
+3. Compara con la hora de recepción del correo (encabezado `Date` del mensaje) y con la hora en que aparece la
+   notificación Push en el dispositivo.
+4. Latencia total = hora del correo o del Push − hora de creación de la tarea. El tramo `captured_at → sent_at`
+   es lo que tarda el sistema una vez que la corrida ya pasó por esa cuenta.
+
+| Medición | Creación de la tarea | `captured_at` | `sent_at` (email) | Correo recibido | Push recibido | Latencia total |
+|----------|----------------------|---------------|-------------------|-----------------|---------------|----------------|
+| _por medir_ | | | | | | |
 
 ## Códigos de salida
 
@@ -203,6 +270,40 @@ Nunca se loguea ni se manda en alertas el body, las calificaciones, el correo, l
 5. Para probar el fallo, detén el backend y vuelve a correr el cron: no podrá leer las cuentas activas y saldrá
    con 1.
 
+### Ensayo sintético del aviso de tarea nueva (ITN-56)
+
+No se puede crear antes una tarea real en el curso de prueba, así que el mismo camino se ensaya con datos
+inventados. Hay dos niveles:
+
+1. **Con fakes, sin red** (lo que corre `npm test` en `backend/`): `tests/app/ensayoTareaNueva.test.js` manda el
+   snapshot A (línea base) y el B (con una tarea nueva sin nota, `text: "-"`, y con `dueAt`) por
+   `POST /internal/grade-snapshots` y revisa `grade_changes`, `snapshot_grades.due_at`, `notifications_log`, el
+   correo (canal de Resend con `fetch` simulado), el Push (canal real con `web-push` simulado) y
+   `GET /api/notifications`. También prueba "sin fecha de entrega", la fecha omitida contra `null`, y el backend
+   sin la 013.
+2. **Contra el backend local y el Supabase de dev** (`itson-notify-dev`, nunca producción): con el backend
+   corriendo (`npm run dev` en `backend/`):
+
+   ```bash
+   cd backend && node --env-file=.env scripts/ensayo-tarea-nueva.js
+   ```
+
+   El script solo acepta un backend en `localhost`, usa un correo inventado y único por corrida
+   (`ensayo.itn56.<hora>@example.test`, así A siempre es línea base) y solo imprime status, conteos y el
+   `snapshot_id` de B. Lo que se puede verificar de verdad:
+   - `grade_changes` y `notifications_log` en dev (consulta de arriba, o
+     `select channel, status, payload->>'text' from notifications_log order by created_at desc limit 5;`).
+   - **Correo real:** llega a `NOTIFY_EMAIL_TO` si `backend/.env` tiene `RESEND_API_KEY` (ver
+     [`backend/README.md`](../../backend/README.md#variables): con `onboarding@resend.dev` solo entrega al correo de
+     la cuenta de Resend).
+   - **Push real:** el usuario inventado no tiene suscripción, así que la fila `web_push` queda `failed` (es lo
+     esperado). Para ver un Push real, corre el ensayo con `ENSAYO_EMAIL` igual al correo de una cuenta del equipo
+     que haya entrado a la app de dev y aceptado las notificaciones, y con `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
+     en `backend/.env`. Ojo: si esa cuenta ya tenía snapshots de iVirtual en dev, A se compara contra ellos y
+     genera avisos de más.
+   - **En la app:** con esa misma cuenta, la notificación aparece en `/notifications` con el título "Nueva tarea
+     publicada" y la fila `Entrega`.
+
 ## Límite de gasto (usage limit)
 
 Railway cobra por uso. Con 9 corridas cortas al día el worker gasta muy poco, pero conviene ponerle un tope al
@@ -226,6 +327,11 @@ workspace:
    y 512 MB). Si el límite queda muy bajo, el worker se cae.
 
 ## Pendiente
+
+- **Latencia y duración reales (ITN-56):** llenar las tablas de "Intervalo de prueba y latencia" con las
+  mediciones del ensayo.
+- **Aviso por cambio de fecha de entrega (ITN-56):** hoy no se avisa; ver "Limitaciones conocidas" en
+  [`backend/README.md`](../../backend/README.md).
 
 - **Backend en `railway.ts`:** el backend Express (ITN-27) todavía no está en `railway.ts` ni en un partial
   propio.

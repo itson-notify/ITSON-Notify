@@ -1,5 +1,5 @@
 const { getToken, MoodleError, redact } = require("./client");
-const { fetchGrades } = require("./grades");
+const { fetchGradesDetalle } = require("./grades");
 
 // Errorcodes de login/token.php de Moodle que indican que la contraseña se
 // debe cambiar manualmente en el portal. Reintentar no sirve.
@@ -9,7 +9,8 @@ const ERRORES_CAMBIO_PASSWORD = new Set([
 ]);
 
 // Resultados posibles de extractGrades():
-//   ok            calificaciones extraídas
+//   ok            calificaciones extraídas. ITN-56: trae además `fechas` ("ok" o
+//                 "no_disponibles", con `fechasErrorcode`); ver grades.js.
 //   credenciales     token.php rechazó usuario/contraseña
 //   cambio_password  token.php exige cambiar la contraseña (o ya expiró)
 //   error            cualquier otra falla (red, 5xx tras reintentos, error de Moodle)
@@ -19,8 +20,7 @@ const ERRORES_CAMBIO_PASSWORD = new Set([
 async function extractGrades({ usuario, password }, opts) {
   try {
     const token = await getToken({ usuario, password }, opts);
-    const courses = await fetchGrades(token, opts);
-    return { status: "ok", courses };
+    return { status: "ok", ...(await fetchGradesDetalle(token, opts)) };
   } catch (error) {
     if (error instanceof MoodleError && error.errorcode === "invalidlogin") {
       return { status: "credenciales", courses: [] };
@@ -49,8 +49,7 @@ async function extractGrades({ usuario, password }, opts) {
 // redactar aquí por si otra capa lo repite.
 async function extractGradesWithToken(token, opts) {
   try {
-    const courses = await fetchGrades(token, opts);
-    return { status: "ok", courses };
+    return { status: "ok", ...(await fetchGradesDetalle(token, opts)) };
   } catch (error) {
     if (error instanceof MoodleError && error.errorcode === "invalidtoken") {
       return { status: "token_invalido", courses: [] };

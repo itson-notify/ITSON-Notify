@@ -53,6 +53,7 @@ describe("notificationRepository", () => {
     assert.deepEqual(pendientes.map((p) => p.id).sort(), ["n1", "n2"]);
   });
 
+  // ITN-56 - dueAt null: la fila existe y no tiene fecha (las del fake no traen due_at).
   test("getItemContext lee materia y label en una consulta por tabla", async () => {
     const db = createFakeSupabase();
     db.tables.subjects.push({ id: "s-1", user_id: "u-1", name: "Materia X" });
@@ -72,9 +73,9 @@ describe("notificationRepository", () => {
       { subjectId: "s-x", externalItemId: "3", snapshotId: "snap-2" }, // sin datos
     ]);
 
-    assert.deepEqual(ctx.get(contextKey("s-1", "1")), { subjectName: "Materia X", itemLabel: "Tarea A" });
-    assert.deepEqual(ctx.get(contextKey("s-1", "2")), { subjectName: "Materia X", itemLabel: "Tarea B" });
-    assert.deepEqual(ctx.get(contextKey("s-1", "9")), { subjectName: "Materia X", itemLabel: null });
+    assert.deepEqual(ctx.get(contextKey("s-1", "1")), { subjectName: "Materia X", itemLabel: "Tarea A", dueAt: null });
+    assert.deepEqual(ctx.get(contextKey("s-1", "2")), { subjectName: "Materia X", itemLabel: "Tarea B", dueAt: null });
+    assert.deepEqual(ctx.get(contextKey("s-1", "9")), { subjectName: "Materia X", itemLabel: null, dueAt: null });
     assert.deepEqual(ctx.get(contextKey("s-x", "3")), { subjectName: undefined, itemLabel: undefined });
     const lecturas = db.calls.filter((c) => c.op === "select");
     assert.deepEqual(lecturas.map((c) => c.table), ["subjects", "snapshot_grades"]);

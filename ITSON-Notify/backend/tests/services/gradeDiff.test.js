@@ -120,3 +120,19 @@ describe("diffSnapshots", () => {
     assert.throws(() => diffSnapshots([], [item("1", 1), item("1", 2)]), /duplicado/);
   });
 });
+
+// ITN-56 - El diff no cambia: un ítem nuevo de iVirtual con "-" registra
+// grade_text "-" y grade_label; es buildGroupedMessage quien lo trata como sin nota.
+// Las fechas de entrega no se comparan (pendiente: avisar cambios de fecha).
+require("node:test").test("ITN-56: ítem nuevo con '-' y fechas no comparadas", () => {
+  const { diffSnapshots: diff } = require("../../src/services/gradeDiff");
+  const assertStrict = require("node:assert/strict");
+  const base = { subjectId: "s", externalItemId: "1", label: "Tarea", value: null, text: "-" };
+  const { changes } = diff([], [base]);
+  assertStrict.deepEqual(
+    changes.map((c) => [c.fieldName, c.currentValue]),
+    [["grade_text", "-"], ["grade_label", "Tarea"]],
+  );
+  const conFecha = diff([{ ...base, dueAt: "2026-11-21T06:59:00Z" }], [{ ...base, dueAt: null }]);
+  assertStrict.equal(conFecha.changes.length, 0);
+});

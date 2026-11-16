@@ -160,6 +160,12 @@ async function ejecutar({
     if (result.status === "ok") {
       const items = result.courses.reduce((n, curso) => n + curso.items.length, 0);
       info(`Extracción correcta (${cuenta}): ${result.courses.length} curso(s), ${items} ítem(s).`);
+      // ITN-56 - Las fechas de entrega son opcionales: si mod_assign_get_assignments
+      // falló, se entregan las notas sin fechas (el backend conserva las anteriores).
+      if (result.fechas === "no_disponibles") {
+        const codigoFechas = /^[a-z0-9_]{1,40}$/.test(result.fechasErrorcode ?? "") ? result.fechasErrorcode : "sin_codigo";
+        info(`Fechas de entrega no disponibles (${cuenta}): errorcode=${codigoFechas}. Se entregan las notas sin fechas.`);
+      }
       const envio = await entregar(result, {
         config: entrega.config,
         email,

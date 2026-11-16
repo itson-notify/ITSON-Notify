@@ -253,3 +253,81 @@ describe("logChannel con el logger real", () => {
     });
   });
 });
+// ITN-56 - Regresión: una tarea nueva de iVirtual llega con grade_text "-" (Moodle
+// manda "-" en gradeformatted). Antes salía "calificación nueva: -" con el asunto de
+// cambio de calificación.
+describe("ITN-56: tarea nueva con '-' de Moodle", () => {
+  const { buildMessage, NEW_TASK_SUBJECT, SUBJECT, buildItsonApiMessage } = require("../../src/services/notificationService");
+  const creada = (extra) => cambio({ external_item_id: "9010", change_type: "created", previous_value: null, ...extra });
+  const tareaConGuion = () => [
+    creada({ id: "a", field_name: "grade_text", current_value: "-" }),
+    creada({ id: "b", field_name: "grade_label", current_value: "Tarea 4" }),
+  ];
+
+  test("grade_text '-' + grade_label creados avisan 'Nueva tarea publicada'", () => {
+    const msg = buildGroupedMessage(tareaConGuion(), { subjectName: "Cálculo", itemLabel: "Tarea 4" });
+    assert.equal(msg.subject, NEW_TASK_SUBJECT);
+    assert.equal(msg.text, "Nueva tarea publicada: Tarea 4 en Cálculo.");
+    assert.ok(!msg.text.includes("calificación nueva"));
+  });
+
+  test("con fecha de entrega en el contexto, la muestra en hora de Hermosillo", () => {
+    const msg = buildGroupedMessage(tareaConGuion(), { subjectName: "Cálculo", itemLabel: "Tarea 4", dueAt: "2026-11-21T06:59:00Z" });
+    assert.equal(
+      msg.text,
+      "Nueva tarea publicada: Tarea 4 en Cálculo. Fecha de entrega: viernes 20 de noviembre de 2026, 23:59 (hora de Hermosillo).",
+    );
+  });
+
+  test("sin fecha (dueAt null) lo dice sin romperse", () => {
+    const msg = buildGroupedMessage(tareaConGuion(), { subjectName: "Cálculo", itemLabel: "Tarea 4", dueAt: null });
+    assert.equal(msg.text, "Nueva tarea publicada: Tarea 4 en Cálculo. Sin fecha de entrega.");
+  });
+
+  test("texto vacío también cuenta como sin nota", () => {
+    const rows = [creada({ id: "a", field_name: "grade_text", current_value: "  " }), creada({ id: "b", field_name: "grade_label", current_value: "Tarea 4" })];
+    assert.equal(buildGroupedMessage(rows, {}).subject, NEW_TASK_SUBJECT);
+  });
+
+  test("un ítem nuevo que ya trae nota sigue siendo 'calificación nueva'", () => {
+    const rows = [
+      creada({ id: "a", field_name: "grade_value", current_value: "9" }),
+      creada({ id: "b", field_name: "grade_text", current_value: "9.00" }),
+      creada({ id: "c", field_name: "grade_label", current_value: "Tarea 4" }),
+    ];
+    const msg = buildGroupedMessage(rows, { subjectName: "Cálculo", itemLabel: "Tarea 4" });
+    assert.equal(msg.subject, SUBJECT);
+    assert.equal(msg.text, "Tarea 4 en Cálculo: calificación nueva: 9.");
+  });
+
+  test("de '-' a una nota sigue siendo cambio de calificación", () => {
+    const rows = [
+      cambio({ id: "a", field_name: "grade_value", previous_value: null, current_value: "9" }),
+      cambio({ id: "b", field_name: "grade_text", previous_value: "-", current_value: "9.00" }),
+    ];
+    assert.equal(buildGroupedMessage(rows, { subjectName: "Cálculo", itemLabel: "Tarea 4" }).subject, SUBJECT);
+  });
+
+  test("buildMessage (aviso individual) también trata grade_text '-' creado como tarea nueva", () => {
+    const msg = buildMessage(creada({ id: "a", field_name: "grade_text", current_value: "-" }), { subjectName: "Cálculo", itemLabel: "Tarea 4" });
+    assert.equal(msg.subject, NEW_TASK_SUBJECT);
+  });
+
+  test("itson_api no cambia: una materia nueva no avisa", () => {
+    assert.equal(buildItsonApiMessage([creada({ id: "a", field_name: "grade_text", current_value: null })], {}), null);
+  });
+
+  test("notifyGroupedChanges guarda due_at en el payload solo en iVirtual", async () => {
+    const db = createFakeSupabase();
+    db.tables.subjects.push({ id: "s-1", user_id: "u-1", name: "Cálculo" });
+    db.tables.snapshot_grades.push({ id: "g", snapshot_id: "snap-2", subject_id: "s-1", external_item_id: "9010", grade_label: "Tarea 4", due_at: "2026-11-21T06:59:00Z" });
+    const repo = createNotificationRepository(db.client);
+    const log = canal("log");
+
+    const r = await notifyGroupedChanges(tareaConGuion(), { repo, channels: [log] });
+
+    assert.equal(r.notified, 1);
+    assert.equal(db.tables.notifications_log[0].payload.due_at, "2026-11-21T06:59:00Z");
+    assert.match(log.enviados[0].message.text, /Fecha de entrega: viernes 20 de noviembre de 2026, 23:59/);
+  });
+});

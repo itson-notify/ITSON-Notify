@@ -7,6 +7,7 @@ const fs = require("fs");
 
 const { extractGrades, extractGradesWithToken } = require("../index");
 const { callWs, encodeParams, MoodleError } = require("../client");
+const { unixToIso } = require("../grades");
 
 const FIXTURES = path.join(__dirname, "fixtures");
 const fixture = (name) =>
@@ -288,5 +289,120 @@ describe("extractGradesWithToken", () => {
       assert.ok(!texto.includes(forma));
     }
     assert.equal(result.errorcode, "accessexception");
+  });
+});
+
+// ITN-56 - Fechas de entrega con mod_assign_get_assignments, unidas por cmid.
+describe("fechas de entrega", () => {
+  // Grade items del curso 501 más una tarea recién publicada con la nota oculta.
+  const conTareaOculta = () => {
+    const data = fixture("grade_items_501");
+    data.usergrades[0].gradeitems.push({
+      id: 9007, itemname: "Tarea nueva con nota oculta", itemtype: "mod", itemmodule: "assign",
+      categoryid: 70, cmid: 3007, graderaw: null, gradeformatted: "-",
+      grademin: 0, grademax: 100, percentageformatted: "-", gradeishidden: true,
+    });
+    return data;
+  };
+  const conTareas = (extra = {}) => ({
+    mod_assign_get_assignments: () => json(fixture("assignments")),
+    ...extra,
+  });
+
+  test("une cada tarea con su ítem por cmid y convierte las fechas a ISO", async (t) => {
+    const { calls } = mockMoodle(t, conTareas());
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.fechas, "ok");
+    const llamada = calls.find((c) => c.key === "mod_assign_get_assignments");
+    assert.equal(llamada.body.get("courseids[0]"), "501");
+    assert.equal(llamada.body.get("courseids[1]"), "502");
+
+    const [a] = result.courses;
+    const tarea = a.items.find((i) => i.externalItemId === "9001");
+    assert.equal(tarea.dueAt, "2026-11-21T06:59:00.000Z");
+    assert.equal(tarea.opensAt, "2026-11-13T15:00:00.000Z");
+    assert.equal(tarea.closesAt, "2026-11-22T06:59:00.000Z");
+  });
+
+  test("0 en Moodle es null (sin fecha) y un ítem que no es tarea queda con null", async (t) => {
+    mockMoodle(t, conTareas());
+    const { courses } = await extractGradesWithToken(TOKEN, OPTS);
+    const [a] = courses;
+
+    const sinFecha = a.items.find((i) => i.externalItemId === "9002");
+    assert.deepEqual([sinFecha.dueAt, sinFecha.opensAt, sinFecha.closesAt], [null, null, null]);
+    const examen = a.items.find((i) => i.externalItemId === "9003"); // quiz
+    assert.ok("dueAt" in examen);
+    assert.equal(examen.dueAt, null);
+  });
+
+  test("un curso que Moodle omite (warning) queda sin campos de fecha", async (t) => {
+    mockMoodle(t, conTareas());
+    const { courses } = await extractGradesWithToken(TOKEN, OPTS);
+    const b = courses.find((c) => c.externalId === "502");
+
+    assert.ok(!("dueAt" in b.items[0]), "fecha desconocida: se omite");
+  });
+
+  test("si falla la llamada de tareas, las notas se entregan sin campos de fecha", async (t) => {
+    mockMoodle(t); // sin override: Moodle responde invalidfunction / accessexception
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.fechas, "no_disponibles");
+    assert.equal(result.fechasErrorcode, "invalidfunction");
+    assert.equal(result.courses.length, 2);
+    for (const item of result.courses.flatMap((c) => c.items)) {
+      assert.ok(!("dueAt" in item) && !("opensAt" in item) && !("closesAt" in item));
+    }
+  });
+
+  test("un 503 persistente en tareas no hace fallar la extracción ni expone el token", async (t) => {
+    mockMoodle(t, conTareas({ mod_assign_get_assignments: () => new Response("caído", { status: 503 }) }));
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.fechas, "no_disponibles");
+    assert.equal(result.fechasErrorcode, "http_503");
+    assert.ok(!JSON.stringify(result).includes(TOKEN));
+  });
+
+  test("si fallan las notas no se llama a tareas", async (t) => {
+    const { calls } = mockMoodle(t, conTareas({
+      gradereport_user_get_grade_items: () => json(fixture("nopermissions")),
+    }));
+    const result = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.equal(result.status, "error");
+    assert.ok(!calls.some((c) => c.key === "mod_assign_get_assignments"));
+  });
+
+  test("tarea visible con la nota oculta y sin valor se conserva", async (t) => {
+    mockMoodle(t, conTareas({ gradereport_user_get_grade_items: (body) =>
+      json(body.get("courseid") === "501" ? conTareaOculta() : fixture("grade_items_502")) }));
+    const { courses } = await extractGradesWithToken(TOKEN, OPTS);
+    const ids = courses[0].items.map((i) => i.externalItemId);
+
+    assert.ok(ids.includes("9007"), "la tarea la devuelve mod_assign_get_assignments: se conserva");
+    assert.ok(!ids.includes("9004"), "oculto sin valor que no es tarea visible: se sigue omitiendo");
+    assert.equal(courses[0].items.find((i) => i.externalItemId === "9007").dueAt, "2026-11-21T06:59:00.000Z");
+  });
+
+  test("sin fechas, la tarea con la nota oculta y sin valor se omite como antes", async (t) => {
+    mockMoodle(t, { gradereport_user_get_grade_items: (body) =>
+      json(body.get("courseid") === "501" ? conTareaOculta() : fixture("grade_items_502")) });
+    const { courses } = await extractGradesWithToken(TOKEN, OPTS);
+
+    assert.ok(!courses[0].items.some((i) => i.externalItemId === "9007"));
+  });
+
+  test("unixToIso: 0, vacío y basura son null", () => {
+    assert.equal(unixToIso(0), null);
+    assert.equal(unixToIso("0"), null);
+    assert.equal(unixToIso(null), null);
+    assert.equal(unixToIso("x"), null);
+    assert.equal(unixToIso(1795244340), "2026-11-21T06:59:00.000Z");
   });
 });

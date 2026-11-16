@@ -73,8 +73,9 @@ function createNotificationRepository(supabase) {
   // Nombre de la materia y label del ítem para cada grupo, con una consulta
   // por tabla. refs: [{ subjectId, externalItemId, snapshotId }], donde
   // snapshotId es el snapshot donde está el ítem (el anterior si se borró).
-  // Devuelve Map(contextKey -> { subjectName?, itemLabel? }). itemLabel null
-  // es el total del curso; si no se encontró la fila, queda undefined.
+  // Devuelve Map(contextKey -> { subjectName?, itemLabel?, dueAt? }). itemLabel null
+  // es el total del curso; si no se encontró la fila, queda undefined. dueAt
+  // (ITN-56): ISO, null (sin fecha) o undefined (desconocida).
   async function getItemContext(refs) {
     const context = new Map();
     if (refs.length === 0) return context;
@@ -89,18 +90,24 @@ function createNotificationRepository(supabase) {
       : [];
     const nombres = new Map(subjects.map((s) => [s.id, s.name]));
 
+    // ITN-56 - También la fecha de entrega (due_at, migración 013). Sin la 013
+    // (42703) se lee solo el label y dueAt queda undefined ("desconocida").
     const snapshotIds = unicos("snapshotId");
-    const grades = snapshotIds.length
-      ? check(
-          "snapshot_grades",
-          await supabase
-            .from("snapshot_grades")
-            .select("snapshot_id,subject_id,external_item_id,grade_label")
-            .in("snapshot_id", snapshotIds)
-            .in("subject_id", subjectIds)
-            .in("external_item_id", unicos("externalItemId")),
-        )
-      : [];
+    const leerGrades = (columnas) =>
+      supabase
+        .from("snapshot_grades")
+        .select(columnas)
+        .in("snapshot_id", snapshotIds)
+        .in("subject_id", subjectIds)
+        .in("external_item_id", unicos("externalItemId"));
+    let grades = [];
+    if (snapshotIds.length) {
+      let res = await leerGrades("snapshot_id,subject_id,external_item_id,grade_label,due_at");
+      if (res.error?.code === UNDEFINED_COLUMN) {
+        res = await leerGrades("snapshot_id,subject_id,external_item_id,grade_label");
+      }
+      grades = check("snapshot_grades", res);
+    }
 
     for (const ref of refs) {
       const fila = grades.find(
@@ -112,6 +119,7 @@ function createNotificationRepository(supabase) {
       context.set(contextKey(ref.subjectId, ref.externalItemId), {
         subjectName: nombres.get(ref.subjectId),
         itemLabel: fila ? fila.grade_label : undefined,
+        ...(fila && "due_at" in fila ? { dueAt: fila.due_at } : {}),
       });
     }
     return context;
