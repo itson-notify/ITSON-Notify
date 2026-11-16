@@ -4,9 +4,10 @@
 // el log solo lleva el código.
 const express = require("express");
 const { createSessionReader, requireStudentSession } = require("../middleware/studentSession");
-const { parseNotificationId } = require("../models/studentApi");
+const { parseNotificationId, parseCourseId } = require("../models/studentApi");
 const { createStudentRepository } = require("../repositories/studentRepository");
 const { listStudentNotifications } = require("../services/studentNotifications");
+const { listStudentCourses, listStudentCourseItems } = require("../services/studentCourses");
 const { studentCredentialsRouter } = require("./studentCredentials");
 const { itsonProfileRouter } = require("./itsonProfile");
 const { createCoursesService, CoursesError } = require("../services/classroomCourses");
@@ -62,6 +63,20 @@ function studentApiRouter({
       // Sin registro no hay nada que reparar: se muestra como ok.
       itsonStatus: profile.credentialStatuses.includes(ITSON_STATUS_ERROR) ? "error" : "ok",
     });
+  });
+
+  // ITN-57 - Materias del alumno (iVirtual, Classroom e ITSON API) y sus
+  // actividades o tareas por materia.
+  router.get("/courses", async (req, res) => {
+    return res.json(await listStudentCourses(req.student.userId, repo));
+  });
+
+  router.get("/courses/:id/items", async (req, res) => {
+    const id = parseCourseId(req.params.id);
+    if (!id) return res.status(400).json({ error: "id_invalido" });
+    const resultado = await listStudentCourseItems(req.student.userId, id, repo);
+    if (!resultado) return res.status(404).json({ error: "no_encontrado" });
+    return res.json(resultado);
   });
 
   router.get("/notifications", async (req, res) => {
