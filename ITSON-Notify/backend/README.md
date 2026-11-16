@@ -528,6 +528,8 @@ origen exacto de `FRONTEND_URL`.
 | Ruta                                   | Respuesta                                                                   |
 | -------------------------------------- | --------------------------------------------------------------------------- |
 | `GET /api/me`                          | `{ email, classroomConnected, itsonStatus }`                                |
+| `GET /api/courses`                     | `{ courses: [{ id, name, source, period, finalGrade, updatedAt }] }` (ITN-57) |
+| `GET /api/courses/:id/items`           | `{ items: [{ id, label, grade, maxGrade, dueAt, kind }] }` (ITN-57)         |
 | `GET /api/notifications`               | Hasta 100 notificaciones con forma `Notif`, de la más reciente a la más antigua |
 | `POST /api/notifications/:id/read`     | 204. 400 `id_invalido` si no es uuid; 404 si no existe o es de otro alumno  |
 | `POST /api/notifications/read-all`     | 204                                                                         |
@@ -550,6 +552,67 @@ sesión y antes de leer el body.
   columna de tipo.
 - **No hay endpoint para marcar como no leída.** "Marcar como no leída" y "Deshacer" son locales en el frontend
   por diseño del ticket: el cambio no se guarda en el backend y, al recargar, la notificación vuelve a mostrarse como leída.
+
+### Materias, calificaciones y tareas del alumno (ITN-57)
+
+Permiten mostrar la situación actual del alumno aunque todavía no existan cambios notificados (la primera corrida de
+cada fuente solo guarda la línea base). Siempre filtran por `req.student.userId` y llevan `Cache-Control: no-store`.
+
+#### `GET /api/courses`
+
+Devuelve las materias actuales del alumno combinando las tres fuentes:
+
+```json
+{
+  "courses": [
+    {
+      "id": "uuid",
+      "name": "Ingeniería de Software",
+      "source": "ivirtual",
+      "period": null,
+      "finalGrade": "95.5",
+      "updatedAt": "2026-11-16T18:00:00.000Z"
+    }
+  ]
+}
+```
+
+- **`ivirtual`:** sale del último snapshot de `grade_snapshots` con `source = 'ivirtual'`. `finalGrade` es la nota del
+  ítem de total del curso (`raw_payload.type === 'course'` o `grade_label` null), o `null` si aún no tiene calificación
+  (`"-"` en Moodle). `period` es `null` y `updatedAt` es `captured_at`.
+- **`itson_api`:** sale del último snapshot por semestre (`period`, `"01"`..`"08"`) con `source = 'itson_api'`.
+  `finalGrade` es el código guardado en `grade_text` (`"9"`, `"10"`, `"A"`, o `null` si no hay calificación).
+- **`classroom`:** sale de `classroom_courses` (migración 006). `period` es `section` (o `null`), `finalGrade` es
+  `null` y `updatedAt` es `last_seen_at`.
+
+#### `GET /api/courses/:id/items`
+
+Devuelve las actividades de iVirtual o tareas de Classroom de la materia `:id` del alumno:
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "label": "Asignación 1",
+      "grade": 95,
+      "maxGrade": 100,
+      "dueAt": "2026-11-20T06:59:00.000Z",
+      "kind": "ivirtual"
+    }
+  ]
+}
+```
+
+- Si `:id` no es un UUID válido, responde `400 {"error":"id_invalido"}` sin tocar la base.
+- Si el curso no existe o pertenece a otro alumno, responde `404 {"error":"no_encontrado"}`.
+- En materias de **`ivirtual`** (`kind: "ivirtual"`), lee `snapshot_grades` del último snapshot `ivirtual` del alumno
+  excluyendo los renglones de resumen (`course` y `category`). `grade` es numérico (o `null` si no está calificada),
+  `maxGrade` sale de `raw_payload.max` y `dueAt` de `snapshot_grades.due_at` (migración 013; `null` si no tiene fecha o
+  si falta la 013).
+- En cursos de **`classroom`** (`kind: "classroom"`), lee `classroom_coursework` del alumno: `label` es `title`,
+  `grade` es `null`, `maxGrade` es `max_points` y `dueAt` es `due_at`.
+- En materias de **`itson_api`**, responde `200 {"items":[]}` (solo reportan calificación final en `/api/courses`).
 
 ### Cierre de sesión y Web Push
 
