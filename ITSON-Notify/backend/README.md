@@ -99,18 +99,28 @@ Opcionales (notificaciones, ITN-28). Sin ellas el servidor arranca igual y solo 
 | Variable            | Uso                                                                        |
 | ------------------- | -------------------------------------------------------------------------- |
 | `RESEND_API_KEY`    | Llave de Resend. Sin ella, el canal `email` se omite                       |
-| `NOTIFY_EMAIL_TO`   | Destinatario de prueba. Sin él, el canal `email` se omite                  |
+| `NOTIFY_EMAIL_TO`   | **Solo pruebas.** Override opcional: si se define, todos los correos van ahí. Vacía en producción |
 | `NOTIFY_EMAIL_FROM` | Remitente. Vacío usa `ITSON Notify <onboarding@resend.dev>`                |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Llaves de Web Push (las dos o ninguna). Sin ellas, el canal `web_push` se omite |
 | `VAPID_SUBJECT`     | Contacto VAPID (`mailto:`). Vacío usa `mailto:notificaciones@itson.edu.mx`  |
 
-**Correo: un solo destinatario.** El canal `email` manda **todos** los avisos a `NOTIFY_EMAIL_TO`, no al correo de
-cada alumno. Con el remitente de pruebas `onboarding@resend.dev`, Resend solo entrega al correo de la cuenta de
-Resend y responde `403` a cualquier otro destinatario
-([Resend: error 403 del dominio resend.dev](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)).
-Para la demo basta con que `NOTIFY_EMAIL_TO` sea el correo de la cuenta de Resend. Para mandar a otros
-destinatarios hay que verificar un dominio propio en <https://resend.com/domains> y usar un `NOTIFY_EMAIL_FROM`
-de ese dominio.
+**Correo: va al alumno.** El canal `email` se arma solo con `RESEND_API_KEY` y manda cada aviso al correo del
+alumno dueño (`app_users.email`, el de su cuenta de Google), un destinatario por correo. El backend lo lee por
+`user_id` con `notificationRepository.getUserEmail` (solo la columna `email`).
+
+- **`NOTIFY_EMAIL_TO` es solo un override de pruebas.** Si está definida, **todos** los correos van a esa
+  dirección y no se consulta `app_users` (útil en local y en el ensayo sintético). En producción debe quedar
+  **sin definir** para que cada alumno reciba en su correo.
+- **Correos que no se envían.** Si el alumno no tiene correo, es inválido o es de un dominio reservado (`.test`,
+  `.invalid`, `.localhost`, `.example`, `example.com`/`.org`/`.net`), no se llama a Resend: la fila `email` de
+  `notifications_log` queda `failed` con un motivo que nunca incluye el correo, y los demás canales siguen.
+  Como cualquier `failed`, se reintenta como máximo hasta `MAX_ATTEMPTS` (5) y después se deja.
+- **Remitente.** Con el remitente de pruebas `onboarding@resend.dev`, Resend solo entrega al correo de la cuenta
+  de Resend y responde `403` a cualquier otro destinatario
+  ([Resend: error 403 del dominio resend.dev](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)),
+  así que esos avisos quedan `failed`. Para que llegue a los alumnos hay que verificar un dominio propio en
+  <https://resend.com/domains> y usar un `NOTIFY_EMAIL_FROM` de ese dominio. Para una demo sin dominio, define
+  `NOTIFY_EMAIL_TO` con el correo de la cuenta de Resend.
 
 **Push.** El canal `web_push` solo se arma con las dos llaves VAPID. El aviso llega solo a los dispositivos con
 suscripción guardada (`push_subscriptions`, migración 009): el alumno debe entrar a la app y aceptar las

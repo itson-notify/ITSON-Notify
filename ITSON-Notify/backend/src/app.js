@@ -55,6 +55,7 @@ function createApp({
       },
       logger,
       pushRepo: notificationRepo,
+      emailRepo: notificationRepo,
     });
 
   const app = express();

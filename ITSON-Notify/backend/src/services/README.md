@@ -114,13 +114,17 @@ del ítem viene en la extracción de ITN-23, pero hoy no se guarda en `snapshot_
 - `notificationChannels.js`: `buildChannels({ env, logger })` arma los canales:
   - `log`: siempre. Registra el evento fijo `notificacion_enviada` con `grade_change_id` y `grade_change_ids`;
     nunca el texto del mensaje.
-  - `email` (Resend, por HTTP, sin dependencias): solo si existen `RESEND_API_KEY` y `NOTIFY_EMAIL_TO`. Si falta
-    alguna, el canal se omite con un aviso en el log y no falla nada. Remitente: `NOTIFY_EMAIL_FROM`.
+  - `email` (Resend, por HTTP, sin dependencias): solo si existe `RESEND_API_KEY`; si falta, el canal se omite
+    con `canal_email_omitido` en el log y no falla nada. Cada aviso va al correo del alumno dueño
+    (`emailRepo.getUserEmail(meta.userId)`, columna `app_users.email`), un destinatario por correo.
+    `NOTIFY_EMAIL_TO` es solo un override de pruebas: si existe, todo va ahí sin consultar `app_users`. Sin
+    correo, inválido o de dominio reservado (`.test`, `example.com`, ...) lanza sin llamar a Resend y el aviso
+    queda `failed`; el mensaje nunca incluye el correo. Remitente: `NOTIFY_EMAIL_FROM`.
   - FCM y Telegram están fuera de alcance.
 
 ```js
 const result = await detectChanges({ userId, currentSnapshotId }, gradeRepo);
-const channels = buildChannels({ env: process.env, logger });
+const channels = buildChannels({ env: process.env, logger, emailRepo: notificationsRepo });
 await retryPendingNotifications(userId, { repo: notificationsRepo, channels });
 if (!result.baseline) await notifyGroupedChanges(result.inserted, { repo: notificationsRepo, channels });
 ```
