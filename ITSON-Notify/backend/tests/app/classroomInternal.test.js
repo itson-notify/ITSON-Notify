@@ -141,3 +141,75 @@ test('active enumeration requires the internal API key', async () => {
   assert.equal((await request(s.app).get('/internal/classroom/active')).status, 401);
   assert.equal(s.calls.length, 0);
 });
+
+test('before 014: active enumeration fails closed instead of listing unverified grants', async () => {
+  const s = setup();
+  s.db.withoutColumn('google_authorizations', 'status');
+  const res = await request(s.app).get('/internal/classroom/active').set('x-api-key', API_KEY);
+  assert.equal(res.status, 503);
+  assert.deepEqual(res.body, { error: 'classroom_migracion_requerida' });
+  assert.equal(s.calls.length, 0);
+});
+
+test('before 014: OAuth insert, reconsent and preservation without a new token work', async () => {
+  const s = setup();
+  s.db.tables.google_authorizations = [];
+  s.db.withoutColumn('google_authorizations', 'status');
+  const args = { supabase: s.db.client, googleId: identity.googleId, email: 'synthetic@example.test',
+    authoritativeEmail: true, scope: CLASSROOM_SCOPE, secret, refreshToken: 'synthetic-new' };
+  const saved = await saveGoogleAuthorization(args);
+  assert.ok(saved.userId);
+  const original = s.db.tables.google_authorizations[0].refresh_token;
+  await saveGoogleAuthorization({ ...args, refreshToken: undefined });
+  assert.equal(s.db.tables.google_authorizations[0].refresh_token, original);
+  await saveGoogleAuthorization(args);
+  assert.notEqual(s.db.tables.google_authorizations[0].refresh_token, original);
+  assert.equal(s.db.tables.app_users.length, 1);
+});
+
+test('before 014: failure to delete a revoked grant returns 500 and never returns a token', async () => {
+  const s = setup([json({ error: 'invalid_grant' }, 400)]);
+  s.db.withoutColumn('google_authorizations', 'status');
+  s.db.failNext('google_authorizations', 'delete');
+  const res = await s.read();
+  assert.equal(res.status, 500);
+  assert.deepEqual(res.body, { error: 'error_interno' });
+  assert.equal(s.db.tables.google_authorizations.length, 1);
+  assert.deepEqual(s.logs, []);
+});
+
+test('before 014: a revoked old token cannot delete a concurrent new grant', async () => {
+  const s = setup();
+  s.db.withoutColumn('google_authorizations', 'status');
+  const service = createCoursesService({ config: s.config, supabase: s.db.client, fetchImpl: async () => {
+    s.db.tables.google_authorizations[0].refresh_token = encrypt({ token: 'synthetic-new' }, secret, 'google-refresh');
+    return json({ error: 'invalid_grant' }, 400);
+  } });
+  await assert.rejects(service.getAccessToken(identity), { status: 409 });
+  assert.equal(s.db.tables.google_authorizations.length, 1);
+});
+
+test('missing legacy columns and real database errors never fall back to successful responses', async () => {
+  for (const code of ['42501', 'XX000', '42703']) {
+    const s = setup();
+    s.db.failNext('google_authorizations', 'select', code);
+    assert.equal((await s.read()).status, 500);
+    assert.equal(s.calls.length, 0);
+  }
+  const s = setup();
+  s.db.withoutColumn('google_authorizations', 'status');
+  s.db.withoutColumn('google_authorizations', 'refresh_token');
+  assert.equal((await s.read()).status, 500);
+  assert.equal(s.calls.length, 0);
+});
+
+test('OAuth database write failures propagate without dropping status or hiding errors', async () => {
+  for (const missingStatus of [false, true]) {
+    const s = setup();
+    if (missingStatus) s.db.withoutColumn('google_authorizations', 'status');
+    s.db.failNext('google_authorizations', 'update', '42501');
+    await assert.rejects(saveGoogleAuthorization({ supabase: s.db.client, googleId: identity.googleId,
+      email: 'synthetic@example.test', scope: CLASSROOM_SCOPE, secret, refreshToken: 'synthetic-new' }),
+    { code: '42501' });
+  }
+});

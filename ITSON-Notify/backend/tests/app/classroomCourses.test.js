@@ -170,6 +170,26 @@ test('API: disabled OAuth does not call Google', async () => {
   assert.equal(s.calls.length, 0);
 });
 
+test('ITN-42: missing status preserves authenticated course reads before 014', async () => {
+  const s = setup([token(), json({ courses: [{ id: '1', name: 'Synthetic course' }] })]);
+  s.db.withoutColumn('google_authorizations', 'status');
+  const res = await s.get();
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { courses: [{ id: '1', name: 'Synthetic course' }] });
+  assert.equal(s.calls.length, 2);
+});
+
+test('ITN-42: legacy invalid_grant removes the revoked grant and its sessions', async () => {
+  const s = setup([json({ error: 'invalid_grant' }, 400)]);
+  s.db.withoutColumn('google_authorizations', 'status');
+  assert.equal((await s.get()).status, 409);
+  assert.equal(s.db.tables.google_authorizations.length, 0);
+  assert.equal(s.db.tables.google_app_sessions.length, 0);
+  assert.equal((await s.get()).status, 401);
+  await assert.rejects(s.service.getAccessToken(student), { status: 409 });
+  assert.equal(s.calls.length, 1);
+});
+
 test('API: Supabase failure closes access without exposing details', async () => {
   const s = setup();
   const from = s.db.client.from.bind(s.db.client);

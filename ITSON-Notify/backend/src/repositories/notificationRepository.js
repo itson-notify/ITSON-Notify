@@ -125,6 +125,16 @@ function createNotificationRepository(supabase) {
     return context;
   }
 
+  // Correo del alumno (app_users.email) para el canal email. Solo lee esa
+  // columna. Devuelve null si el usuario no existe o no tiene correo.
+  async function getUserEmail(userId) {
+    const row = check(
+      "app_users",
+      await supabase.from("app_users").select("email").eq("id", userId).maybeSingle(),
+    );
+    return row?.email ?? null;
+  }
+
   // Guarda o reasigna exclusivamente la suscripción Web Push de un dispositivo
   // vinculándola a la sesión actual del dispositivo.
   async function savePushSubscription({
@@ -225,6 +235,7 @@ function createNotificationRepository(supabase) {
     updateNotification,
     listPendingNotifications,
     getItemContext,
+    getUserEmail,
     savePushSubscription,
     listPushSubscriptions,
     deletePushSubscription,

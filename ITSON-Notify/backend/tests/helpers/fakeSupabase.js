@@ -151,6 +151,11 @@ class Query {
     this.options = options;
     return this;
   }
+  insert(rows) {
+    this.upsert(rows);
+    this.op = 'insert';
+    return this;
+  }
   update(patch) {
     this.op = "update";
     this.patch = patch;
@@ -239,7 +244,7 @@ class Query {
     if (fallo) return pgError(fallo.code, `fallo simulado: ${JSON.stringify(this.rows ?? [])}`);
 
     let result;
-    if (this.op === "upsert") result = this.executeUpsert();
+    if (this.op === "upsert" || this.op === 'insert') result = this.executeUpsert();
     else if (this.op === "delete") result = this.executeDelete();
     else if (this.op === "update") result = this.executeUpdate();
     else result = { data: this.executeSelect(), error: null };
@@ -309,13 +314,15 @@ class Query {
 
       const existente = staged.find((r) => keyOf(r, conflict) === key);
       if (existente) {
+        if (this.op === 'insert') return pgError('23505', 'duplicado');
         if (this.options.ignoreDuplicates) continue;
         Object.assign(existente, row, { id: existente.id });
         devueltas.push(existente);
         continue;
       }
       const nueva = {
-        ...(def.defaults ?? {}),
+        ...Object.fromEntries(Object.entries(def.defaults ?? {})
+          .filter(([column]) => !this.db.missingColumns[this.table]?.has(column))),
         ...Object.fromEntries((def.defaultNow ?? []).map((c) => [c, new Date().toISOString()])),
         id: row.id ?? crypto.randomUUID(),
         created_at: new Date().toISOString(),

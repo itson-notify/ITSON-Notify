@@ -2,6 +2,7 @@
 // La sesión y el estado OAuth utilizan el cifrado compartido de utils/secureToken.
 const crypto = require("crypto");
 const { encrypt } = require("../utils/secureToken");
+const { isMissingAuthorizationStatus } = require('./googleAuthorizationSchema');
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -135,12 +136,16 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
     row.refresh_token = encrypt({ token: refreshToken }, secret, "google-refresh");
     row.status = "active";
   }
-  const query = existing
-    ? supabase.from("google_authorizations").update(row).eq("google_id", googleId)
+  const save = value => existing
+    ? supabase.from("google_authorizations").update(value).eq("google_id", googleId)
     : supabase.from("google_authorizations").insert({
-        ...row, user_id: userId, google_id: googleId,
+        ...value, user_id: userId, google_id: googleId,
       });
-  const { error: saveError } = await query;
+  let { error: saveError } = await save(row);
+  if (row.status === 'active' && isMissingAuthorizationStatus(saveError)) {
+    const { status, ...legacyRow } = row;
+    ({ error: saveError } = await save(legacyRow));
+  }
   if (saveError) throw saveError;
   return { userId, googleId };
 }

@@ -1,5 +1,6 @@
 const express = require('express');
 const { createCoursesService, CoursesError } = require('../services/classroomCourses');
+const { isMissingAuthorizationStatus } = require('../services/googleAuthorizationSchema');
 
 function classroomInternalRouter({ config, supabase, classroomFetch }) {
   const router = express.Router();
@@ -9,6 +10,9 @@ function classroomInternalRouter({ config, supabase, classroomFetch }) {
     try {
       const { data, error } = await supabase.from('google_authorizations')
         .select('user_id,google_id').eq('status', 'active');
+      if (isMissingAuthorizationStatus(error)) {
+        return res.status(503).json({ error: 'classroom_migracion_requerida' });
+      }
       if (error) return res.status(500).json({ error: 'error_interno' });
       return res.json({ students: data.map(row => ({ userId: row.user_id, googleId: row.google_id })) });
     } catch {

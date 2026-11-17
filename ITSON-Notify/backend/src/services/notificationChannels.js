@@ -1,6 +1,8 @@
 // ITN-28 - Canales de notificación.
 // "log" siempre está disponible. "email" (Resend) y "web_push" (VAPID) solo se
 // arman si existen sus llaves en el entorno; si faltan, se omiten sin fallar.
+// El correo va al alumno dueño de cada aviso (app_users.email); NOTIFY_EMAIL_TO
+// es solo un override de pruebas.
 
 const RESEND_URL = "https://api.resend.com/emails";
 const RESEND_TIMEOUT_MS = 10_000;
@@ -20,12 +22,52 @@ function logChannel(logger = console) {
   };
 }
 
+// Dominios reservados (RFC 2606 / RFC 6761): nunca reciben correo real. Los
+// usa el ensayo sintético (ensayo.itn56.<hora>@example.test) y las pruebas.
+const TLDS_RESERVADOS = ["test", "invalid", "localhost", "example"];
+const DOMINIOS_RESERVADOS = ["example.com", "example.org", "example.net"];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Revisa el correo del alumno antes de llamar a Resend. Devuelve el motivo del
+// rechazo o null si se puede enviar. El motivo nunca incluye el correo.
+function motivoCorreoNoEnviable(email) {
+  if (typeof email !== "string" || email.trim() === "") return "Alumno sin correo registrado";
+  const limpio = email.trim().toLowerCase();
+  if (!EMAIL_RE.test(limpio)) return "Correo del alumno inválido";
+  const dominio = limpio.slice(limpio.lastIndexOf("@") + 1);
+  const tld = dominio.slice(dominio.lastIndexOf(".") + 1);
+  const reservado =
+    TLDS_RESERVADOS.includes(tld) ||
+    DOMINIOS_RESERVADOS.some((d) => dominio === d || dominio.endsWith(`.${d}`));
+  return reservado ? "Correo del alumno con dominio reservado" : null;
+}
+
 // Envía el aviso por correo con la API HTTP de Resend (sin dependencias).
-// El error nunca incluye la llave: solo el status y el mensaje de Resend.
-function emailChannel({ apiKey, from, to, fetchImpl = fetch }) {
+// Destinatario, uno por correo:
+//   overrideTo  si viene (NOTIFY_EMAIL_TO), todos los avisos van ahí y no se
+//               consulta app_users. Solo para pruebas locales y el ensayo.
+//   si no, el correo del alumno dueño del aviso: emailRepo.getUserEmail(meta.userId).
+// Si el alumno no tiene correo, es inválido o de un dominio reservado, lanza sin
+// llamar a Resend y el aviso queda failed. Ningún error incluye la llave ni el
+// correo: solo el motivo, o el status y el mensaje de Resend.
+function emailChannel({ apiKey, from, overrideTo, emailRepo, fetchImpl = fetch }) {
+  if (!overrideTo && typeof emailRepo?.getUserEmail !== "function") {
+    throw new Error("emailChannel requiere overrideTo o emailRepo.getUserEmail");
+  }
+
+  async function destinatario(userId) {
+    if (overrideTo) return overrideTo;
+    if (!userId) throw new Error("emailChannel requiere userId");
+    const email = await emailRepo.getUserEmail(userId);
+    const motivo = motivoCorreoNoEnviable(email);
+    if (motivo) throw new Error(motivo);
+    return email.trim();
+  }
+
   return {
     name: "email",
-    async send(message) {
+    async send(message, { userId } = {}) {
+      const to = await destinatario(userId);
       const res = await fetchImpl(RESEND_URL, {
         method: "POST",
         headers: {
@@ -111,7 +153,10 @@ function webPushChannel({
 
 // Arma los canales disponibles según el entorno.
 //   env.RESEND_API_KEY     sin ella no hay canal email
-//   env.NOTIFY_EMAIL_TO    destinatario de prueba (obligatorio para email)
+//   emailRepo              repo con getUserEmail(userId) (notificationRepository):
+//                          el correo de cada aviso va al alumno dueño (app_users.email)
+//   env.NOTIFY_EMAIL_TO    opcional, SOLO para pruebas: si está definida, todos los
+//                          correos van a esa dirección y no se consulta app_users
 //   env.NOTIFY_EMAIL_FROM  remitente; por defecto el de pruebas de Resend
 //   env.VAPID_PUBLIC_KEY / env.VAPID_PRIVATE_KEY + pushRepo  activan web_push
 function buildChannels({
@@ -119,20 +164,23 @@ function buildChannels({
   logger = console,
   fetchImpl,
   pushRepo,
+  emailRepo,
   webpushImpl,
 } = {}) {
   const channels = [logChannel(logger)];
+  const overrideTo = env.NOTIFY_EMAIL_TO?.trim() || undefined;
 
   if (!env.RESEND_API_KEY) {
     logger.info("canal_email_omitido", { reason: "sin_resend_api_key" });
-  } else if (!env.NOTIFY_EMAIL_TO) {
-    logger.warn("canal_email_omitido", { reason: "sin_notify_email_to" });
+  } else if (!overrideTo && typeof emailRepo?.getUserEmail !== "function") {
+    logger.warn("canal_email_omitido", { reason: "sin_email_repo" });
   } else {
     channels.push(
       emailChannel({
         apiKey: env.RESEND_API_KEY,
         from: env.NOTIFY_EMAIL_FROM || "ITSON Notify <onboarding@resend.dev>",
-        to: env.NOTIFY_EMAIL_TO,
+        overrideTo,
+        emailRepo,
         fetchImpl,
       }),
     );
@@ -153,4 +201,11 @@ function buildChannels({
   return channels;
 }
 
-module.exports = { buildChannels, logChannel, emailChannel, webPushChannel, RESEND_URL };
+module.exports = {
+  buildChannels,
+  logChannel,
+  emailChannel,
+  webPushChannel,
+  motivoCorreoNoEnviable,
+  RESEND_URL,
+};

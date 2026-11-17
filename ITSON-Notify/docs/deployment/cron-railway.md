@@ -258,6 +258,18 @@ el log nombra la variable, nunca su valor.
 
 Nunca se loguea ni se manda en alertas el body, las calificaciones, el correo, la URL ni la llave.
 
+### Correo de los avisos (servicio del backend)
+
+Los avisos que genera cada entrega se mandan por correo **al alumno dueño** (`app_users.email`, el de su cuenta
+de Google). En el servicio del **backend** en Railway (no en `worker-rpa`):
+
+- `RESEND_API_KEY` (*sealed*) basta para activar el canal `email`. `NOTIFY_EMAIL_FROM` debe ser de un dominio
+  verificado en Resend para que llegue a los alumnos.
+- `NOTIFY_EMAIL_TO` es **solo un override de pruebas**: si está definida, todos los correos van a esa dirección.
+  En producción **no debe existir**; bórrala del servicio para que cada alumno reciba en su correo.
+
+Detalle en [`backend/README.md`](../../backend/README.md#variables).
+
 ### Probar contra el backend local
 
 1. En `ITSON-Notify/.env` llena `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` del proyecto de **dev**,
@@ -293,9 +305,12 @@ inventados. Hay dos niveles:
    `snapshot_id` de B. Lo que se puede verificar de verdad:
    - `grade_changes` y `notifications_log` en dev (consulta de arriba, o
      `select channel, status, payload->>'text' from notifications_log order by created_at desc limit 5;`).
-   - **Correo real:** llega a `NOTIFY_EMAIL_TO` si `backend/.env` tiene `RESEND_API_KEY` (ver
-     [`backend/README.md`](../../backend/README.md#variables): con `onboarding@resend.dev` solo entrega al correo de
-     la cuenta de Resend).
+   - **Correo:** el backend manda cada aviso al correo del alumno (`app_users.email`). El alumno del ensayo tiene
+     un correo inventado de dominio reservado (`.test`), así que **la fila `email` queda `failed` a propósito**
+     ("Correo del alumno con dominio reservado") sin llamar a Resend; log y Push no se afectan. Para ver el correo
+     llegar en el ensayo, define `NOTIFY_EMAIL_TO` en `backend/.env` (override solo de pruebas: todo va ahí) junto
+     con `RESEND_API_KEY` (ver [`backend/README.md`](../../backend/README.md#variables): con
+     `onboarding@resend.dev` solo entrega al correo de la cuenta de Resend).
    - **Push real:** el usuario inventado no tiene suscripción, así que la fila `web_push` queda `failed` (es lo
      esperado). Para ver un Push real, corre el ensayo con `ENSAYO_EMAIL` igual al correo de una cuenta del equipo
      que haya entrado a la app de dev y aceptado las notificaciones, y con `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`

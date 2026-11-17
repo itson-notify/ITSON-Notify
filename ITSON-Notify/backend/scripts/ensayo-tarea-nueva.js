@@ -19,6 +19,14 @@
 //                      suscripción: ver docs/deployment/cron-railway.md.
 //   ENSAYO_DUE_AT      fecha de entrega ISO; por defecto mañana 23:59 en Hermosillo
 //
+// Correo: el backend manda cada aviso al correo del alumno (app_users.email). Con
+// el correo inventado (dominio reservado .test) el canal email FALLA A PROPÓSITO:
+// no se llama a Resend y la fila email de notifications_log queda failed, sin
+// afectar a log ni a web_push (por eso B puede reportar failed=1). Para ver el
+// correo llegar en el ensayo, define NOTIFY_EMAIL_TO en el backend/.env local
+// (override solo de pruebas: todo el correo va a esa dirección) junto con
+// RESEND_API_KEY, y reinicia el backend.
+//
 // Solo imprime status HTTP, conteos y los snapshot_id (run_id aleatorios) para
 // revisar la base. Nunca la API key ni el correo.
 const crypto = require("crypto");
@@ -103,6 +111,12 @@ async function main(env = process.env) {
       ? "Esperado: grade_changes 'created' de ensayo-2 y notifications_log con 'Nueva tarea publicada'."
       : "OJO: B no generó cambios. ¿ENSAYO_EMAIL ya tenía snapshots con la tarea?",
   );
+  if (!env.ENSAYO_EMAIL) {
+    console.log(
+      "Correo: con el alumno inventado la fila email queda failed a propósito (dominio reservado). " +
+        "Para ver el correo llegar, define NOTIFY_EMAIL_TO en el .env del backend local.",
+    );
+  }
 }
 
 if (require.main === module) {

@@ -2,6 +2,7 @@
 const { decrypt } = require('../utils/secureToken');
 const { CLASSROOM_SCOPE } = require('./googleAuthService');
 const { createClassroomClient, ClassroomError } = require('./classroomClient');
+const { isMissingAuthorizationStatus } = require('./googleAuthorizationSchema');
 
 class CoursesError extends Error {
   constructor(status, code) {
@@ -64,9 +65,12 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
   }
 
   async function getAccessToken({ userId, googleId }) {
-    const { data, error } = await supabase.from('google_authorizations')
-      .select('user_id,google_id,scope,refresh_token,status')
+    const load = columns => supabase.from('google_authorizations').select(columns)
       .eq('user_id', userId).eq('google_id', googleId).maybeSingle();
+    let { data, error } = await load('user_id,google_id,scope,refresh_token,status');
+    if (isMissingAuthorizationStatus(error)) {
+      ({ data, error } = await load('user_id,google_id,scope,refresh_token'));
+    }
     // Discard all external errors, including potentially sensitive error codes.
     if (error) throw new CoursesError(500, 'error_interno');
     if (!data || data.user_id !== userId || data.google_id !== googleId) throw relink();
@@ -80,9 +84,15 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
       return await refresh(credential.token);
     } catch (error) {
       if (error instanceof CoursesError && error.status === 409) {
-        const { error: saveError } = await supabase.from('google_authorizations')
+        let { error: saveError } = await supabase.from('google_authorizations')
           .update({ status: 'needs_relink' }).eq('user_id', userId).eq('google_id', googleId)
           .eq('refresh_token', data.refresh_token);
+        if (isMissingAuthorizationStatus(saveError)) {
+          // Before 014, remove the revoked grant rather than reusing it later.
+          // The ciphertext condition preserves a concurrent reconsent.
+          ({ error: saveError } = await supabase.from('google_authorizations').delete()
+            .eq('user_id', userId).eq('google_id', googleId).eq('refresh_token', data.refresh_token));
+        }
         if (saveError) throw new CoursesError(500, 'error_interno');
       }
       throw error;

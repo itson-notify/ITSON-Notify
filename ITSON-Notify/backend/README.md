@@ -99,18 +99,28 @@ Opcionales (notificaciones, ITN-28). Sin ellas el servidor arranca igual y solo 
 | Variable            | Uso                                                                        |
 | ------------------- | -------------------------------------------------------------------------- |
 | `RESEND_API_KEY`    | Llave de Resend. Sin ella, el canal `email` se omite                       |
-| `NOTIFY_EMAIL_TO`   | Destinatario de prueba. Sin él, el canal `email` se omite                  |
+| `NOTIFY_EMAIL_TO`   | **Solo pruebas.** Override opcional: si se define, todos los correos van ahí. Vacía en producción |
 | `NOTIFY_EMAIL_FROM` | Remitente. Vacío usa `ITSON Notify <onboarding@resend.dev>`                |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Llaves de Web Push (las dos o ninguna). Sin ellas, el canal `web_push` se omite |
 | `VAPID_SUBJECT`     | Contacto VAPID (`mailto:`). Vacío usa `mailto:notificaciones@itson.edu.mx`  |
 
-**Correo: un solo destinatario.** El canal `email` manda **todos** los avisos a `NOTIFY_EMAIL_TO`, no al correo de
-cada alumno. Con el remitente de pruebas `onboarding@resend.dev`, Resend solo entrega al correo de la cuenta de
-Resend y responde `403` a cualquier otro destinatario
-([Resend: error 403 del dominio resend.dev](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)).
-Para la demo basta con que `NOTIFY_EMAIL_TO` sea el correo de la cuenta de Resend. Para mandar a otros
-destinatarios hay que verificar un dominio propio en <https://resend.com/domains> y usar un `NOTIFY_EMAIL_FROM`
-de ese dominio.
+**Correo: va al alumno.** El canal `email` se arma solo con `RESEND_API_KEY` y manda cada aviso al correo del
+alumno dueño (`app_users.email`, el de su cuenta de Google), un destinatario por correo. El backend lo lee por
+`user_id` con `notificationRepository.getUserEmail` (solo la columna `email`).
+
+- **`NOTIFY_EMAIL_TO` es solo un override de pruebas.** Si está definida, **todos** los correos van a esa
+  dirección y no se consulta `app_users` (útil en local y en el ensayo sintético). En producción debe quedar
+  **sin definir** para que cada alumno reciba en su correo.
+- **Correos que no se envían.** Si el alumno no tiene correo, es inválido o es de un dominio reservado (`.test`,
+  `.invalid`, `.localhost`, `.example`, `example.com`/`.org`/`.net`), no se llama a Resend: la fila `email` de
+  `notifications_log` queda `failed` con un motivo que nunca incluye el correo, y los demás canales siguen.
+  Como cualquier `failed`, se reintenta como máximo hasta `MAX_ATTEMPTS` (5) y después se deja.
+- **Remitente.** Con el remitente de pruebas `onboarding@resend.dev`, Resend solo entrega al correo de la cuenta
+  de Resend y responde `403` a cualquier otro destinatario
+  ([Resend: error 403 del dominio resend.dev](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)),
+  así que esos avisos quedan `failed`. Para que llegue a los alumnos hay que verificar un dominio propio en
+  <https://resend.com/domains> y usar un `NOTIFY_EMAIL_FROM` de ese dominio. Para una demo sin dominio, define
+  `NOTIFY_EMAIL_TO` con el correo de la cuenta de Resend.
 
 **Push.** El canal `web_push` solo se arma con las dos llaves VAPID. El aviso llega solo a los dispositivos con
 suscripción guardada (`push_subscriptions`, migración 009): el alumno debe entrar a la app y aceptar las
@@ -528,6 +538,8 @@ origen exacto de `FRONTEND_URL`.
 | Ruta                                   | Respuesta                                                                   |
 | -------------------------------------- | --------------------------------------------------------------------------- |
 | `GET /api/me`                          | `{ email, classroomConnected, itsonStatus }`                                |
+| `GET /api/courses`                     | `{ courses: [{ id, name, source, period, finalGrade, updatedAt }] }` (ITN-57) |
+| `GET /api/courses/:id/items`           | `{ items: [{ id, label, grade, maxGrade, dueAt, kind }] }` (ITN-57)         |
 | `GET /api/notifications`               | Hasta 100 notificaciones con forma `Notif`, de la más reciente a la más antigua |
 | `POST /api/notifications/:id/read`     | 204. 400 `id_invalido` si no es uuid; 404 si no existe o es de otro alumno  |
 | `POST /api/notifications/read-all`     | 204                                                                         |
@@ -550,6 +562,67 @@ sesión y antes de leer el body.
   columna de tipo.
 - **No hay endpoint para marcar como no leída.** "Marcar como no leída" y "Deshacer" son locales en el frontend
   por diseño del ticket: el cambio no se guarda en el backend y, al recargar, la notificación vuelve a mostrarse como leída.
+
+### Materias, calificaciones y tareas del alumno (ITN-57)
+
+Permiten mostrar la situación actual del alumno aunque todavía no existan cambios notificados (la primera corrida de
+cada fuente solo guarda la línea base). Siempre filtran por `req.student.userId` y llevan `Cache-Control: no-store`.
+
+#### `GET /api/courses`
+
+Devuelve las materias actuales del alumno combinando las tres fuentes:
+
+```json
+{
+  "courses": [
+    {
+      "id": "uuid",
+      "name": "Ingeniería de Software",
+      "source": "ivirtual",
+      "period": null,
+      "finalGrade": "95.5",
+      "updatedAt": "2026-11-16T18:00:00.000Z"
+    }
+  ]
+}
+```
+
+- **`ivirtual`:** sale del último snapshot de `grade_snapshots` con `source = 'ivirtual'`. `finalGrade` es la nota del
+  ítem de total del curso (`raw_payload.type === 'course'` o `grade_label` null), o `null` si aún no tiene calificación
+  (`"-"` en Moodle). `period` es `null` y `updatedAt` es `captured_at`.
+- **`itson_api`:** sale del último snapshot por semestre (`period`, `"01"`..`"08"`) con `source = 'itson_api'`.
+  `finalGrade` es el código guardado en `grade_text` (`"9"`, `"10"`, `"A"`, o `null` si no hay calificación).
+- **`classroom`:** sale de `classroom_courses` (migración 006). `period` es `section` (o `null`), `finalGrade` es
+  `null` y `updatedAt` es `last_seen_at`.
+
+#### `GET /api/courses/:id/items`
+
+Devuelve las actividades de iVirtual o tareas de Classroom de la materia `:id` del alumno:
+
+```json
+{
+  "items": [
+    {
+      "id": "uuid",
+      "label": "Asignación 1",
+      "grade": 95,
+      "maxGrade": 100,
+      "dueAt": "2026-11-20T06:59:00.000Z",
+      "kind": "ivirtual"
+    }
+  ]
+}
+```
+
+- Si `:id` no es un UUID válido, responde `400 {"error":"id_invalido"}` sin tocar la base.
+- Si el curso no existe o pertenece a otro alumno, responde `404 {"error":"no_encontrado"}`.
+- En materias de **`ivirtual`** (`kind: "ivirtual"`), lee `snapshot_grades` del último snapshot `ivirtual` del alumno
+  excluyendo los renglones de resumen (`course` y `category`). `grade` es numérico (o `null` si no está calificada),
+  `maxGrade` sale de `raw_payload.max` y `dueAt` de `snapshot_grades.due_at` (migración 013; `null` si no tiene fecha o
+  si falta la 013).
+- En cursos de **`classroom`** (`kind: "classroom"`), lee `classroom_coursework` del alumno: `label` es `title`,
+  `grade` es `null`, `maxGrade` es `max_points` y `dueAt` es `due_at`.
+- En materias de **`itson_api`**, responde `200 {"items":[]}` (solo reportan calificación final en `/api/courses`).
 
 ### Cierre de sesión y Web Push
 

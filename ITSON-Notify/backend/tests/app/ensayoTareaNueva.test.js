@@ -65,7 +65,7 @@ function setup({ sinMigracion = false } = {}) {
 
   const channels = [
     logChannel(logger),
-    emailChannel({ apiKey: "re_prueba_sintetica", from: "ITSON Notify <onboarding@resend.dev>", to: "destino.prueba@example.test", fetchImpl: fetchResend }),
+    emailChannel({ apiKey: "re_prueba_sintetica", from: "ITSON Notify <onboarding@resend.dev>", overrideTo: "destino.prueba@example.test", fetchImpl: fetchResend }),
     webPushChannel({ vapidPublicKey: "publica-simulada", vapidPrivateKey: "privada-simulada", pushRepo, webpushImpl }),
   ];
   const app = createApp({
