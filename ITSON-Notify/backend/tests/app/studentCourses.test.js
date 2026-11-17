@@ -70,6 +70,15 @@ async function guardarSnapshot(db, body) {
   return saveSnapshot(db.client, parsed.data);
 }
 
+function assertPrivateCourseErrorLogs(logs) {
+  // This route emits exactly one technical error record, never row data.
+  assert.equal(logs.length, 1);
+  const { ts, ...fields } = JSON.parse(logs[0]);
+  assert.equal(typeof ts, 'string');
+  assert.equal(new Date(ts).toISOString(), ts);
+  assert.deepEqual(fields, { level: 'error', event: 'error_no_controlado', error_code: 'XX000' });
+}
+
 describe("ITN-57 - autenticación y sesión revocada en /api/courses", () => {
   for (const ruta of ["/api/courses", `/api/courses/${uuid()}/items`]) {
     test(`GET ${ruta.replace(/[0-9a-f-]{36}/, ":id")} sin sesión responde 401 y Cache-Control: no-store`, async () => {
@@ -407,6 +416,28 @@ describe("ITN-57 - GET /api/courses/:id/items", () => {
 });
 
 describe("ITN-57 - aislamiento entre alumnos y privacidad de logs", () => {
+  test('la validación estructural permite milisegundos con 88 y rechaza datos sensibles', () => {
+    // Actual shape observed when the old substring assertion failed on .488Z.
+    const safe = { ts: '2026-11-17T18:56:58.488Z', level: 'error', event: 'error_no_controlado', error_code: 'XX000' };
+    assertPrivateCourseErrorLogs([JSON.stringify(safe)]);
+    for (const leak of [
+      { email: ALUMNA.email },
+      { subject: 'QuímicaReservada' },
+      { label: 'LaboratorioReservado' },
+      { grade: 88 },
+      { grade: '88' },
+      { grade_text: '88.00' },
+      { body: { items: [{ value: 88 }] } },
+      { error_code: 88 },
+      { error_code: '88' },
+      { event: `error_no_controlado ${ALUMNA.email}` },
+      { ts: '88' },
+    ]) {
+      assert.throws(() => assertPrivateCourseErrorLogs([JSON.stringify({ ...safe, ...leak })]));
+    }
+    assert.throws(() => assertPrivateCourseErrorLogs([]));
+    assert.throws(() => assertPrivateCourseErrorLogs([JSON.stringify(safe), JSON.stringify({ grade: 88 })]));
+  });
   test("un alumno nunca ve cursos ni actividades de otro alumno (404 al pedir su curso)", async () => {
     const { app, db, logs } = setup();
 
@@ -495,9 +526,6 @@ describe("ITN-57 - aislamiento entre alumnos y privacidad de logs", () => {
     assert.equal(fallo.status, 500);
     assert.deepEqual(fallo.body, { error: "error_interno" });
 
-    const textoLogs = logs.join("\n");
-    for (const secreto of [ALUMNA.email, "QuímicaReservada", "LaboratorioReservado", "88"]) {
-      assert.equal(textoLogs.includes(secreto), false);
-    }
+    assertPrivateCourseErrorLogs(logs);
   });
 });
