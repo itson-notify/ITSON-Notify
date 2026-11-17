@@ -21,9 +21,16 @@ function main() {
 
   const logger = createLogger();
   const supabase = createSupabaseClient(config);
-  const pushRepo = createNotificationRepository(supabase);
-  // Email si existen RESEND_API_KEY y NOTIFY_EMAIL_TO; web_push si existen llaves VAPID y pushRepo.
-  const channels = buildChannels({ env: process.env, logger, pushRepo });
+  const notificationRepo = createNotificationRepository(supabase);
+  // Email si existe RESEND_API_KEY: cada aviso va al correo del alumno (app_users.email),
+  // salvo que NOTIFY_EMAIL_TO (solo pruebas) lo fuerce a una dirección fija.
+  // web_push si existen llaves VAPID.
+  const channels = buildChannels({
+    env: process.env,
+    logger,
+    pushRepo: notificationRepo,
+    emailRepo: notificationRepo,
+  });
   // ITN-52 - Vinculación real de iVirtual: cambia usuario y contraseña por un token.
   const exchangeToken = createExchangeToken();
   const app = createApp({ config, supabase, logger, channels, exchangeToken });

@@ -67,6 +67,14 @@ function notificationsRepo() {
   };
 }
 
+// app_users en memoria para el canal email: el alumno de prueba con un correo
+// inventado de dominio no reservado.
+const alumnosRepo = () => ({
+  async getUserEmail(userId) {
+    return userId === USUARIO_PRUEBA.id ? "alumno.prueba@correo-prueba.mx" : null;
+  },
+});
+
 // Guarda cada llamada como JSON { event, ...fields }.
 const silentLogger = () => {
   const lines = [];
@@ -134,7 +142,7 @@ describe("notifyGradeChange", () => {
     assert.deepEqual(segunda, [{ channel: "log", status: "duplicate", attempts: 1 }]);
   });
 
-  test("(3) sin RESEND_API_KEY solo funciona el canal log", async () => {
+  test("(3) sin RESEND_API_KEY solo funciona el canal log (aunque exista NOTIFY_EMAIL_TO)", async () => {
     const cambio = await simularCambio();
     const repo = notificationsRepo();
     const logger = silentLogger();
@@ -155,16 +163,17 @@ describe("notifyGradeChange", () => {
     assert.ok(logger.lines.some((l) => l.includes("canal_email_omitido")));
   });
 
-  test("con RESEND_API_KEY también envía por email a Resend", async () => {
+  test("con RESEND_API_KEY también envía por email a Resend, al correo del alumno", async () => {
     const cambio = await simularCambio();
     const repo = notificationsRepo();
     const peticiones = [];
     const fetchImpl = async (url, init) => (peticiones.push({ url, init }), { ok: true });
 
     const channels = buildChannels({
-      env: { RESEND_API_KEY: "re_prueba_falsa", NOTIFY_EMAIL_TO: "destino@test.local" },
+      env: { RESEND_API_KEY: "re_prueba_falsa" },
       logger: silentLogger(),
       fetchImpl,
+      emailRepo: alumnosRepo(),
     });
     const results = await notifyGradeChange(cambio, { repo, channels, context });
 
@@ -172,7 +181,7 @@ describe("notifyGradeChange", () => {
     assert.equal(peticiones.length, 1);
     assert.equal(peticiones[0].url, RESEND_URL);
     const body = JSON.parse(peticiones[0].init.body);
-    assert.deepEqual(body.to, ["destino@test.local"]);
+    assert.deepEqual(body.to, ["alumno.prueba@correo-prueba.mx"]);
     assert.equal(body.subject, "ITSON Notify: cambio de calificación");
   });
 
@@ -182,8 +191,8 @@ describe("notifyGradeChange", () => {
     let falla = true;
     const fetchImpl = async () =>
       falla ? { ok: false, status: 500, json: async () => ({ message: "error interno" }) } : { ok: true };
-    const env = { RESEND_API_KEY: "re_prueba_falsa", NOTIFY_EMAIL_TO: "destino@test.local" };
-    const channels = buildChannels({ env, logger: silentLogger(), fetchImpl });
+    const env = { RESEND_API_KEY: "re_prueba_falsa" };
+    const channels = buildChannels({ env, logger: silentLogger(), fetchImpl, emailRepo: alumnosRepo() });
 
     const primera = await notifyGradeChange(cambio, { repo, channels, context });
     assert.deepEqual(primera.map((r) => `${r.channel}:${r.status}`), ["log:sent", "email:failed"]);
