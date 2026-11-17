@@ -14,6 +14,7 @@ const BASE = "https://webapi.itson.edu.mx";
 const ENV = {
   BACKEND_URL: "http://backend.test",
   INTERNAL_API_KEY: "llave-de-prueba-".padEnd(40, "x"),
+  ITSON_PROFILES_API_KEY: "llave-perfiles-prueba-".padEnd(40, "p"),
   ITSON_API_BASE_URL: BASE,
 };
 const HOY = "2026-11-13";
@@ -42,6 +43,7 @@ function simular(t, { alumnos = [{ n: 1 }], env = ENV, perfiles, envio = { ok: t
   const lineas = [];
   const errores = [];
   const llamadas = [];
+  let configPerfiles = null;
   const porMatricula = new Map(alumnos.map((a) => [matricula(a.n), a]));
   const api = {
     async getAlumnoInscrito({ matricula: m }) {
@@ -66,10 +68,13 @@ function simular(t, { alumnos = [{ n: 1 }], env = ENV, perfiles, envio = { ok: t
     ejecutarItsonApi({
       env,
       crearClienteApi: () => api,
-      crearClientePerfiles: () => ({
-        listarActivos: async () =>
-          perfiles ?? { ok: true, alumnos: alumnos.map((a) => perfil(a.n, a.career)), descartados: 0 },
-      }),
+      crearClientePerfiles: ({ config }) => {
+        configPerfiles = config;
+        return {
+          listarActivos: async () =>
+            perfiles ?? { ok: true, alumnos: alumnos.map((a) => perfil(a.n, a.career)), descartados: 0 },
+        };
+      },
       entregar,
       alertar,
       pausa,
@@ -77,26 +82,30 @@ function simular(t, { alumnos = [{ n: 1 }], env = ENV, perfiles, envio = { ok: t
       log: (l) => lineas.push(l),
       logError: (l) => errores.push(l),
     });
-  return { correr, lineas, errores, llamadas, alertar, entregar, pausa };
+  return { correr, lineas, errores, llamadas, alertar, entregar, pausa, getConfigPerfiles: () => configPerfiles };
 }
 
 const sinDatosPersonales = (texto, ns = [1, 2, 3]) => {
   for (const n of ns) {
     for (const d of [matricula(n), String(100000 + n), correo(n)]) assert.ok(!texto.includes(d), "apareció un dato del alumno");
   }
-  assert.ok(!texto.includes(BASE) && !texto.includes("webapi.itson"), "apareció la URL de la API");
+  for (const secreto of [ENV.INTERNAL_API_KEY, ENV.ITSON_PROFILES_API_KEY, BASE, "webapi.itson"]) {
+    assert.ok(!texto.includes(secreto), `apareció un valor secreto: ${secreto}`);
+  }
 };
 
 describe("flujo por alumno", () => {
-  test("consulta 07 y 08 (no 0 ni 06 completo) y envía snapshots itson_api normalizados", async (t) => {
+  test("consulta 07 y 08 (no 0 ni 06 completo), lee perfiles con ITSON_PROFILES_API_KEY y entrega snapshots con INTERNAL_API_KEY", async (t) => {
     const s = simular(t);
     assert.equal(await s.correr(), 0);
 
+    assert.equal(s.getConfigPerfiles().apiKey, ENV.ITSON_PROFILES_API_KEY);
     assert.deepEqual(s.llamadas.map((l) => l.slice(0, 1).concat(l.slice(2))), [
       ["inscrito"], ["progress"], ["grades", "07"], ["grades", "08"],
     ]);
     assert.equal(s.entregar.mock.callCount(), 2);
     const [resultado, opciones] = s.entregar.mock.calls[0].arguments;
+    assert.equal(opciones.config.apiKey, ENV.INTERNAL_API_KEY);
     assert.equal(opciones.source, "itson_api");
     assert.equal(opciones.period, "07");
     assert.equal(opciones.email, correo(1));
@@ -246,6 +255,26 @@ describe("configuración y backend", () => {
     assert.equal(s.llamadas.length, 0);
   });
 
+  test("ITSON_PROFILES_API_KEY ausente, corta o igual a INTERNAL_API_KEY: 1, alerta de configuración y no consulta ni imprime el valor", async (t) => {
+    for (const [valor, esperado] of [
+      ["", /Falta ITSON_PROFILES_API_KEY/],
+      ["   ", /Falta ITSON_PROFILES_API_KEY/],
+      ["llave-corta-secreta", /ITSON_PROFILES_API_KEY debe tener al menos 32/],
+      [ENV.INTERNAL_API_KEY, /ITSON_PROFILES_API_KEY debe ser distinta de INTERNAL_API_KEY/],
+    ]) {
+      const s = simular(t, { env: { ...ENV, ITSON_PROFILES_API_KEY: valor } });
+      assert.equal(await s.correr(), 1);
+      assert.equal(s.llamadas.length, 0);
+      assert.equal(s.getConfigPerfiles(), null);
+      assert.equal(s.alertar.mock.callCount(), 1);
+      assert.equal(s.alertar.mock.calls[0].arguments[0].tipo, "configuracion");
+      assert.match(s.errores[0], esperado);
+      const texto = [...s.lineas, ...s.errores].join("\n") + JSON.stringify(s.alertar.mock.calls[0].arguments[0]);
+      assert.ok(!texto.includes("llave-corta-secreta"));
+      sinDatosPersonales(texto);
+    }
+  });
+
   test("URL inválida: 1 y alerta de configuración, sin citar la URL", async (t) => {
     const s = simular(t, { env: { ...ENV, ITSON_API_BASE_URL: "http://webapi.itson.edu.mx" } });
     assert.equal(await s.correr(), 1);
@@ -337,7 +366,7 @@ describe("dos fases independientes en arrancar", () => {
     assert.equal(api.mock.callCount(), 1);
   });
 
-  test("las dos en 0: 0; cualquiera en 1: 1", async () => {
+  test("las dos en 0: 0; cualquiera en 1: 1", async (t) => {
     const base = { alertar: async () => {}, logError: () => {} };
     assert.equal(await arrancar({ ...base, correr: async () => 0, correrApi: async () => 0 }), 0);
     assert.equal(await arrancar({ ...base, correr: async () => 1, correrApi: async () => 0 }), 1);
@@ -403,10 +432,11 @@ describe("piezas reales con fetch simulado", () => {
     assert.ok(r.errores.some((l) => /getAlumnoInscrito fallida \(alumno 1\/1\): motivo=forma_invalida/.test(l)));
   });
 
-  test("de punta a punta: ninguna línea ni alerta contiene matrícula, carrera, correo ni URL", async () => {
+  test("de punta a punta: ninguna línea ni alerta contiene matrícula, carrera, correo, llaves ni URL", async () => {
     const salidas = [];
     const alertas = [];
     const cuerpos = [];
+    const headersBackend = [];
     const respuestaApi = (url) => {
       const u = new URL(url);
       // Las respuestas repiten la matrícula para probar que no se filtra.
@@ -419,6 +449,7 @@ describe("piezas reales con fetch simulado", () => {
       return { ok: true, status: 200, json: async () => respuestaApi(url), text: async () => "" };
     };
     const fetchBackend = async (url, init) => {
+      headersBackend.push({ url, apiKey: init.headers["x-api-key"] });
       if (String(url).endsWith("/internal/itson-profiles/active")) {
         return { ok: true, status: 200, json: async () => ({ students: [perfil(1)] }) };
       }
@@ -442,6 +473,9 @@ describe("piezas reales con fetch simulado", () => {
     });
 
     assert.equal(codigo, 1); // getProgress falló por red
+    assert.deepEqual(headersBackend, [
+      { url: "http://backend.test/internal/itson-profiles/active", apiKey: ENV.ITSON_PROFILES_API_KEY },
+    ]);
     assert.equal(cuerpos.length, 0);
     const texto = salidas.join("\n") + JSON.stringify(alertas);
     sinDatosPersonales(texto, [1]);

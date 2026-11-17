@@ -11,6 +11,7 @@ const {
 } = require("../../src/config/env");
 
 const LLAVE = ["llave", "interna", "z".repeat(32)].join("-");
+const LLAVE_PERFILES = ["llave", "perfiles", "p".repeat(32)].join("-");
 const SERVICE_ROLE = ["rol", "de", "servicio", "w".repeat(20)].join("-");
 const LLAVE_CREDENCIALES = crypto.randomBytes(32).toString("base64");
 const SYNTHETIC_CLIENT_ID = ["client", "id", "sintetico", "12345.apps.googleusercontent.test"].join("-");
@@ -38,6 +39,7 @@ describe("loadConfig", () => {
     const config = loadConfig(valido());
     assert.equal(config.port, 3000);
     assert.equal(config.internalApiKey, LLAVE);
+    assert.equal(config.itsonProfilesApiKey, null);
     assert.ok(config.googleOAuth);
     assert.equal(config.googleOAuth.enabled, false);
     assert.equal(config.googleOAuth.clientId, null);
@@ -70,6 +72,33 @@ describe("loadConfig", () => {
         return true;
       },
     );
+  });
+
+  describe("ITSON_PROFILES_API_KEY", () => {
+    test("acepta una llave válida distinta de INTERNAL_API_KEY y no la expone al enumerar ni serializar", () => {
+      const config = loadConfig({ ...valido(), ITSON_PROFILES_API_KEY: `  ${LLAVE_PERFILES}  ` });
+      assert.equal(config.itsonProfilesApiKey, LLAVE_PERFILES);
+      assert.ok(!Object.keys(config).includes("itsonProfilesApiKey"));
+      assert.equal({ ...config }.itsonProfilesApiKey, undefined);
+      for (const texto of [JSON.stringify(config), util.inspect(config, { depth: null })]) {
+        assert.ok(!texto.includes(LLAVE_PERFILES));
+        assert.ok(!texto.includes("itsonProfilesApiKey"));
+      }
+    });
+
+    test("rechaza una llave menor de 32 caracteres o igual a INTERNAL_API_KEY sin repetir el valor", () => {
+      for (const mala of ["llave-perfiles-corta", LLAVE]) {
+        assert.throws(
+          () => loadConfig({ ...valido(), ITSON_PROFILES_API_KEY: mala }),
+          (error) => {
+            assert.match(error.message, /ITSON_PROFILES_API_KEY/);
+            assert.ok(!error.message.includes(mala));
+            assert.ok(!error.message.includes(LLAVE));
+            return true;
+          },
+        );
+      }
+    });
   });
 
   describe("CREDENTIALS_ENCRYPTION_KEY (ITN-36)", () => {

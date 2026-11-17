@@ -6,6 +6,7 @@ const crypto = require("crypto");
 // Armadas en tiempo de ejecución para que no parezcan secretos en el repo.
 const API_KEY = ["llave", "de", "prueba", "x".repeat(32)].join("-");
 const OTRA_API_KEY = ["llave", "de", "prueba", "y".repeat(32)].join("-");
+const PROFILES_API_KEY = ["llave", "perfiles", "itson", "p".repeat(32)].join("-");
 const CREDENTIALS_KEY = crypto.randomBytes(32);
 
 const EMAIL = "alumna.prueba@example.test";
@@ -69,9 +70,32 @@ function payloadItsonApi({ runId = crypto.randomUUID(), capturedAt, email = EMAI
 }
 
 // Textos que nunca deben aparecer en logs.
-const SENSIBLES = [EMAIL, OTRO_EMAIL, MATERIA_A, MATERIA_B, "Tarea 1", "Proyecto final", "85.5", "78.25", "95.00", API_KEY, OTRA_API_KEY];
+const SENSIBLES = [
+  EMAIL,
+  OTRO_EMAIL,
+  MATERIA_A,
+  MATERIA_B,
+  "Tarea 1",
+  "Proyecto final",
+  "85.5",
+  "78.25",
+  "95.00",
+  API_KEY,
+  OTRA_API_KEY,
+  PROFILES_API_KEY,
+];
 
 module.exports = {
-  API_KEY, OTRA_API_KEY, CREDENTIALS_KEY, EMAIL, OTRO_EMAIL, MATERIA_A, MATERIA_API_A, MATERIA_API_B,
-  payload, payloadItsonApi, SENSIBLES,
+  API_KEY,
+  OTRA_API_KEY,
+  PROFILES_API_KEY,
+  CREDENTIALS_KEY,
+  EMAIL,
+  OTRO_EMAIL,
+  MATERIA_A,
+  MATERIA_API_A,
+  MATERIA_API_B,
+  payload,
+  payloadItsonApi,
+  SENSIBLES,
 };

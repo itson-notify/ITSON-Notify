@@ -103,6 +103,7 @@ Opcionales (notificaciones, ITN-28). Sin ellas el servidor arranca igual y solo 
 | `NOTIFY_EMAIL_FROM` | Remitente. Vacío usa `ITSON Notify <onboarding@resend.dev>`                |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Llaves de Web Push (las dos o ninguna). Sin ellas, el canal `web_push` se omite |
 | `VAPID_SUBJECT`     | Contacto VAPID (`mailto:`). Vacío usa `mailto:notificaciones@itson.edu.mx`  |
+| `ITSON_PROFILES_API_KEY` | Credencial exclusiva para `GET /internal/itson-profiles/active` (`x-api-key`), mínimo 32 caracteres y distinta de `INTERNAL_API_KEY`. Sin ella, esa ruta responde `401` |
 
 **Correo: va al alumno.** El canal `email` se arma solo con `RESEND_API_KEY` y manda cada aviso al correo del
 alumno dueño (`app_users.email`, el de su cuenta de Google), un destinatario por correo. El backend lo lee por
@@ -403,11 +404,15 @@ Sin body. Devuelve a quién debe consultar el worker en la API REST de ITSON:
 { "students": [{ "email": "alumno@example.test", "matricula": "00000123456", "career": "INSOF" }] }
 ```
 
+- **Credencial propia (`ITSON_PROFILES_API_KEY`):** exige `x-api-key: ITSON_PROFILES_API_KEY` (comparada en tiempo
+  constante con `crypto.timingSafeEqual` sobre SHA-256), **distinta** de `INTERNAL_API_KEY`. La llave general
+  (`INTERNAL_API_KEY`) responde `401`, y `ITSON_PROFILES_API_KEY` responde `401` en el resto de `/internal/*`. Si
+  `ITSON_PROFILES_API_KEY` no está configurada, responde `401` cerrado.
 - Solo lectura, siguiendo la decisión de mínimo privilegio de ITN-51: no hay `PUT`, `POST` ni `DELETE` (responden
   404). El alumno guarda y borra en `/api/itson-profile`.
 - Ordenada por correo. Un perfil que no se puede descifrar se omite y se registra `perfil_itson_no_descifrable` con
   `count`; si no se descifra ninguno (llave equivocada), responde 500 en lugar de una lista vacía.
-- El log `perfiles_itson_listados` lleva `count` y `failed`, nunca correos, matrículas ni carreras.
+- El log `perfiles_itson_listados` lleva `count` y `failed`, nunca correos, matrículas, carreras ni llaves.
 - Mismos `401` y `500` que las demás rutas internas, y `Cache-Control: no-store`.
 
 #### `GET /internal/credentials/active?portal=ivirtual` (ITN-52)
@@ -488,10 +493,13 @@ usaba. Desde ITN-52 el worker llama a `GET /internal/credentials/active`, `POST 
 
 - listar los correos de las cuentas activas con `GET /internal/credentials/active` (ITN-52),
 - leer el token descifrado de cualquier estudiante con `POST /internal/credentials/get`, y
-- marcar cualquier cuenta como `needs_relink`, lo que detiene sus avisos hasta que vuelva a vincular, y
-- leer la matrícula y la carrera de todos los alumnos con `GET /internal/itson-profiles/active` (ITN-55). Con la
-  matrícula se pueden consultar en la API de ITSON sus calificaciones, que no pide autenticación. Si se sospecha una
-  fuga de la llave, además de rotarla hay que avisar a los alumnos: la matrícula no se puede "revocar".
+- marcar cualquier cuenta como `needs_relink`, lo que detiene sus avisos hasta que vuelva a vincular.
+
+`INTERNAL_API_KEY` **ya no puede leer matrículas**: `GET /internal/itson-profiles/active` exige su propia credencial
+separada (`ITSON_PROFILES_API_KEY`). Quien tenga `ITSON_PROFILES_API_KEY` solo puede leer esa ruta (no tokens de
+iVirtual ni entregar snapshots), pero con las matrículas se pueden consultar calificaciones en la API de ITSON, que
+no autentica. Si se sospecha una fuga de `ITSON_PROFILES_API_KEY`, rótale el valor en backend y `worker-rpa`
+(`openssl rand -base64 48`), revisa las líneas `perfiles_itson_listados` y avisa a los alumnos.
 
 Ya no puede plantar un token propio en la cuenta de otro ni borrar credenciales. Cifrar en la base protege contra una
 fuga de la base, no contra una fuga del worker o de esta llave.
@@ -837,7 +845,7 @@ no hay: se convierten a ISO 8601 y `0` queda `null`. Por ítem van `dueAt` (`due
   El token no se imprime. Para ver la salida completa con fechas: `npm run extract:grades`.
 
 **Fase de la API REST de ITSON (ITN-55).** Después de la de iVirtual, en su propio try/catch, el worker pide
-`GET /internal/itson-profiles/active` y, por alumno, consulta `getAlumnoInscrito`, `getProgress` y `getGrades` (hasta
+`GET /internal/itson-profiles/active` con `x-api-key: ITSON_PROFILES_API_KEY` (credencial separada de `INTERNAL_API_KEY`) y, por alumno, consulta `getAlumnoInscrito`, `getProgress` y `getGrades` (hasta
 3 semestres pendientes), solo dentro de la ventana de fechas del semestre (7 días antes del inicio a 45 después del
 fin, configurable). Por cada semestre con materias manda `POST /internal/grade-snapshots` con
 `source: "itson_api"`, `period` (la clave del semestre) y su propio `run_id`. Detalle en

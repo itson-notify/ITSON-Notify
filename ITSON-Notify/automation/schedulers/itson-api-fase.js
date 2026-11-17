@@ -1,7 +1,8 @@
 // ITN-55 - Fase de la API REST de ITSON del cron. Corre aparte de la fase de iVirtual
 // (extraccion-cron.js): su propio try/catch, sus conteos y a lo más una alerta.
 //
-// Por alumno de GET /internal/itson-profiles/active, en secuencia:
+// Por alumno de GET /internal/itson-profiles/active (con ITSON_PROFILES_API_KEY,
+// distinta de INTERNAL_API_KEY), en secuencia:
 //   1. getAlumnoInscrito: se consulta solo si hoy (hora de Hermosillo) cae en la
 //      ventana desde ITSON_API_VENTANA_ANTES_DIAS (7) días antes de fechaInicioSemestre
 //      hasta ITSON_API_VENTANA_DESPUES_DIAS (45) días después de fechaFinSemestre: las
@@ -23,8 +24,8 @@
 //
 // Privacidad: los logs llevan la posición del alumno (n/total), el semestre consultado,
 // conteos, status HTTP y motivos. Nunca correo, matrícula, carrera, materias,
-// calificaciones ni la URL de la API. Toda línea pasa por ocultarValores con la
-// matrícula, la carrera y la URL en curso.
+// calificaciones, las llaves ni la URL de la API. Toda línea pasa por ocultarValores
+// con las llaves, la matrícula, la carrera y la URL en curso.
 const { leerConfigEntrega, entregarResultados } = require("./entrega-backend");
 const { crearClientePerfilesItson } = require("./perfiles-itson-backend");
 const { crearClienteItsonApi, leerBaseUrl } = require("../services/itsonApiClient");
@@ -39,11 +40,35 @@ const SIN_CALIFICACION = "-";
 // sin confirmarse: el worker no la interpreta (ver backend/src/services/itsonGradeCodes.js).
 const MAX_SEMESTRES = 3;
 const PAUSA_ENTRE_ALUMNOS_MS = 2_000;
+const MIN_LONGITUD_API_KEY = 32;
 const ZONA = "America/Hermosillo";
 const RE_SEMESTRE = /^\d{2}$/;
 const VENTANA_ANTES_DIAS = 7;
 const VENTANA_DESPUES_DIAS = 45;
 const MAX_VENTANA_DIAS = 365;
+
+// Credencial exclusiva para GET /internal/itson-profiles/active (distinta de
+// INTERNAL_API_KEY). El error nombra la variable, nunca su valor.
+function leerLlavePerfiles(env = process.env) {
+  const apiKey = env.ITSON_PROFILES_API_KEY?.trim();
+  if (!apiKey) {
+    return { ok: false, error: "Falta ITSON_PROFILES_API_KEY en las variables del servicio." };
+  }
+  if (apiKey.length < MIN_LONGITUD_API_KEY) {
+    return {
+      ok: false,
+      error: `ITSON_PROFILES_API_KEY debe tener al menos ${MIN_LONGITUD_API_KEY} caracteres.`,
+    };
+  }
+  const interna = env.INTERNAL_API_KEY?.trim();
+  if (interna && apiKey === interna) {
+    return {
+      ok: false,
+      error: "ITSON_PROFILES_API_KEY debe ser distinta de INTERNAL_API_KEY.",
+    };
+  }
+  return { ok: true, apiKey };
+}
 
 // Días de la ventana desde el env. { ok: true, antes, despues } o { ok: false, error }
 // (el error nombra la variable, nunca el valor).
@@ -129,8 +154,8 @@ async function ejecutarItsonApi({
   log = console.log,
   logError = console.error,
 } = {}) {
-  // Valores del alumno en curso: toda línea de log pasa por ocultar con ellos.
-  let enCurso = [];
+  // Valores del alumno y llaves en curso: toda línea de log pasa por ocultar con ellos.
+  let enCurso = [env?.INTERNAL_API_KEY?.trim(), env?.ITSON_PROFILES_API_KEY?.trim()].filter(Boolean);
   const limpiar = (linea) => enCurso.reduce((t, v) => (v ? t.split(v).join("[oculto]") : t), ocultar(linea));
   const info = (linea) => log(limpiar(linea));
   const falla = (linea) => logError(limpiar(linea));
@@ -147,15 +172,21 @@ async function ejecutarItsonApi({
 
   const base = leerBaseUrl(env);
   const entrega = leerConfigEntrega(env);
+  const llavePerfiles = leerLlavePerfiles(env);
   const ventana = leerVentana(env);
-  if (!base.ok || !entrega.ok || !ventana.ok) {
-    falla(`Fase de la API de ITSON cancelada: ${[base.error, entrega.error, ventana.error].filter(Boolean).join(" ")}`);
+  if (!base.ok || !entrega.ok || !llavePerfiles.ok || !ventana.ok) {
+    falla(
+      `Fase de la API de ITSON cancelada: ${[base.error, entrega.error, llavePerfiles.error, ventana.error].filter(Boolean).join(" ")}`,
+    );
     await avisar({ tipo: "configuracion" });
     return EXIT_CODES.error;
   }
-  enCurso = [base.baseUrl];
+  const secretosBase = [base.baseUrl, llavePerfiles.apiKey, entrega.config.apiKey];
+  enCurso = secretosBase;
 
-  const perfiles = await crearClientePerfiles({ config: entrega.config }).listarActivos();
+  const perfiles = await crearClientePerfiles({
+    config: { backendUrl: entrega.config.backendUrl, apiKey: llavePerfiles.apiKey },
+  }).listarActivos();
   if (!perfiles.ok) {
     falla(`No se pudo leer la lista de perfiles ITSON: status=${perfiles.status}`);
     await avisar({ tipo: "backend" });
@@ -249,7 +280,7 @@ async function ejecutarItsonApi({
     const perfil = perfiles.alumnos[i];
     const alumno = `alumno ${i + 1}/${total}`;
     if (i > 0) await pausa(pausaMs);
-    enCurso = [base.baseUrl, perfil.matricula, perfil.matricula.replace(/^0+/, ""), perfil.career, perfil.email];
+    enCurso = [...secretosBase, perfil.matricula, perfil.matricula.replace(/^0+/, ""), perfil.career, perfil.email];
     try {
       await procesarAlumno(perfil, alumno);
     } catch (error) {
@@ -257,7 +288,7 @@ async function ejecutarItsonApi({
       c.excepciones += 1;
       falla(`Excepción con ${alumno}: ${/^[A-Z][A-Za-z]{0,39}$/.test(error?.name ?? "") ? error.name : "Error"}`);
     } finally {
-      enCurso = [base.baseUrl];
+      enCurso = secretosBase;
     }
   }
 
@@ -293,6 +324,7 @@ module.exports = {
   ejecutarItsonApi,
   semestresPendientes,
   normalizarMaterias,
+  leerLlavePerfiles,
   leerVentana,
   enVentana,
   sumarDias,
