@@ -6,6 +6,11 @@ const crypto = require("crypto");
 
 const sha256 = (value) => crypto.createHash("sha256").update(value, "utf8").digest();
 
+function sameApiKey(a, b) {
+  if (typeof a !== "string" || a === "" || typeof b !== "string" || b === "") return false;
+  return crypto.timingSafeEqual(sha256(a), sha256(b));
+}
+
 function requireApiKey(expectedKey) {
   if (typeof expectedKey !== "string" || expectedKey === "") {
     throw new Error("requireApiKey necesita la llave esperada");
@@ -22,4 +27,4 @@ function requireApiKey(expectedKey) {
   };
 }
 
-module.exports = { requireApiKey };
+module.exports = { requireApiKey, sameApiKey };

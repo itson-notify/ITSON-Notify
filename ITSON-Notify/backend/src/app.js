@@ -64,6 +64,21 @@ function createApp({
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
   const credentialCrypto = credentialCryptoFromConfig(config);
 
+  // ITN-55 - Perfiles ITSON para la fase de la API REST del worker. Solo lectura y
+  // con credencial propia (ITSON_PROFILES_API_KEY, distinta de INTERNAL_API_KEY),
+  // por eso se monta antes del middleware general de /internal.
+  app.use(
+    "/internal/itson-profiles",
+    itsonProfilesInternalRouter({
+      supabase,
+      logger,
+      now,
+      credentialCrypto,
+      apiKey: config.itsonProfilesApiKey,
+      internalApiKey: config.internalApiKey,
+    }),
+  );
+
   // Sin autenticación y sin revelar configuración ni estado de dependencias.
   app.get("/health", (req, res) => {
     res.json({ status: "ok" });
@@ -76,8 +91,6 @@ function createApp({
     "/internal/credentials",
     credentialsRouter({ supabase, logger, now, credentialCrypto }),
   );
-  // ITN-55 - Perfiles ITSON para la fase de la API REST del worker. Solo lectura.
-  app.use("/internal/itson-profiles", itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto }));
 
   // Autenticación y autorización con Google Classroom (ITN-41)
   app.use(

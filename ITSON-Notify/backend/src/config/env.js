@@ -1,6 +1,7 @@
 // ITN-27 / ITN-40 / ITN-36 - Configuración del backend leída de variables de entorno.
 // Si falta alguna o es inválida, el arranque falla con un mensaje que nombra
 // la variable, nunca su valor.
+const { sameApiKey } = require("../middleware/apiKey");
 
 const REQUERIDAS = [
   "PORT",
@@ -188,8 +189,21 @@ function loadConfig(env = process.env) {
     invalidas.push("PORT (entero entre 1 y 65535)");
   }
 
-  if (valor("INTERNAL_API_KEY").length < MIN_API_KEY_LENGTH) {
+  const internalApiKey = valor("INTERNAL_API_KEY");
+  if (internalApiKey.length < MIN_API_KEY_LENGTH) {
     invalidas.push(`INTERNAL_API_KEY (mínimo ${MIN_API_KEY_LENGTH} caracteres)`);
+  }
+
+  // Credencial separada exclusiva para GET /internal/itson-profiles/active.
+  // Opcional en el arranque (si no se define, la ruta responde 401); si se define,
+  // debe medir al menos 32 caracteres y ser distinta de INTERNAL_API_KEY.
+  const itsonProfilesApiKey = valor("ITSON_PROFILES_API_KEY") || null;
+  if (itsonProfilesApiKey !== null) {
+    if (itsonProfilesApiKey.length < MIN_API_KEY_LENGTH) {
+      invalidas.push(`ITSON_PROFILES_API_KEY (mínimo ${MIN_API_KEY_LENGTH} caracteres)`);
+    } else if (sameApiKey(itsonProfilesApiKey, internalApiKey)) {
+      invalidas.push("ITSON_PROFILES_API_KEY (debe ser distinta de INTERNAL_API_KEY)");
+    }
   }
 
   let supabaseUrl;
@@ -237,7 +251,7 @@ function loadConfig(env = process.env) {
     frontendUrl,
     googleCookieSameSite,
     port,
-    internalApiKey: valor("INTERNAL_API_KEY"),
+    internalApiKey,
     supabaseUrl: valor("SUPABASE_URL"),
     supabaseServiceRoleKey: valor("SUPABASE_SERVICE_ROLE_KEY"),
     googleOAuth: oauthResult.config,
@@ -248,6 +262,12 @@ function loadConfig(env = process.env) {
   // No son enumerables para evitar exposición accidental en logs o serialización JSON.
   Object.defineProperty(config, "credentialsEncryptionKey", {
     value: credentialsKey,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  Object.defineProperty(config, "itsonProfilesApiKey", {
+    value: itsonProfilesApiKey,
     writable: false,
     enumerable: false,
     configurable: false,

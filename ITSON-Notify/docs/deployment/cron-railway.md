@@ -144,7 +144,7 @@ iVirtual, y el código de salida es 1 si cualquiera de las dos sale con 1.
 | 0 | Sin fallas, sin perfiles, sin `ITSON_API_BASE_URL` (fase deshabilitada) o `RPA_PAUSADO=true` |
 | 1 | Al menos una llamada o entrega fallida (alerta `api_itson_con_fallas` con conteos), `ITSON_API_BASE_URL` inválida o el backend no entrega la lista de perfiles |
 
-Por alumno de `GET /internal/itson-profiles/active`: `getAlumnoInscrito`, `getProgress` y `getGrades`. Con las
+Por alumno de `GET /internal/itson-profiles/active` (autenticado con `ITSON_PROFILES_API_KEY`, distinta de `INTERNAL_API_KEY`): `getAlumnoInscrito`, `getProgress` y `getGrades`. Con las
 fechas de `getAlumnoInscrito` (ISO sin zona, en hora de Hermosillo) se arma una **ventana**: se consulta desde
 `ITSON_API_VENTANA_ANTES_DIAS` días antes de `fechaInicioSemestre` hasta `ITSON_API_VENTANA_DESPUES_DIAS` días
 después de `fechaFinSemestre`, inclusive, porque las calificaciones finales suelen publicarse al cierre o después.
@@ -209,10 +209,12 @@ Requisitos: CLI de Railway 5.42.1 o más nuevo y Node 22 o más nuevo (lo pide e
    `Id_User`, `P_User` y `ALUMNO_EMAIL` ya no se usan: bórralas del servicio. **Nunca** pongas `SUPABASE_SERVICE_ROLE_KEY` ni `CREDENTIALS_ENCRYPTION_KEY` en este servicio.
    Para recibir alertas, captura también `TELEGRAM_BOT_TOKEN` (*sealed*) y `TELEGRAM_CHAT_ID`
    ([`telegram-alertas.md`](../telegram-alertas.md)); sin ellas los fallos solo quedan en los logs.
-   ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_API_BASE_URL=https://webapi.itson.edu.mx`
-   (solo ese origen: otro host, `http`, credenciales, puerto o ruta cancelan la fase; el worker agrega
-   `/api/getGrades` y demás). Sin ella la fase queda deshabilitada. Antes,
-   aplica la migración 012 en el backend. Opcionales: `ITSON_API_VENTANA_ANTES_DIAS` (por defecto 7) e
+   ITN-55: para habilitar la fase de la API de ITSON, captura `ITSON_PROFILES_API_KEY` (*sealed*, mínimo 32
+   caracteres y distinta de `INTERNAL_API_KEY`, el mismo valor en el backend y en `worker-rpa`) e
+   `ITSON_API_BASE_URL=https://webapi.itson.edu.mx` (solo ese origen: otro host, `http`, credenciales, puerto o
+   ruta cancelan la fase; el worker agrega `/api/getGrades` y demás). Sin `ITSON_API_BASE_URL` la fase queda
+   deshabilitada; con ella pero sin `ITSON_PROFILES_API_KEY` válida, la fase se cancela con alerta de
+   configuración. Antes, aplica la migración 012 en el backend y despliega `ITSON_PROFILES_API_KEY` en Railway. Opcionales: `ITSON_API_VENTANA_ANTES_DIAS` (por defecto 7) e
    `ITSON_API_VENTANA_DESPUES_DIAS` (por defecto 45), enteros de 0 a 365; un valor inválido cancela la fase con
    una alerta de configuración.
 6. Si Railway pide conectar el repo, autoriza la Railway GitHub App para `itson-notify/ITSON-Notify`.

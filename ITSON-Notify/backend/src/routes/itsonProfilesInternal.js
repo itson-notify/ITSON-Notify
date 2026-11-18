@@ -1,18 +1,36 @@
-// ITN-55 - GET /internal/itson-profiles/active, detrás de requireApiKey como el
-// resto de /internal. Dice al worker a quién consultar en la API REST de ITSON y
-// con qué matrícula y carrera.
+// ITN-55 - GET /internal/itson-profiles/active. Dice al worker a quién consultar
+// en la API REST de ITSON y con qué matrícula y carrera.
 //
-// Mínimo privilegio (decisión de ITN-51): el worker solo lee. Guardar y borrar los
-// hace el alumno en /api/itson-profile; aquí no hay PUT, POST ni DELETE. La matrícula
-// descifrada solo sale en la respuesta 200; el log lleva conteos, nunca correos,
-// matrículas ni carreras. Riesgo residual documentado en backend/README.md: quien
-// tenga INTERNAL_API_KEY puede leer todas las matrículas.
+// Mínimo privilegio (ITN-51): el worker solo lee. Guardar y borrar los hace el
+// alumno en /api/itson-profile; aquí no hay PUT, POST ni DELETE.
+//
+// Credencial separada: esta ruta exige su propia llave (ITSON_PROFILES_API_KEY,
+// distinta de INTERNAL_API_KEY), comparada en tiempo constante. La llave general
+// del resto de /internal no puede leer matrículas, y esta llave no abre ninguna
+// otra ruta interna. La matrícula descifrada solo sale en la respuesta 200; el
+// log lleva conteos, nunca correos, matrículas, carreras ni llaves.
 const express = require("express");
+const { requireApiKey, sameApiKey } = require("../middleware/apiKey");
+const { MIN_API_KEY_LENGTH } = require("../config/env");
 const { createItsonProfileRepository } = require("../repositories/itsonProfileRepository");
 const { createItsonProfileService } = require("../services/itsonProfileService");
 
-function itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto }) {
+function requireItsonProfilesKey(apiKey, internalApiKey) {
+  if (apiKey === undefined || apiKey === null || apiKey === "") {
+    return (req, res) => res.status(401).json({ error: "no_autorizado" });
+  }
+  if (typeof apiKey !== "string" || apiKey.length < MIN_API_KEY_LENGTH) {
+    throw new Error(`itsonProfilesInternalRouter requiere una llave de al menos ${MIN_API_KEY_LENGTH} caracteres`);
+  }
+  if (internalApiKey && sameApiKey(apiKey, internalApiKey)) {
+    throw new Error("itsonProfilesInternalRouter requiere una llave distinta de internalApiKey");
+  }
+  return requireApiKey(apiKey);
+}
+
+function itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto, apiKey, internalApiKey }) {
   const router = express.Router();
+  const checkKey = requireItsonProfilesKey(apiKey, internalApiKey);
   const service = createItsonProfileService({
     repo: createItsonProfileRepository(supabase),
     crypto: credentialCrypto,
@@ -23,6 +41,8 @@ function itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto }
     res.set("Cache-Control", "no-store");
     next();
   });
+
+  router.use(checkKey);
 
   router.get("/active", async (req, res) => {
     let lista;
@@ -41,6 +61,10 @@ function itsonProfilesInternalRouter({ supabase, logger, now, credentialCrypto }
     }
     logger.info("perfiles_itson_listados", { count: students.length, failed: undecryptable });
     return res.json({ students });
+  });
+
+  router.use((req, res) => {
+    res.status(404).json({ error: "no_encontrado" });
   });
 
   return router;

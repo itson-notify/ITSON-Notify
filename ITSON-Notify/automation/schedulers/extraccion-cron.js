@@ -51,7 +51,7 @@ const EXIT_CODES = { ok: 0, error: 1 };
 const PAUSA_ENTRE_CUENTAS_MS = 2_000;
 const MINIMO_PARA_BLOQUE = 3;
 
-const VARIABLES_SECRETAS = ["INTERNAL_API_KEY", "TELEGRAM_BOT_TOKEN"];
+const VARIABLES_SECRETAS = ["INTERNAL_API_KEY", "ITSON_PROFILES_API_KEY", "TELEGRAM_BOT_TOKEN"];
 
 // Última red para cualquier texto que vaya a los logs: quita los valores secretos
 // del env y, desde ITN-52, el token de la cuenta en curso (y cualquier otro valor
