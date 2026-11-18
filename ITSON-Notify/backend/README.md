@@ -860,3 +860,7 @@ ruta cancelan la fase con alerta de configuración, y las redirecciones 3xx nunc
 `ALUMNO_EMAIL` ya no se usan en el cron (siguen solo en `cli.js` y `login-demo.js`, que son herramientas locales).
 Nunca `SUPABASE_SERVICE_ROLE_KEY`, `CREDENTIALS_ENCRYPTION_KEY` ni la matrícula en el body. Detalles de despliegue,
 códigos de salida y alertas en [`docs/deployment/cron-railway.md`](../docs/deployment/cron-railway.md).
+# ITN-59
+
+Contrato interno Classroom, configuración y preparación de usuarios de prueba:
+[ITN-59.md](ITN-59.md).

@@ -1,8 +1,8 @@
-const { test, beforeEach } = require('node:test');
+﻿const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createClassroomClient, ClassroomError, READONLY_SCOPES } = require('..');
+const { createClassroomClient, ClassroomError, READONLY_SCOPES } = require('../../../src/services/classroomClient');
 
 const TOKEN = 'synthetic-access-token';
 test('listCourses: optional student filter survives every page', async () => {
@@ -52,7 +52,7 @@ for (const [method, key, file, args, endpoint] of [
       assert.equal(init.body, undefined);
     }
   });
-  test(`${method}: lista vacía y página vacía intermedia`, async () => {
+  test(`${method}: lista vacÃ­a y pÃ¡gina vacÃ­a intermedia`, async () => {
     const { client } = mock([json({ nextPageToken: 'empty-page' }), json({})]);
     assert.deepEqual(await client[method](TOKEN, ...args), []);
   });
@@ -92,7 +92,7 @@ for (const body of [null, [], 'bad', { error: {} }, { courses: null }, { courses
     await assert.rejects(client.listCourses(TOKEN), { code: 'MALFORMED_RESPONSE' });
   });
 }
-test('JSON inválido y tarea malformada', async () => {
+test('JSON invÃ¡lido y tarea malformada', async () => {
   const { client } = mock([new Response('<html>'), json({ courseWork: [{ id: 'x', title: 'x' }] })]);
   await assert.rejects(client.listCourses(TOKEN), { code: 'MALFORMED_RESPONSE' });
   await assert.rejects(client.listCourseWork(TOKEN, 'x'), { code: 'MALFORMED_RESPONSE' });
@@ -110,7 +110,7 @@ for (const name of ['TypeError', 'TimeoutError', 'AbortError']) {
     });
   });
 }
-test('detecta ciclos y limita páginas', async () => {
+test('detecta ciclos y limita pÃ¡ginas', async () => {
   for (const [options, responses, code] of [
     [{}, [json({ nextPageToken: 'a' }), json({ nextPageToken: 'b' }), json({ nextPageToken: 'a' })], 'PAGINATION_LOOP'],
     [{ maxPages: 1 }, [json({ nextPageToken: 'a' })], 'PAGE_LIMIT_EXCEEDED'],

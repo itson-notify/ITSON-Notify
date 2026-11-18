@@ -7,6 +7,19 @@ const { createFakeSupabase } = require("./fakeSupabase");
 
 const ON_CONFLICT = { onConflict: "course_id,external_coursework_id" };
 
+test('fake insert rejects duplicates and does not supply defaults for missing columns', async () => {
+  const db = createFakeSupabase();
+  const row = { id: 'synthetic-user', email: 'synthetic@example.test' };
+  assert.equal((await db.client.from('app_users').insert(row)).error, null);
+  assert.equal((await db.client.from('app_users').insert({ ...row, email: 'other@example.test' })).error.code, '23505');
+  assert.equal(db.tables.app_users[0].email, row.email);
+  db.withoutColumn('google_authorizations', 'status');
+  const grant = { user_id: row.id, google_id: 'synthetic-google', email: row.email, scope: 'synthetic', refresh_token: 'synthetic-ciphertext' };
+  assert.equal((await db.client.from('google_authorizations').insert(grant)).error, null);
+  assert.equal('status' in db.tables.google_authorizations[0], false);
+  assert.equal((await db.client.from('google_authorizations').insert(grant)).error.code, '23505');
+});
+
 const tarea = (extra) => ({
   user_id: "u-1",
   course_id: "c-1",
