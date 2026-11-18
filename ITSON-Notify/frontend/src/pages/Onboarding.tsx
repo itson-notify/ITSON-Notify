@@ -5,16 +5,17 @@ import { CategoryRows } from '@/components/CategoryRows'
 import { ItsonProfileForm } from '@/components/ItsonProfileForm'
 import type { ItsonProfile } from '@/services/api'
 import { WatchEditor } from '@/components/WatchEditor'
-import { ITSON_RECOVERY_URL, STUDENT } from '@/services/mockData'
+import { ITSON_RECOVERY_URL } from '@/services/mockData'
+import type { StudentView } from '@/utils/student'
 import { connectGoogle as startGoogleAuth } from '@/services/googleAuth'
 import { TYPE_CFG, TYPES } from '@/utils/notifTypes'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { SetSettings, Settings } from '@/types'
 
 export function Onboarding({
-  settings, setSettings, onFinish, onHelp, requireGoogle = false, itsonProfile = null, onItsonProfileSaved, onSessionExpired,
+  student, settings, setSettings, onFinish, onHelp, requireGoogle = false, itsonProfile = null, onItsonProfileSaved, onSessionExpired,
 }: {
-  settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void; requireGoogle?: boolean
+  student: StudentView; settings: Settings; setSettings: SetSettings; onFinish: () => void; onHelp: (q: string) => void; requireGoogle?: boolean
   // ITN-55 - Perfil de /api/itson-profile. Se guarda después de entrar con Google, porque
   // el PUT necesita la sesión.
   itsonProfile?: ItsonProfile | null; onItsonProfileSaved?: (p: ItsonProfile) => void; onSessionExpired?: () => void
@@ -81,7 +82,8 @@ export function Onboarding({
         <p className="mt-2 text-[15px] text-[#64748B]">Usa el mismo ID y contraseña con los que entras al portal de alumnos.</p>
 
         {itsonState === 'done' ? (
-          <div className="mt-6"><SuccessCard title={`Conectado como ${STUDENT.name}`} subtitle={`${STUDENT.career}, ID ${settings.itsonId}`} /></div>
+          <div className="mt-6"><SuccessCard title={student.name ? `Conectado como ${student.name}` : 'Cuenta ITSON conectada'}
+            subtitle={student.career ? `${student.career}, ID ${settings.itsonId}` : `ID ${settings.itsonId}`} /></div>
         ) : (
           <div className="mt-6 space-y-4">
             <TextField id="itson-id" label="ID de estudiante" value={settings.itsonId} onChange={v => patch({ itsonId: v.replace(/\D/g, '') })}
@@ -266,7 +268,7 @@ export function Onboarding({
     body = (
       <div className="pt-6 md:pt-2">
         <span className="w-14 h-14 rounded-full bg-[#22C55E] text-white flex items-center justify-center">{I.check(28)}</span>
-        <h1 className="mt-6 text-[26px] font-semibold text-[#111827] tracking-[-0.02em]">Todo listo, {STUDENT.name.split(' ')[0]}</h1>
+        <h1 className="mt-6 text-[26px] font-semibold text-[#111827] tracking-[-0.02em]">{student.name ? `Todo listo, ${student.name.split(' ')[0]}` : 'Todo listo'}</h1>
         <p className="mt-2 text-[15px] text-[#64748B]">Vamos a hacer la primera revisión de tus portales. Puede tardar unos minutos.</p>
         <ul className="mt-6 space-y-3">
           {summary.map(s => (

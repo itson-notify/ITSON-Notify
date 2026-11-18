@@ -1,20 +1,23 @@
 import type { ReactNode } from 'react'
 import { I, type IconFn } from '@/components/icons'
-import { STUDENT } from '@/services/mockData'
+import type { StudentView } from '@/utils/student'
 import { focusRing } from '@/utils/styles'
 import type { Page } from '@/types'
 
 /* Estilos base = teléfono. `md:` (≥768px) agrega sidebar; en móvil hay header y barra inferior. */
 
-const NAV: { key: Page; label: string; icon: IconFn }[] = [
-  { key: 'inicio', label: 'Inicio', icon: I.house },
-  { key: 'notificaciones', label: 'Notificaciones', icon: I.bell },
-  { key: 'configuracion', label: 'Configuración', icon: I.settings },
-  { key: 'perfil', label: 'Perfil', icon: I.user },
+// `short` es la etiqueta de la barra inferior: con cinco secciones, "Notificaciones" y
+// "Configuración" no caben en un teléfono de 320px. El nombre completo va en aria-label.
+const NAV: { key: Page; label: string; short: string; icon: IconFn }[] = [
+  { key: 'inicio', label: 'Inicio', short: 'Inicio', icon: I.house },
+  { key: 'materias', label: 'Materias', short: 'Materias', icon: I.bookOpen },
+  { key: 'notificaciones', label: 'Notificaciones', short: 'Avisos', icon: I.bell },
+  { key: 'configuracion', label: 'Configuración', short: 'Ajustes', icon: I.settings },
+  { key: 'perfil', label: 'Perfil', short: 'Perfil', icon: I.user },
 ]
 
-export function AppLayout({ page, unread, itsonError, onGo, onHelp, onLogout, children }: {
-  page: Page; unread: number; itsonError: boolean; onGo: (p: Page) => void; onHelp: () => void; onLogout: () => void; children: ReactNode
+export function AppLayout({ student, page, unread, itsonError, onGo, onHelp, onLogout, children }: {
+  student: StudentView; page: Page; unread: number; itsonError: boolean; onGo: (p: Page) => void; onHelp: () => void; onLogout: () => void; children: ReactNode
 }) {
   // [H4] Mismo color con el mismo significado en sidebar, barra inferior y encabezado:
   // azul = sin leer, naranja = requiere atención
@@ -46,10 +49,12 @@ export function AppLayout({ page, unread, itsonError, onGo, onHelp, onLogout, ch
         </nav>
         <div className="border-t border-[#E5E7EB] px-4 py-5">
           <div className="flex items-center gap-3 mb-3">
-            <span className="w-9 h-9 rounded-full bg-[#2563EB] text-white text-[13px] font-semibold flex items-center justify-center flex-shrink-0">{STUDENT.initials}</span>
+            <span className="w-9 h-9 rounded-full bg-[#2563EB] text-white text-[13px] font-semibold flex items-center justify-center flex-shrink-0" aria-hidden="true">
+              {student.initials || I.user(16)}
+            </span>
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-[#111827] truncate">{STUDENT.name}</p>
-              <p className="text-[11px] text-[#64748B] truncate">{STUDENT.career}</p>
+              <p className="text-[13px] font-semibold text-[#111827] truncate">{student.name ?? student.email ?? 'Tu cuenta'}</p>
+              {student.career && <p className="text-[11px] text-[#64748B] truncate">{student.career}</p>}
             </div>
           </div>
           <button onClick={onHelp} className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] text-[#64748B] hover:bg-[#F8FAFC] hover:text-[#111827] cursor-pointer ${focusRing}`}>
@@ -86,13 +91,13 @@ export function AppLayout({ page, unread, itsonError, onGo, onHelp, onLogout, ch
           const b = badge(item.key)
           const active = page === item.key
           return (
-            <button key={item.key} onClick={() => onGo(item.key)} aria-current={active ? 'page' : undefined}
-              className={`relative flex-1 flex flex-col items-center gap-1 pt-2.5 pb-2 min-h-[60px] cursor-pointer ${focusRing} ${active ? 'text-[#2563EB]' : 'text-[#64748B]'}`}>
+            <button key={item.key} onClick={() => onGo(item.key)} aria-current={active ? 'page' : undefined} aria-label={item.label}
+              className={`relative flex-1 min-w-0 flex flex-col items-center gap-1 pt-2.5 pb-2 min-h-[60px] cursor-pointer ${focusRing} ${active ? 'text-[#2563EB]' : 'text-[#64748B]'}`}>
               <span className="relative">
                 {item.icon(22)}
                 {b && <span aria-label={b.label} className={`absolute -top-1.5 -right-2.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold text-white flex items-center justify-center ring-2 ring-white ${b.tone}`}>{b.text}</span>}
               </span>
-              <span className="text-[11px] font-medium">{item.label}</span>
+              <span className="text-[11px] font-medium truncate max-w-full px-0.5" aria-hidden="true">{item.short}</span>
             </button>
           )
         })}

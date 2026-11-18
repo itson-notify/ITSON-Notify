@@ -9,15 +9,17 @@ import { HomePage } from '@/pages/HomePage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
-import { DEFAULT_SETTINGS, INITIAL_NOTIFS } from '@/services/mockData'
+import { CoursesPage } from '@/pages/CoursesPage'
+import { DEFAULT_SETTINGS, INITIAL_NOTIFS, STUDENT } from '@/services/mockData'
 import {
-  ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
-  markRead, unlinkIvirtual, type ItsonProfile, type IvirtualLink,
+  ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getCourseItems, getCourses, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
+  markRead, unlinkIvirtual, type Course, type ItsonProfile, type IvirtualLink,
 } from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
-import type { ConfirmReq, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
+import { studentView } from '@/utils/student'
+import type { ConfirmReq, CourseItemsEntry, CoursesState, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
 
 /* ════════════════════════════════════════════════════════════════════════════
    ITSON Notify — frontend mobile-first
@@ -30,6 +32,10 @@ import type { ConfirmReq, Filter, Notif, Notify, Page, Settings, SyncProps } fro
 
 // Sin mock, las notificaciones solo existen si llegan del backend.
 const EMPTY_NOTIFS = mockMode ? INITIAL_NOTIFS : []
+const EMPTY_COURSES: CoursesState = { status: 'idle', courses: [] }
+
+// ITN-58 - Sube al cerrar la sesión: una respuesta que llega después no se aplica.
+let sessionEpoch = 0
 
 export default function App() {
   const [onboarded, setOnboarded] = useState(false)
@@ -51,6 +57,13 @@ export default function App() {
   const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null)
   const [toast, setToast] = useState<{ id: number; text: string; undo?: () => void } | null>(null)
   const [promptDismissed, setPromptDismissed] = useState(false)
+  // ITN-58 - Materias y sus tareas (en memoria; las tareas se piden al abrir cada materia).
+  const [coursesState, setCoursesState] = useState<CoursesState>(EMPTY_COURSES)
+  const [courseItems, setCourseItems] = useState<Record<string, CourseItemsEntry>>({})
+  const [courseId, setCourseId] = useState<string | null>(null)
+  // ITN-58 - Correo de la sesión (/api/me o Google). Sin mock es lo único que se sabe
+  // del alumno además de la carrera: la API no da el nombre.
+  const [sessionEmail, setSessionEmail] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // Evita mostrar Onboarding un instante a quien ya tiene sesión. Al volver de Google
   // no se espera: Onboarding debe leer `from` de la URL antes de que se limpie.
@@ -68,6 +81,8 @@ export default function App() {
     setPage('inicio'); setFilter('todas'); setSelectedId(null); setPromptDismissed(false)
     setIvirtualLink(null); setLinkOpen(false)
     setItsonProfile(mockMode ? EMPTY_ITSON_PROFILE : null); setProfileOpen(false)
+    sessionEpoch++
+    setCoursesState(EMPTY_COURSES); setCourseItems({}); setCourseId(null); setSessionEmail(null)
   }
   // Un 401 significa que la sesión ya no sirve: se vuelve a Onboarding.
   const sessionExpired = () => {
@@ -88,6 +103,7 @@ export default function App() {
     Promise.all([getMe(), getNotifications()])
       .then(([me, list]) => {
         setNotifs(list)
+        setSessionEmail(me.email)
         setSettings(s => ({
           ...s, email: me.email, classroomEmail: me.email,
           classroomConnected: me.classroomConnected, itsonStatus: me.itsonStatus,
@@ -99,6 +115,58 @@ export default function App() {
     getIvirtualLink().then(setIvirtualLink).catch(() => setIvirtualLink(null))
     // ITN-55 - Igual: si falla, Ajustes dice que el estado no está disponible.
     getItsonProfile().then(setItsonProfile).catch(() => setItsonProfile(null))
+  }
+
+  // ITN-58 - Materias. Se piden al entrar a la pantalla (y al volver a entrar); si ya hay
+  // una petición en curso no se repite. Sin mock, getCourses solo usa la API.
+  const loadCourses = () => {
+    if (coursesState.status === 'loading') return
+    const epoch = sessionEpoch
+    setCoursesState(s => ({ ...s, status: 'loading' }))
+    getCourses()
+      .then(courses => {
+        if (epoch !== sessionEpoch) return
+        setCoursesState({ status: 'ready', courses })
+        // Las tareas guardadas solo sirven si la materia sigue igual que cuando se pidieron.
+        setCourseItems(cache => Object.fromEntries(Object.entries(cache).filter(([id, entry]) =>
+          entry.status !== 'error' && courses.some(c => c.id === id && c.updatedAt === entry.updatedAt))))
+        setCourseId(id => (id && courses.some(c => c.id === id) ? id : null))
+      })
+      .catch(error => {
+        if (epoch !== sessionEpoch) return
+        if (error instanceof ApiError && error.status === 401) sessionExpired()
+        else setCoursesState(s => ({ ...s, status: 'error' }))
+      })
+  }
+  const loadCourseItems = (course: Course) => {
+    const epoch = sessionEpoch
+    const { id, updatedAt } = course
+    setCourseItems(c => ({ ...c, [id]: { status: 'loading', items: [], updatedAt } }))
+    getCourseItems(id)
+      .then(items => {
+        if (epoch === sessionEpoch) setCourseItems(c => ({ ...c, [id]: { status: 'ready', items, updatedAt } }))
+      })
+      .catch(error => {
+        if (epoch !== sessionEpoch) return
+        if (error instanceof ApiError && error.status === 401) return sessionExpired()
+        const status = error instanceof ApiError && error.status === 404 ? 'missing' : 'error'
+        setCourseItems(c => ({ ...c, [id]: { status, items: [], updatedAt } }))
+      })
+  }
+  const openCourse = (id: string) => {
+    const course = coursesState.courses.find(c => c.id === id)
+    if (!course) return
+    setCourseId(id)
+    window.scrollTo(0, 0)
+    // itson_api siempre responde { items: [] }: solo tiene calificación final.
+    if (course.source === 'itson_api') return
+    const cached = courseItems[id]
+    if (cached && cached.updatedAt === course.updatedAt && (cached.status === 'ready' || cached.status === 'loading')) return
+    loadCourseItems(course)
+  }
+  const retryCourseItems = (id: string) => {
+    const course = coursesState.courses.find(c => c.id === id)
+    if (course && courseItems[id]?.status !== 'loading') loadCourseItems(course)
   }
 
   // ITN-55 - Quitar la matrícula con confirmación. Un 404 es "ya no estaba".
@@ -132,7 +200,9 @@ export default function App() {
   // [H3] Esc cierra el detalle abierto (si no hay un diálogo encima)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && selectedId !== null && !linkOpen && !confirmReq && helpQuery === null) setSelectedId(null)
+      if (e.key !== 'Escape' || linkOpen || confirmReq || helpQuery !== null) return
+      if (selectedId !== null) setSelectedId(null)
+      setCourseId(null)
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
@@ -150,6 +220,7 @@ export default function App() {
     googleSession()
       .then(session => {
         if (session.connected && session.email) {
+          if (!mockMode) setSessionEmail(session.email)
           setSettings(s => ({
             ...s, classroomConnected: true, classroomEmail: session.email!,
             categories: { ...s.categories, tareas: true },
@@ -181,7 +252,10 @@ export default function App() {
   const visible = notifs.filter(n => settings.categories[n.type] && (n.type !== 'tareas' || settings.classroomConnected))
   const unread = visible.filter(n => n.unread).length
 
-  const go = (p: Page) => { setPage(p); setSelectedId(null); window.scrollTo(0, 0) }
+  const go = (p: Page) => {
+    setPage(p); setSelectedId(null); setCourseId(null); window.scrollTo(0, 0)
+    if (p === 'materias') loadCourses()
+  }
   const openNotif = (id: string) => {
     const wasUnread = notifs.some(n => n.id === id && n.unread)
     setNotifs(ns => ns.map(n => (n.id === id ? { ...n, unread: false } : n)))
@@ -245,6 +319,9 @@ export default function App() {
     },
   })
 
+  // ITN-58 - Sin mock, solo datos de la sesión: nada de "Alumno Demo".
+  const student = studentView({ mock: mockMode, demo: STUDENT, email: sessionEmail, career: itsonProfile?.career ?? null })
+
   const syncProps: SyncProps = { syncing, firstRun, loading, onSync: sync, onFix: () => setLinkOpen(true), onHelp: setHelpQuery }
 
   const overlays = (
@@ -279,7 +356,7 @@ export default function App() {
   if (!onboarded) {
     return (
       <>
-        <Onboarding settings={settings} setSettings={setSettings} onFinish={finishOnboarding} onHelp={setHelpQuery} requireGoogle={!mockMode}
+        <Onboarding student={student} settings={settings} setSettings={setSettings} onFinish={finishOnboarding} onHelp={setHelpQuery} requireGoogle={!mockMode}
           itsonProfile={itsonProfile} onItsonProfileSaved={setItsonProfile} onSessionExpired={sessionExpired} />
         {overlays}
       </>
@@ -288,10 +365,15 @@ export default function App() {
 
   return (
     <>
-      <AppLayout page={page} unread={unread} itsonError={settings.itsonStatus === 'error'} onGo={go} onHelp={() => setHelpQuery('')} onLogout={logout}>
+      <AppLayout student={student} page={page} unread={unread} itsonError={settings.itsonStatus === 'error'} onGo={go} onHelp={() => setHelpQuery('')} onLogout={logout}>
         {page === 'inicio' && (
-          <HomePage notifs={visible} settings={settings} sync={syncProps} onOpen={openNotif} onFilter={setFilter} onGo={go}
+          <HomePage student={student} notifs={visible} settings={settings} sync={syncProps} onOpen={openNotif} onFilter={setFilter} onGo={go}
             showClassroomPrompt={!settings.classroomConnected && !promptDismissed} onDismissPrompt={() => setPromptDismissed(true)} />
+        )}
+        {page === 'materias' && (
+          <CoursesPage state={coursesState} itemsById={courseItems} selectedId={courseId} onOpen={openCourse} onClose={() => setCourseId(null)}
+            onRetry={loadCourses} onRetryItems={retryCourseItems} onGo={go}
+            ivirtualLink={mockMode ? null : ivirtualLink} classroomConnected={settings.classroomConnected} />
         )}
         {page === 'notificaciones' && (
           <NotificationsPage notifs={visible} settings={settings} filter={filter} setFilter={setFilter} selectedId={selectedId}
@@ -304,7 +386,7 @@ export default function App() {
             itsonProfile={itsonProfile} onEditItsonProfile={() => setProfileOpen(true)} onRemoveItsonProfile={removeItsonProfile}
             onDisconnected={mockMode ? undefined : endSession} />
         )}
-        {page === 'perfil' && <ProfilePage settings={settings} matriculaHint={itsonProfile?.matriculaHint ?? null} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
+        {page === 'perfil' && <ProfilePage student={student} settings={settings} matriculaHint={itsonProfile?.matriculaHint ?? null} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
       </AppLayout>
       {overlays}
     </>
