@@ -4,19 +4,20 @@ import { PageTitle } from '@/components/PageTitle'
 import { SyncStatus } from '@/components/SyncStatus'
 import { NotifList } from '@/components/notifications'
 import { SkeletonList } from '@/components/ui'
-import { STUDENT } from '@/services/mockData'
+import { greeting, type StudentView } from '@/utils/student'
 import { activeCategories, TYPE_CFG } from '@/utils/notifTypes'
 import { focusRing, linkCls } from '@/utils/styles'
 import type { Filter, Notif, Page, Settings, SyncProps } from '@/types'
 
-export function HomePage({ notifs, settings, sync, onOpen, onFilter, onGo, showClassroomPrompt, onDismissPrompt }: {
-  notifs: Notif[]; settings: Settings; sync: SyncProps
+export function HomePage({ student, notifs, settings, sync, onOpen, onFilter, onGo, showClassroomPrompt, onDismissPrompt }: {
+  student: StudentView; notifs: Notif[]; settings: Settings; sync: SyncProps
   onOpen: (id: string) => void; onFilter: (f: Filter) => void; onGo: (p: Page) => void; showClassroomPrompt: boolean; onDismissPrompt: () => void
 }) {
   const enabled = activeCategories(settings)
   return (
     <div className="py-5 md:px-8 md:py-8 lg:px-10 max-w-5xl">
-      <PageTitle title={`Hola, ${STUDENT.name.split(' ')[0]}`} subtitle="Esto es lo nuevo desde tu última visita." />
+      <PageTitle title={greeting(student)}
+        subtitle={student.name || !student.email ? 'Esto es lo nuevo desde tu última visita.' : `${student.email} · Esto es lo nuevo desde tu última visita.`} />
 
       <div className="mt-4 px-4 md:px-0">
         <SyncStatus status={settings.itsonStatus} {...sync} />

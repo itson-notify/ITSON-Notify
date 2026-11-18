@@ -1,3 +1,4 @@
+import type { Course, CourseItem } from '@/services/api'
 import type { Notif, Settings } from '@/types'
 
 /* Datos simulados mientras el frontend no está conectado al backend.
@@ -49,6 +50,42 @@ export const INITIAL_NOTIFS: Notif[] = [
     body: 'Tu solicitud de Beca ITSON pasó a revisión.',
     rows: [{ label: 'Trámite', value: 'Beca ITSON' }, { label: 'Periodo', value: PERIODO }, { label: 'Estado', value: 'En revisión' }] },
 ]
+
+// ITN-58 - Materias y tareas simuladas. Las fechas se calculan desde que carga la app
+// para que siempre haya tareas vencidas y próximas.
+const HORA = 3_600_000
+const enHoras = (h: number) => new Date(Date.now() + h * HORA).toISOString()
+
+export const MOCK_COURSES: Course[] = [
+  { id: 'mock-ivirtual-1', name: 'Programación Avanzada', source: 'ivirtual', period: null, finalGrade: '92.5', updatedAt: enHoras(-2) },
+  { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2) },
+  { id: 'mock-classroom-1', name: 'Inteligencia Artificial', source: 'classroom', period: 'Grupo 02', finalGrade: null, updatedAt: enHoras(-5) },
+  { id: 'mock-classroom-2', name: 'Taller de Tesis', source: 'classroom', period: null, finalGrade: null, updatedAt: enHoras(-5) },
+  { id: 'mock-itson-1', name: 'Cálculo Diferencial', source: 'itson_api', period: '03', finalGrade: '9', updatedAt: enHoras(-30) },
+  { id: 'mock-itson-2', name: 'Ética Profesional', source: 'itson_api', period: '03', finalGrade: 'A', updatedAt: enHoras(-30) },
+]
+
+export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
+  'mock-ivirtual-1': [
+    { id: 'm1', label: 'Práctica 1: punteros', grade: 95, maxGrade: 100, dueAt: enHoras(-24 * 20), kind: 'ivirtual' },
+    { id: 'm2', label: 'Práctica 2: listas ligadas', grade: 85, maxGrade: 100, dueAt: enHoras(-24 * 9), kind: 'ivirtual' },
+    { id: 'm3', label: 'Práctica 3: árboles', grade: null, maxGrade: 100, dueAt: enHoras(-30), kind: 'ivirtual' },
+    { id: 'm4', label: 'Proyecto final', grade: null, maxGrade: 100, dueAt: enHoras(24 * 6), kind: 'ivirtual' },
+    { id: 'm5', label: 'Participación', grade: null, maxGrade: 10, dueAt: null, kind: 'ivirtual' },
+  ],
+  'mock-ivirtual-2': [
+    { id: 'm6', label: 'Normalización hasta 3FN', grade: null, maxGrade: 100, dueAt: enHoras(20), kind: 'ivirtual' },
+    { id: 'm7', label: 'Examen parcial 1', grade: 78.5, maxGrade: 100, dueAt: enHoras(-24 * 14), kind: 'ivirtual' },
+  ],
+  'mock-classroom-1': [
+    { id: 'm8', label: 'Práctica 2: árboles de decisión', grade: null, maxGrade: 100, dueAt: enHoras(-3), kind: 'classroom' },
+    { id: 'm9', label: 'Lectura: redes neuronales', grade: null, maxGrade: null, dueAt: null, kind: 'classroom' },
+    { id: 'm10', label: 'Proyecto: clasificador', grade: null, maxGrade: 50, dueAt: enHoras(24 * 3), kind: 'classroom' },
+  ],
+  'mock-classroom-2': [],
+  'mock-itson-1': [],
+  'mock-itson-2': [],
+}
 
 // [H10] Preguntas frecuentes enfocadas en tareas concretas del alumno
 export const FAQ: { q: string; a: string }[] = [

@@ -11,7 +11,15 @@ function compile(file, requireImpl, env = {}) {
     module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022,
   } }).outputText;
   const module = { exports: {} };
-  new Function('require', 'module', 'exports', output)(requireImpl, module, module.exports);
+  // ITN-58 - api.ts importa los datos simulados de mockData.ts (solo datos, sin efectos).
+  // Si quien compila no lo resuelve, se compila aquí con el mismo env.
+  const resolve = id => {
+    try { return requireImpl(id); } catch (error) {
+      if (id !== '@/services/mockData' || error?.code !== 'MODULE_NOT_FOUND') throw error;
+      return compile('services/mockData.ts', require, env);
+    }
+  };
+  new Function('require', 'module', 'exports', output)(resolve, module, module.exports);
   return module.exports;
 }
 
@@ -36,6 +44,7 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
   Object.defineProperty(global, 'navigator', { value: navigatorImpl, configurable: true, writable: true });
   const env = { VITE_BACKEND_URL: 'https://api.test/', ...(useMock ? { VITE_USE_MOCK: 'true' } : {}) };
   const backend = compile('services/backend.ts', require, env);
+  const mockData = compile('services/mockData.ts', require, env);
   const clientRequire = id => (id === '@/services/backend' ? backend : require(id));
   const client = compile('services/googleAuth.ts', clientRequire, env);
   const api = compile('services/api.ts', clientRequire, env);
@@ -57,9 +66,10 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
     if (id === '@/services/googleAuth') return client;
     if (id === '@/services/api') return api;
     if (id === '@/services/pushNotifications') return push;
+    if (id === '@/utils/student') return compile('utils/student.ts', require, env);
     if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
       categories: { calificaciones: true }, classroomConnected: false, itsonStatus: 'ok',
-    }, INITIAL_NOTIFS: initialNotifs };
+    }, INITIAL_NOTIFS: initialNotifs, STUDENT: mockData.STUDENT };
     return new Proxy({}, { get: (_, key) => key });
   }, env).default;
   return {

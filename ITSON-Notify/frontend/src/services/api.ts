@@ -1,6 +1,7 @@
 // ITN-53 - Datos del alumno desde /api. La sesión va en la cookie HttpOnly: aquí no
 // se guarda nada ni se usa la llave interna del worker.
 import { backendUrl, mockMode } from '@/services/backend'
+import { MOCK_COURSES, MOCK_COURSE_ITEMS } from '@/services/mockData'
 import type { Notif, SourceStatus } from '@/types'
 
 export interface Me {
@@ -141,4 +142,46 @@ export async function deleteItsonProfile(): Promise<'deleted' | 'already_deleted
     if (error instanceof ApiError && error.status === 404) return 'already_deleted'
     throw error
   }
+}
+
+// ITN-58 - Materias del alumno y sus tareas o actividades (API de ITN-57).
+// Con VITE_USE_MOCK=true salen de mockData.ts; sin mock solo de la API, también si falla.
+export type CourseSource = 'ivirtual' | 'classroom' | 'itson_api'
+
+export interface Course {
+  id: string
+  name: string
+  source: CourseSource
+  // itson_api: semestre "01".."08"; classroom: la sección; ivirtual: null.
+  period: string | null
+  // ivirtual: "95.5"; itson_api: el código guardado ("9", "10", "A"); classroom: null.
+  finalGrade: string | null
+  updatedAt: string
+}
+
+export interface CourseItem {
+  id: string
+  label: string | null
+  // El backend manda texto cuando iVirtual solo trae la nota como texto (p. ej. "Aprobado").
+  grade: number | string | null
+  maxGrade: number | null
+  // ISO en UTC.
+  dueAt: string | null
+  kind: 'ivirtual' | 'classroom'
+}
+
+export async function getCourses(): Promise<Course[]> {
+  if (mockMode) return MOCK_COURSES
+  const body = await (await request('/courses')).json()
+  return Array.isArray(body?.courses) ? body.courses : []
+}
+
+export async function getCourseItems(id: string): Promise<CourseItem[]> {
+  if (mockMode) {
+    const items = MOCK_COURSE_ITEMS[id]
+    if (!items) throw new ApiError(404, 'no_encontrado')
+    return items
+  }
+  const body = await (await request(`/courses/${encodeURIComponent(id)}/items`)).json()
+  return Array.isArray(body?.items) ? body.items : []
 }

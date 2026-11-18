@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
+import type { Course, CourseItem } from '@/services/api'
 
-export type Page = 'inicio' | 'notificaciones' | 'configuracion' | 'perfil'
+export type Page = 'inicio' | 'materias' | 'notificaciones' | 'configuracion' | 'perfil'
 export type NotifType = 'calificaciones' | 'tareas' | 'cupos' | 'tramites'
 export type Filter = 'todas' | NotifType
 export type SourceStatus = 'ok' | 'error'
@@ -48,4 +49,19 @@ export interface SyncProps {
   onSync: () => void
   onFix: () => void
   onHelp: (q: string) => void
+}
+
+// ITN-58 - Materias de /api/courses. `courses` conserva la última lista buena mientras
+// se refresca o si el refresco falla.
+export interface CoursesState {
+  status: 'idle' | 'loading' | 'ready' | 'error'
+  courses: Course[]
+}
+
+// Tareas de una materia, guardadas en memoria. `updatedAt` es el de la materia cuando se
+// pidieron: si cambia al refrescar la lista, se vuelven a pedir.
+export interface CourseItemsEntry {
+  status: 'loading' | 'ready' | 'error' | 'missing'
+  items: CourseItem[]
+  updatedAt: string
 }
