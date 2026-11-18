@@ -11,6 +11,8 @@ const { listStudentCourses, listStudentCourseItems } = require("../services/stud
 const { studentCredentialsRouter } = require("./studentCredentials");
 const { itsonProfileRouter } = require("./itsonProfile");
 const { createCoursesService, CoursesError } = require("../services/classroomCourses");
+const { parseCalendarRange } = require("../models/calendarEvent");
+const { createCalendarRepository, esTablaFaltante } = require("../repositories/calendarRepository");
 
 const ITSON_STATUS_ERROR = "needs_relink";
 
@@ -23,6 +25,7 @@ function studentApiRouter({
   const router = express.Router();
   const frontendOrigin = new URL(config.frontendUrl || "http://localhost:5173").origin;
   const repo = createStudentRepository(supabase);
+  const calendarRepo = createCalendarRepository(supabase);
   const listCourses = createCoursesService({ config, supabase, fetchImpl: classroomFetch });
   const nowIso = () => new Date(now()).toISOString();
 
@@ -77,6 +80,20 @@ function studentApiRouter({
     const resultado = await listStudentCourseItems(req.student.userId, id, repo);
     if (!resultado) return res.status(404).json({ error: "no_encontrado" });
     return res.json(resultado);
+  });
+
+  // ITN-60 - Calendario académico de ITSON: eventos que intersectan [from, to]
+  // (AAAA-MM-DD, ambos inclusive, en hora de Hermosillo), ordenados por inicio. Es
+  // el mismo para todos los alumnos. Contrato en backend/ITN-60.md.
+  router.get("/calendar", async (req, res) => {
+    const rango = parseCalendarRange(req.query);
+    if (!rango.success) return res.status(400).json({ error: rango.error, message: rango.message });
+    try {
+      return res.json({ events: await calendarRepo.listBetween(rango.desde, rango.hasta) });
+    } catch (error) {
+      if (esTablaFaltante(error)) return res.status(503).json({ error: "calendario_no_disponible" });
+      throw error;
+    }
   });
 
   router.get("/notifications", async (req, res) => {

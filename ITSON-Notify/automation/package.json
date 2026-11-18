@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node schedulers/extraccion-cron.js",
     "test": "node --test",
-    "alert:test": "node scripts/enviar-alerta-prueba.js"
+    "alert:test": "node scripts/enviar-alerta-prueba.js",
+    "sync:calendar": "node schedulers/calendario-fase.js"
   },
   "engines": {
     "node": ">=20"
