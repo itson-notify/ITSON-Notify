@@ -1,7 +1,7 @@
 // ITN-53 - Datos del alumno desde /api. La sesión va en la cookie HttpOnly: aquí no
 // se guarda nada ni se usa la llave interna del worker.
 import { backendUrl, mockMode } from '@/services/backend'
-import { MOCK_COURSES, MOCK_COURSE_ITEMS } from '@/services/mockData'
+import { MOCK_CALENDAR_EVENTS, MOCK_COURSES, MOCK_COURSE_ITEMS } from '@/services/mockData'
 import type { Notif, SourceStatus } from '@/types'
 
 export interface Me {
@@ -184,4 +184,33 @@ export async function getCourseItems(id: string): Promise<CourseItem[]> {
   }
   const body = await (await request(`/courses/${encodeURIComponent(id)}/items`)).json()
   return Array.isArray(body?.items) ? body.items : []
+}
+
+// ITN-61 - Calendario académico (API de ITN-60). `from` y `to` son días AAAA-MM-DD en
+// hora de Hermosillo, ambos inclusive; el backend no acepta más de 366 días.
+// Con VITE_USE_MOCK=true salen de mockData.ts; sin mock solo de la API, también si falla.
+export interface CalendarEvent {
+  id: string
+  title: string
+  description: string | null
+  // ISO en UTC.
+  startsAt: string
+  endsAt: string
+  // AAAA-MM-DD en hora de Hermosillo (inclusive). Para los de todo el día se pinta con estos.
+  startDate: string
+  endDate: string
+  allDay: boolean
+  category: string | null
+  updatedAt: string
+}
+
+export async function getCalendar(from: string, to: string): Promise<CalendarEvent[]> {
+  if (mockMode) {
+    return MOCK_CALENDAR_EVENTS
+      .filter(e => e.endDate >= from && e.startDate <= to)
+      .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
+  }
+  const query = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+  const body = await (await request(`/calendar?${query}`)).json()
+  return Array.isArray(body?.events) ? body.events : []
 }

@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
-import type { Course, CourseItem } from '@/services/api'
+import type { CalendarEvent, Course, CourseItem } from '@/services/api'
 
-export type Page = 'inicio' | 'materias' | 'notificaciones' | 'configuracion' | 'perfil'
+export type Page = 'inicio' | 'materias' | 'calendario' | 'notificaciones' | 'configuracion' | 'perfil'
 export type NotifType = 'calificaciones' | 'tareas' | 'cupos' | 'tramites'
 export type Filter = 'todas' | NotifType
 export type SourceStatus = 'ok' | 'error'
@@ -64,4 +64,15 @@ export interface CourseItemsEntry {
   status: 'loading' | 'ready' | 'error' | 'missing'
   items: CourseItem[]
   updatedAt: string
+}
+
+// ITN-61 - Calendario académico de /api/calendar. `events` conserva la última lista buena
+// mientras se refresca o si el refresco falla. `unavailable` es el 503 de
+// calendario_no_disponible (falta la migración en la base), distinto de un error genérico.
+// `from`/`to` son el rango pedido (días en Hermosillo).
+export interface CalendarState {
+  status: 'idle' | 'loading' | 'ready' | 'error' | 'unavailable'
+  events: CalendarEvent[]
+  from: string | null
+  to: string | null
 }

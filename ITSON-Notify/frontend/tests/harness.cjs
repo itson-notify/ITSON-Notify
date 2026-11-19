@@ -67,6 +67,8 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
     if (id === '@/services/api') return api;
     if (id === '@/services/pushNotifications') return push;
     if (id === '@/utils/student') return compile('utils/student.ts', require, env);
+    // ITN-61 - Utilidades del calendario (puras; dependen de courses.ts por la zona).
+    if (id === '@/utils/calendar') return compileCalendar(env);
     if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
       categories: { calificaciones: true }, classroomConnected: false, itsonStatus: 'ok',
     }, INITIAL_NOTIFS: initialNotifs, STUDENT: mockData.STUDENT };
@@ -86,6 +88,11 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
   };
 }
 
+function compileCalendar(env = {}) {
+  const courses = compile('utils/courses.ts', require, env);
+  return compile('utils/calendar.ts', id => (id === '@/utils/courses' ? courses : require(id)), env);
+}
+
 const settle = () => new Promise(setImmediate);
 
 function find(node, type) {
@@ -96,4 +103,4 @@ function find(node, type) {
   return null;
 }
 
-module.exports = { compile, harness, find };
+module.exports = { compile, compileCalendar, harness, find };
