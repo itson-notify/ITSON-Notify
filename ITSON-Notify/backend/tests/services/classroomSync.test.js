@@ -20,6 +20,17 @@ test('metadata whitelist, UTC conversion, defaults and exact duplicate pages', (
   assert.equal(normalizeCourses([c])[0].coursework[0].due_at, null);
 });
 
+test('ITN-43b: missing coursework key stays missing; empty array stays an empty array', () => {
+  const { coursework: _w, ...only } = course();
+  const [withoutKey] = normalizeCourses([only]);
+  assert.equal(Object.hasOwn(withoutKey, 'coursework'), false);
+  assert.equal(JSON.parse(JSON.stringify(withoutKey)).coursework, undefined);
+  const [empty] = normalizeCourses([{ ...only, coursework: [] }]);
+  assert.deepEqual(empty.coursework, []);
+  // Same course once with and once without tasks is a conflicting duplicate, never merged.
+  assert.throws(() => normalizeCourses([only, { ...only, coursework: [] }]));
+});
+
 for (const [label, mutate] of [
   ['wrong course', c => { c.coursework[0].courseId = 'other'; }],
   ['invalid date', c => { c.coursework[0].dueDate = { year: 2026, month: 2, day: 30 }; }],
@@ -30,6 +41,7 @@ for (const [label, mutate] of [
   ['credential link', c => { c.alternateLink = 'https://secret@classroom.google.com/c/1'; }],
   ['conflicting duplicate', c => { c.coursework.push({ ...c.coursework[0], title: 'different' }); }],
   ['empty title', c => { c.coursework[0].title = ''; }],
+  ['null coursework', c => { c.coursework = null; }],
 ]) test(`sync rejects ${label}`, () => {
   const c = course(); mutate(c); assert.throws(() => normalizeCourses([c]));
 });

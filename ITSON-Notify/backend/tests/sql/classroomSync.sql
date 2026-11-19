@@ -86,3 +86,43 @@ do $$ begin
   end;
 end; $$;
 reset role;
+
+-- ITN-43b (017): courses-only snapshots and per-course task baseline.
+create function public.test_courses_only(u uuid, g text, course text) returns jsonb
+language sql as $$ select public.sync_classroom(u, g, jsonb_build_array(jsonb_build_object(
+  'id', course, 'name', 'Synthetic course'))); $$;
+set role service_role;
+-- (i) Courses-only sync stores the course, no tasks, no events, baseline stays null.
+create temporary table events_before as select count(*) as n from classroom_task_events;
+select test_assert((select r->>'courses' = '1' and r->>'coursework' = '0' and r->>'newTasks' = '0'
+  from (select test_courses_only('00000000-0000-4000-8000-000000000001','g1','only-courses') r) x), 'courses-only counts');
+select test_assert((select count(*) = 1 and bool_and(coursework_baseline_at is null) from classroom_courses
+  where external_course_id = 'only-courses'), 'courses-only stores course without baseline');
+select test_assert((select count(*) = 0 from classroom_coursework w join classroom_courses c on c.id = w.course_id
+  where c.external_course_id = 'only-courses'), 'courses-only creates no tasks');
+select test_assert((select count(*) from classroom_task_events) = (select n from events_before), 'courses-only creates no events');
+-- Courses-only sync on a course that already has tasks/baseline leaves both untouched.
+create temporary table c1_before as select c.coursework_baseline_at, (select count(*) from classroom_coursework w where w.course_id = c.id) n
+  from classroom_courses c where user_id = '00000000-0000-4000-8000-000000000001' and external_course_id = 'c1';
+select test_courses_only('00000000-0000-4000-8000-000000000001','g1','c1');
+select test_assert((select c.coursework_baseline_at is not distinct from b.coursework_baseline_at and b.coursework_baseline_at is not null
+  and (select count(*) from classroom_coursework w where w.course_id = c.id) = b.n
+  from classroom_courses c, c1_before b where c.user_id = '00000000-0000-4000-8000-000000000001' and c.external_course_id = 'c1'), 'courses-only keeps existing tasks and baseline');
+-- (ii) First task snapshot of an existing course is a silent baseline.
+select test_assert((test_snapshot('00000000-0000-4000-8000-000000000001','g1',array['b1','b2'],'only-courses')->>'newTasks')::int = 0, 'first tasks of existing course are baseline');
+select test_assert((select count(*) from classroom_task_events) = (select n from events_before), 'baseline creates no events');
+select test_assert((select bool_and(coursework_baseline_at is not null) from classroom_courses where external_course_id = 'only-courses'), 'baseline set');
+-- (iii) A new task in the next sync creates one event.
+select test_assert((test_snapshot('00000000-0000-4000-8000-000000000001','g1',array['b1','b2','b3'],'only-courses')->>'newTasks')::int = 1, 'task after baseline notifies');
+select test_assert((select count(*) = 1 from classroom_task_events e join classroom_coursework w on w.id = e.coursework_id
+  where w.external_coursework_id = 'b3'), 'event for new task');
+-- (iv) Idempotence: repeating does not duplicate events nor move the baseline.
+create temporary table baseline_before as select coursework_baseline_at from classroom_courses where external_course_id = 'only-courses';
+select test_assert((test_snapshot('00000000-0000-4000-8000-000000000001','g1',array['b1','b2','b3'],'only-courses')->>'newTasks')::int = 0, 'repeat no new tasks');
+select test_courses_only('00000000-0000-4000-8000-000000000001','g1','only-courses');
+select test_assert((select count(*) from classroom_task_events) = (select n from events_before) + 1, 'no duplicated events');
+select test_assert((select c.coursework_baseline_at = b.coursework_baseline_at from classroom_courses c, baseline_before b
+  where c.external_course_id = 'only-courses'), 'baseline immutable');
+-- A brand-new course whose first snapshot already has tasks is also a silent baseline.
+select test_assert((test_snapshot('00000000-0000-4000-8000-000000000002','g2',array['n1'],'brand-new')->>'newTasks')::int = 0, 'new course with tasks is baseline');
+reset role;
