@@ -21,11 +21,18 @@ function classroomInternalRouter({ config, supabase, classroomFetch }) {
   });
   router.post('/read', async (req, res) => {
     const { userId, googleId } = req.body ?? {};
+    if (req.body?.sync !== undefined && typeof req.body.sync !== 'boolean') {
+      return res.status(400).json({ error: 'datos_invalidos' });
+    }
+    if (req.body?.sync === true && (typeof userId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId))) {
+      return res.status(400).json({ error: 'datos_invalidos' });
+    }
     if (![userId, googleId].every(value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value))) {
       return res.status(400).json({ error: 'datos_invalidos' });
     }
     try {
-      return res.json(await service.readForWorker({ userId, googleId }));
+      return res.json(await service.readForWorker({ userId, googleId }, { sync: req.body.sync === true }));
     } catch (error) {
       return res.status(error instanceof CoursesError ? error.status : 500)
         .json({ error: error instanceof CoursesError ? error.code : 'error_interno' });

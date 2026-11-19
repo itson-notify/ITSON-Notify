@@ -87,7 +87,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       });
       const { userId, googleId } = await saveGoogleAuthorization({
         supabase, ...identity, refreshToken: tokens.refresh_token,
-        scope: tokens.scope, secret,
+        scope: tokens.scope, secret, requiredScopes: oauth.scopes,
       });
       // La sesión va en cookie HttpOnly, nunca en query strings ni localStorage.
       const sessionId = crypto.randomBytes(32).toString("base64url");

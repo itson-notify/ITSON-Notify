@@ -9,6 +9,7 @@ const { entregarResultados, leerConfigEntrega } = require("./entrega-backend");
 const { crearClienteCredenciales } = require("./credenciales-backend");
 const { ejecutarItsonApi } = require("./itson-api-fase");
 const { ejecutarCalendario } = require("./calendario-fase");
+const { ejecutarClassroom } = require("./classroom-fase");
 
 // Punto de entrada del cron de Railway (ITN-25). Railway lo arranca según el
 // cronSchedule de .railway/railway.ts; corre UNA pasada y termina.
@@ -296,13 +297,18 @@ async function arrancar({
   correr = ejecutar,
   correrApi = correrItsonApi,
   correrCalendario = correrCalendarioProceso,
+  correrClassroom = ejecutarClassroom,
   alertar = notificarFalloCritico,
   logError = console.error,
 } = {}) {
   const ivirtual = await correrFase(correr, { fuente: "worker-rpa", alertar, logError });
   const api = await correrFase(correrApi, { fuente: "itson-api", alertar, logError });
+  // Disabled until migration + consent review; isolated from other sources.
+  let classroom = EXIT_CODES.error;
+  try { classroom = await correrClassroom(); }
+  catch { logError('Classroom: fase no disponible.'); }
   await correrCalendarioSinAlerta(correrCalendario, logError);
-  return ivirtual === EXIT_CODES.ok && api === EXIT_CODES.ok ? EXIT_CODES.ok : EXIT_CODES.error;
+  return ivirtual === EXIT_CODES.ok && api === EXIT_CODES.ok && classroom === EXIT_CODES.ok ? EXIT_CODES.ok : EXIT_CODES.error;
 }
 
 if (require.main === module) {
