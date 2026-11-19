@@ -368,6 +368,8 @@ describe("ITN-57 - GET /api/courses/:id/items", () => {
           maxGrade: 100,
           dueAt: "2026-11-21T06:59:00.000Z",
           kind: "classroom",
+          // ITN-58b: campo nuevo, aditivo.
+          source: "classroom",
         },
         {
           id: tarea2Id,
@@ -376,6 +378,7 @@ describe("ITN-57 - GET /api/courses/:id/items", () => {
           maxGrade: null,
           dueAt: null,
           kind: "classroom",
+          source: "classroom",
         },
       ],
     });

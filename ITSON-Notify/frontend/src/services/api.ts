@@ -157,6 +157,19 @@ export interface Course {
   // ivirtual: "95.5"; itson_api: el código guardado ("9", "10", "A"); classroom: null.
   finalGrade: string | null
   updatedAt: string
+  // ITN-58b - Fuentes que forman esta materia unificada; la primera es la principal
+  // (la de los campos de arriba). Opcional por compatibilidad: sin él, solo `source`.
+  sources?: CourseSourceEntry[]
+}
+
+// ITN-58b - Datos propios de una fuente dentro de una materia unificada.
+export interface CourseSourceEntry {
+  source: CourseSource
+  id: string
+  name: string
+  period: string | null
+  finalGrade: string | null
+  updatedAt: string
 }
 
 export interface CourseItem {
@@ -168,6 +181,8 @@ export interface CourseItem {
   // ISO en UTC.
   dueAt: string | null
   kind: 'ivirtual' | 'classroom'
+  // ITN-58b - Fuente del item en una materia unificada (igual a `kind`).
+  source?: 'ivirtual' | 'classroom'
 }
 
 export async function getCourses(): Promise<Course[]> {

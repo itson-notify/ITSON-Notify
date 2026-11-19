@@ -2,20 +2,22 @@ import type { ReactElement, ReactNode } from 'react'
 import { I } from '@/components/icons'
 import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
-import { classifyItem, formatDue, formatGrade, groupItems, periodLabel, SOURCE_LABEL, type ItemStatus } from '@/utils/courses'
+import {
+  classifyItem, courseSources, formatDue, formatGrade, groupItems, periodLabel, sourceSections, SOURCE_LABEL, SOURCE_ORDER, type ItemStatus,
+} from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
 import type { CourseItemsEntry, CoursesState, Page } from '@/types'
 
 /* ITN-58 - "Mis materias y tareas". Mismo esquema que Notificaciones: en móvil lista o
-   detalle; en lg: lado a lado. Los datos y las peticiones viven en App. */
+   detalle; en lg: lado a lado. Los datos y las peticiones viven en App.
+   ITN-58b - Una materia que está en varias fuentes es una sola tarjeta con sus fuentes
+   como indicadores; su detalle tiene una sección por fuente con datos. */
 
 const SOURCE_STYLE: Record<CourseSource, { icon: (s?: number) => ReactElement; color: string; bg: string }> = {
   ivirtual: { icon: I.chart, color: '#16A34A', bg: '#F0FDF4' },
   classroom: { icon: I.book, color: '#7C3AED', bg: '#F5F3FF' },
   itson_api: { icon: I.file, color: '#2563EB', bg: '#EFF6FF' },
 }
-
-const SOURCE_ORDER: CourseSource[] = ['ivirtual', 'classroom', 'itson_api']
 
 // [H1] Texto + icono + color: el estado se entiende aunque no se distinga el color.
 const STATUS_CFG: Record<ItemStatus, { title: string; tag: string; icon: ReactElement; text: string; bg: string; border: string }> = {
@@ -36,6 +38,25 @@ function SourceIcon({ source, size = 40 }: { source: CourseSource; size?: number
 
 const courseMeta = (c: Course) => [SOURCE_LABEL[c.source], periodLabel(c)].filter(Boolean).join(' · ')
 
+const isUnified = (c: Course) => courseSources(c).length > 1
+
+// ITN-58b - Indicadores de fuente: texto + punto de color, legibles sin distinguir el color.
+function SourceBadges({ course }: { course: Course }) {
+  const fuentes = courseSources(course)
+  return (
+    <span className="flex flex-wrap gap-1.5 mt-1" aria-label={`Fuentes: ${fuentes.map(f => SOURCE_LABEL[f.source]).join(', ')}`}>
+      {fuentes.map(f => (
+        <span key={f.source} data-source={f.source}
+          className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full text-[11px] font-medium"
+          style={{ backgroundColor: SOURCE_STYLE[f.source].bg, color: SOURCE_STYLE[f.source].color }}>
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: SOURCE_STYLE[f.source].color }} />
+          {SOURCE_LABEL[f.source]}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 function CourseRow({ c, selected, onClick }: { c: Course; selected: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick} aria-current={selected ? 'true' : undefined}
@@ -43,7 +64,9 @@ function CourseRow({ c, selected, onClick }: { c: Course; selected: boolean; onC
       <SourceIcon source={c.source} />
       <div className="flex-1 min-w-0">
         <p className="text-[15px] font-medium text-[#111827] truncate">{c.name}</p>
-        <p className="text-[13px] text-[#64748B] truncate mt-0.5">{courseMeta(c)}</p>
+        {isUnified(c)
+          ? <SourceBadges course={c} />
+          : <p className="text-[13px] text-[#64748B] truncate mt-0.5">{courseMeta(c)}</p>}
       </div>
       {c.finalGrade && (
         <span className="flex-shrink-0 text-right">
@@ -178,9 +201,114 @@ function ItemRow({ item, status, now }: { item: CourseItem; status: ItemStatus; 
   )
 }
 
+function ItemGroups({ items, now, idPrefix }: { items: CourseItem[]; now: number; idPrefix: string }) {
+  return (
+    <>
+      {groupItems(items, now).map(g => {
+        const cfg = STATUS_CFG[g.status]
+        return (
+          <section key={g.status} aria-labelledby={`${idPrefix}-${g.status}`}>
+            <h2 id={`${idPrefix}-${g.status}`} className={`flex items-center gap-1.5 mb-2 text-[14px] font-semibold ${cfg.text}`}>
+              {cfg.icon}{cfg.title}<span className="font-normal text-[#94A3B8]">{g.items.length}</span>
+            </h2>
+            <ul className={`bg-white border rounded-lg divide-y divide-[#F1F5F9] ${cfg.border}`}>
+              {g.items.map(item => <ItemRow key={item.id} item={item} status={classifyItem(item, now)} now={now} />)}
+            </ul>
+          </section>
+        )
+      })}
+    </>
+  )
+}
+
+function ClassroomNote() {
+  return (
+    <p className="flex items-start gap-2 text-[12px] leading-relaxed text-[#94A3B8]">
+      <span className="mt-0.5 flex-shrink-0">{I.info()}</span>
+      Google Classroom no nos dice si ya entregaste una tarea: “Vencida” solo significa que pasó la fecha de entrega.
+    </p>
+  )
+}
+
+function FinalGrade({ value }: { value: string | null }) {
+  return (
+    <dl className="bg-white border border-[#E5E7EB] rounded-lg">
+      <div className="flex justify-between items-center gap-4 px-4 py-3">
+        <dt className="text-[13px] text-[#64748B]">Calificación final</dt>
+        <dd className={`text-[16px] text-right ${value ? 'font-semibold text-[#111827]' : 'text-[#94A3B8]'}`}>{value ?? 'Aún sin calificación'}</dd>
+      </div>
+    </dl>
+  )
+}
+
+// ITN-58b - Detalle de una materia unificada: una sección por fuente con datos (las
+// vacías no se muestran). Los items vienen juntos de /items, cada uno con su fuente.
+function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
+  course: Course; entry: CourseItemsEntry | undefined; now: number; onBack: () => void; onRetry: () => void
+}) {
+  const fuentes = courseSources(course)
+  const conTareas = fuentes.some(f => f.source !== 'itson_api')
+  const cargando = conTareas && (!entry || entry.status === 'loading')
+  const fallo = conTareas && entry?.status === 'error'
+  const perdida = conTareas && entry?.status === 'missing'
+  const secciones = sourceSections(course, entry?.status === 'ready' ? entry.items : [])
+  return (
+    <article className="px-4 py-4 md:px-8 md:py-8 max-w-2xl lg:mx-auto w-full">
+      <button onClick={onBack} className={`lg:hidden -ml-2 mb-4 flex items-center gap-2 min-h-11 px-2 rounded-lg text-[15px] font-medium text-[#64748B] hover:text-[#111827] cursor-pointer ${focusRing}`}>
+        {I.arrow()}Materias
+      </button>
+
+      <div className="flex items-start gap-4">
+        <SourceIcon source={course.source} size={48} />
+        <div className="min-w-0 pt-0.5">
+          <h1 className="text-[20px] md:text-[22px] leading-snug font-semibold text-[#111827] tracking-[-0.01em] break-words">{course.name}</h1>
+          <p className="text-[13px] text-[#94A3B8] mt-1">Desde {fuentes.map(f => SOURCE_LABEL[f.source]).join(' · ')}</p>
+        </div>
+      </div>
+
+      <div className="mt-6 space-y-8">
+        {fallo && (
+          <Notice tone="red" title="No pudimos cargar las tareas de esta materia" action={<Button variant="secondary" onClick={onRetry}>{I.refresh()}Reintentar</Button>}>
+            Revisa tu conexión e intenta de nuevo.
+          </Notice>
+        )}
+        {perdida && (
+          <Notice tone="red" title="Esta materia ya no está disponible">
+            Puede que se haya actualizado tu lista de materias. Vuelve a la lista para ver la versión más reciente.
+          </Notice>
+        )}
+        {cargando ? (
+          <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden" role="status" aria-label="Cargando tareas"><SkeletonList rows={3} /></div>
+        ) : secciones.length === 0 && !fallo && !perdida ? (
+          <Notice title="Sin tareas ni calificaciones registradas">
+            Ninguna de las fuentes de esta materia tiene tareas o calificaciones por ahora.
+          </Notice>
+        ) : (
+          secciones.map(({ entry: fuente, items }) => {
+            const periodo = periodLabel(fuente)
+            return (
+              <section key={fuente.source} data-source={fuente.source} aria-labelledby={`detalle-${fuente.source}`} className="space-y-4">
+                <h2 id={`detalle-${fuente.source}`} className="flex items-center gap-2 text-[15px] font-semibold text-[#111827]">
+                  <SourceIcon source={fuente.source} size={28} />
+                  {SOURCE_LABEL[fuente.source]}
+                  {periodo && <span className="font-normal text-[13px] text-[#94A3B8]">{periodo}</span>}
+                </h2>
+                {fuente.source !== 'classroom' && <FinalGrade value={fuente.finalGrade} />}
+                {items.length > 0 && <div className="space-y-5"><ItemGroups items={items} now={now} idPrefix={`grupo-${fuente.source}`} /></div>}
+                {fuente.source === 'classroom' && <ClassroomNote />}
+              </section>
+            )
+          })
+        )}
+      </div>
+    </article>
+  )
+}
+
 function CourseDetail({ course, entry, now, onBack, onRetry }: {
   course: Course; entry: CourseItemsEntry | undefined; now: number; onBack: () => void; onRetry: () => void
 }) {
+  if (isUnified(course)) return <UnifiedCourseDetail course={course} entry={entry} now={now} onBack={onBack} onRetry={onRetry} />
   const groups = entry?.status === 'ready' ? groupItems(entry.items, now) : []
   return (
     <article className="px-4 py-4 md:px-8 md:py-8 max-w-2xl lg:mx-auto w-full">
@@ -196,14 +324,7 @@ function CourseDetail({ course, entry, now, onBack, onRetry }: {
         </div>
       </div>
 
-      {course.source !== 'classroom' && (
-        <dl className="mt-5 bg-white border border-[#E5E7EB] rounded-lg">
-          <div className="flex justify-between items-center gap-4 px-4 py-3">
-            <dt className="text-[13px] text-[#64748B]">Calificación final</dt>
-            <dd className={`text-[16px] text-right ${course.finalGrade ? 'font-semibold text-[#111827]' : 'text-[#94A3B8]'}`}>{course.finalGrade ?? 'Aún sin calificación'}</dd>
-          </div>
-        </dl>
-      )}
+      {course.source !== 'classroom' && <div className="mt-5"><FinalGrade value={course.finalGrade} /></div>}
 
       <div className="mt-6">
         {course.source === 'itson_api' ? (
@@ -228,25 +349,8 @@ function CourseDetail({ course, entry, now, onBack, onRetry }: {
           </Notice>
         ) : (
           <div className="space-y-5">
-            {groups.map(g => {
-              const cfg = STATUS_CFG[g.status]
-              return (
-                <section key={g.status} aria-labelledby={`grupo-${g.status}`}>
-                  <h2 id={`grupo-${g.status}`} className={`flex items-center gap-1.5 mb-2 text-[14px] font-semibold ${cfg.text}`}>
-                    {cfg.icon}{cfg.title}<span className="font-normal text-[#94A3B8]">{g.items.length}</span>
-                  </h2>
-                  <ul className={`bg-white border rounded-lg divide-y divide-[#F1F5F9] ${cfg.border}`}>
-                    {g.items.map(item => <ItemRow key={item.id} item={item} status={classifyItem(item, now)} now={now} />)}
-                  </ul>
-                </section>
-              )
-            })}
-            {course.source === 'classroom' && (
-              <p className="flex items-start gap-2 text-[12px] leading-relaxed text-[#94A3B8]">
-                <span className="mt-0.5 flex-shrink-0">{I.info()}</span>
-                Google Classroom no nos dice si ya entregaste una tarea: “Vencida” solo significa que pasó la fecha de entrega.
-              </p>
-            )}
+            <ItemGroups items={entry.items} now={now} idPrefix="grupo" />
+            {course.source === 'classroom' && <ClassroomNote />}
           </div>
         )}
       </div>

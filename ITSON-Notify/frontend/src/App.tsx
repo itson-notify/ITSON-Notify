@@ -21,6 +21,7 @@ import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
 import { studentView } from '@/utils/student'
 import { calendarWindow } from '@/utils/calendar'
+import { courseHasItems } from '@/utils/courses'
 import type { CalendarState, ConfirmReq, CourseItemsEntry, CoursesState, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -164,8 +165,9 @@ export default function App() {
     if (!course) return
     setCourseId(id)
     window.scrollTo(0, 0)
-    // itson_api siempre responde { items: [] }: solo tiene calificación final.
-    if (course.source === 'itson_api') return
+    // itson_api siempre responde { items: [] }: solo tiene calificación final. Una
+    // materia unificada (ITN-58b) sí se pide si alguna de sus fuentes tiene tareas.
+    if (!courseHasItems(course)) return
     const cached = courseItems[id]
     if (cached && cached.updatedAt === course.updatedAt && (cached.status === 'ready' || cached.status === 'loading')) return
     loadCourseItems(course)
