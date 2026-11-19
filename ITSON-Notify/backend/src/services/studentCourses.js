@@ -8,7 +8,11 @@
 //   - itson_api: último snapshot por semestre (period) con source = 'itson_api'.
 //     Cada materia trae su calificación final en grade_text (código normalizado).
 //   - classroom: tablas classroom_courses y classroom_coursework (migración 006).
+//
+// ITN-58b - La misma materia en varias fuentes sale como una sola entrada con
+// sources[] (ver unificarCursos y courseMatcher.js).
 const { normalizarCodigo } = require("./itsonGradeCodes");
+const { matchCourses } = require("./courseMatcher");
 
 const COURSE_SOURCES = ["ivirtual", "classroom", "itson_api"];
 const ITEM_KINDS = {
@@ -117,10 +121,21 @@ function compararItemsClassroom(a, b) {
   return a.id.localeCompare(b.id);
 }
 
-async function listStudentCourses(userId, repo) {
+// Error de una fuente secundaria: se avisa solo con el código, nunca con nombres,
+// calificaciones ni ids de materias.
+function avisarFuente(options, step, error) {
+  options?.onSourceError?.(step, error);
+}
+
+// Arma la lista plana (una entrada por materia y fuente), igual que antes de ITN-58b.
+// Un fallo de Classroom no tumba la vista: la materia aparece con las demás fuentes.
+async function listarCursosPorFuente(userId, repo, options) {
   const [snapshots, classroomCourses] = await Promise.all([
     repo.listLatestSnapshots(userId),
-    repo.listClassroomCourses(userId),
+    repo.listClassroomCourses(userId).catch((error) => {
+      avisarFuente(options, "classroom_courses", error);
+      return [];
+    }),
   ]);
 
   const snapshotIds = snapshots.map((s) => s.id);
@@ -189,20 +204,72 @@ async function listStudentCourses(userId, repo) {
   }
 
   courses.sort(compararCursos);
+  return courses;
+}
+
+function masReciente(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
+// ITN-58b - Une la misma materia vista en varias fuentes (courseMatcher). Los campos
+// de siempre (id, name, source, period, finalGrade) son los de la fuente principal
+// (iVirtual, luego Classroom, luego ITSON); updatedAt es el más reciente del grupo
+// para que el frontend vuelva a pedir las tareas si cambia cualquier fuente.
+// sources[] trae los datos propios de cada fuente, en el mismo orden.
+function unificarCursos(porFuente) {
+  const porId = new Map(porFuente.map((c) => [c.id, c]));
+  const { groups, ambiguous } = matchCourses(
+    porFuente.map((c) => ({ key: c.id, source: c.source, name: c.name })),
+  );
+
+  const courses = groups.map((ids) => {
+    const miembros = ids.map((id) => porId.get(id)).sort(compararCursos);
+    const principal = miembros[0];
+    return {
+      id: principal.id,
+      name: principal.name,
+      source: principal.source,
+      period: principal.period,
+      finalGrade: principal.finalGrade,
+      updatedAt: miembros.reduce((acc, c) => masReciente(acc, c.updatedAt), null),
+      sources: miembros.map(({ id, name, source, period, finalGrade, updatedAt }) => ({
+        source,
+        id,
+        name,
+        period,
+        finalGrade,
+        updatedAt,
+      })),
+    };
+  });
+
+  // El orden es el de antes: por la fuente principal, periodo y nombre.
+  courses.sort(compararCursos);
+  return { courses, ambiguous: ambiguous.length };
+}
+
+// options.onSourceError(step, error): se llama cuando una fuente secundaria falla.
+// options.onAmbiguous(count): cuántas materias quedaron sin unir por un empate.
+async function listStudentCourses(userId, repo, options = {}) {
+  const porFuente = await listarCursosPorFuente(userId, repo, options);
+  const { courses, ambiguous } = unificarCursos(porFuente);
+  if (ambiguous > 0) options.onAmbiguous?.(ambiguous);
   return { courses };
 }
 
-// Devuelve { items } si el curso existe y es del alumno, o null si no existe / es
-// de otro alumno.
-async function listStudentCourseItems(userId, courseId, repo) {
+// Items de una sola materia de una sola fuente. Devuelve { source, items } o null si
+// no existe o es de otro alumno.
+async function itemsDeUnaFuente(userId, courseId, repo) {
   const subject = await repo.getSubject(userId, courseId);
   if (subject) {
     // Las materias de itson_api solo tienen calificación final en /api/courses.
     if (subject.period !== null && subject.period !== undefined) {
-      return { items: [] };
+      return { source: "itson_api", items: [] };
     }
     const snapshot = await repo.getLatestIvirtualSnapshot(userId);
-    if (!snapshot) return { items: [] };
+    if (!snapshot) return { source: "ivirtual", items: [] };
 
     const filas = await repo.listSnapshotGrades([snapshot.id], { subjectId: courseId });
     const items = filas
@@ -215,8 +282,9 @@ async function listStudentCourseItems(userId, courseId, repo) {
         maxGrade: numeroONull(row.raw_payload?.max),
         dueAt: toIso(row.due_at),
         kind: ITEM_KINDS.ivirtual,
+        source: "ivirtual",
       }));
-    return { items };
+    return { source: "ivirtual", items };
   }
 
   const classroomCourse = await repo.getClassroomCourse(userId, courseId);
@@ -231,15 +299,49 @@ async function listStudentCourseItems(userId, courseId, repo) {
       maxGrade: numeroONull(row.max_points),
       dueAt: toIso(row.due_at),
       kind: ITEM_KINDS.classroom,
+      source: "classroom",
     }))
     .sort(compararItemsClassroom);
-  return { items };
+  return { source: "classroom", items };
+}
+
+// Devuelve { items } si el curso existe y es del alumno, o null si no existe / es
+// de otro alumno. ITN-58b: si la materia está unificada con otras fuentes, también
+// trae sus items (cada uno con `source`), en orden iVirtual, Classroom; dentro de cada
+// fuente se conserva el orden de antes. Pedirla por el id de cualquiera de sus
+// fuentes da la misma respuesta. Si una fuente hermana falla, se omite.
+async function listStudentCourseItems(userId, courseId, repo, options = {}) {
+  const propia = await itemsDeUnaFuente(userId, courseId, repo);
+  if (!propia) return null;
+
+  let hermanas = [];
+  try {
+    const { courses } = await listStudentCourses(userId, repo, options);
+    const grupo = courses.find((c) => c.sources.some((s) => s.id === courseId));
+    hermanas = (grupo?.sources ?? []).filter((s) => s.id !== courseId && s.source !== "itson_api");
+  } catch (error) {
+    avisarFuente(options, "courses_unificadas", error);
+  }
+
+  const porFuente = [propia];
+  for (const hermana of hermanas) {
+    try {
+      const resultado = await itemsDeUnaFuente(userId, hermana.id, repo);
+      if (resultado) porFuente.push(resultado);
+    } catch (error) {
+      avisarFuente(options, `items_${hermana.source}`, error);
+    }
+  }
+
+  porFuente.sort((a, b) => (ORDEN_FUENTE[a.source] ?? 99) - (ORDEN_FUENTE[b.source] ?? 99));
+  return { items: porFuente.flatMap((f) => f.items) };
 }
 
 module.exports = {
   listStudentCourses,
   listStudentCourseItems,
   encontrarTotalCurso,
+  unificarCursos,
   COURSE_SOURCES,
   ITEM_KINDS,
 };

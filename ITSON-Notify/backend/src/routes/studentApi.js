@@ -70,14 +70,22 @@ function studentApiRouter({
 
   // ITN-57 - Materias del alumno (iVirtual, Classroom e ITSON API) y sus
   // actividades o tareas por materia.
+  // ITN-58b - Una fuente secundaria que falla se omite; el log lleva solo el paso y el
+  // código, nunca nombres de materias ni calificaciones.
+  const onSourceError = (step, error) =>
+    logger?.warn?.("materias_fuente_no_disponible", { step, error_code: error?.code ?? null });
+
   router.get("/courses", async (req, res) => {
-    return res.json(await listStudentCourses(req.student.userId, repo));
+    return res.json(await listStudentCourses(req.student.userId, repo, {
+      onSourceError,
+      onAmbiguous: (count) => logger?.info?.("materias_sin_unir_por_empate", { count }),
+    }));
   });
 
   router.get("/courses/:id/items", async (req, res) => {
     const id = parseCourseId(req.params.id);
     if (!id) return res.status(400).json({ error: "id_invalido" });
-    const resultado = await listStudentCourseItems(req.student.userId, id, repo);
+    const resultado = await listStudentCourseItems(req.student.userId, id, repo, { onSourceError });
     if (!resultado) return res.status(404).json({ error: "no_encontrado" });
     return res.json(resultado);
   });

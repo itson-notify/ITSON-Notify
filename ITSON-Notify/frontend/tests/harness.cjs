@@ -69,6 +69,8 @@ function harness(search, fetchImpl, { useMock = true, initialNotifs = [], naviga
     if (id === '@/utils/student') return compile('utils/student.ts', require, env);
     // ITN-61 - Utilidades del calendario (puras; dependen de courses.ts por la zona).
     if (id === '@/utils/calendar') return compileCalendar(env);
+    // ITN-58b - App decide con courses.ts si una materia unificada tiene tareas.
+    if (id === '@/utils/courses') return compile('utils/courses.ts', require, env);
     if (id === '@/services/mockData') return { DEFAULT_SETTINGS: {
       categories: { calificaciones: true }, classroomConnected: false, itsonStatus: 'ok',
     }, INITIAL_NOTIFS: initialNotifs, STUDENT: mockData.STUDENT };

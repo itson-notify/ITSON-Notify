@@ -288,3 +288,125 @@ test('con VITE_USE_MOCK=true Materias funciona sin backend', async () => {
     assert.equal(b.calls.filter(c => c.ruta.startsWith('/api')).length, 0);
   } finally { h.restore(); }
 });
+
+// ── ITN-58b - Materias unificadas ───────────────────────────────────────────
+
+const UNIFICADA = {
+  id: COURSE_IV.id, name: 'Ingeniería de Software', source: 'ivirtual', period: null, finalGrade: '90', updatedAt: '2026-11-18T12:00:00.000Z',
+  sources: [
+    { source: 'ivirtual', id: COURSE_IV.id, name: 'Ingeniería de Software', period: null, finalGrade: '90', updatedAt: '2026-11-18T10:00:00.000Z' },
+    { source: 'classroom', id: COURSE_CR.id, name: 'Ingeniería de Software - Grupo 02', period: 'Grupo 02', finalGrade: null, updatedAt: '2026-11-18T12:00:00.000Z' },
+    { source: 'itson_api', id: COURSE_IT.id, name: 'INGENIERIA DE SOFTWARE', period: '05', finalGrade: '9', updatedAt: '2026-11-18T09:00:00.000Z' },
+  ],
+};
+const ITEM_IV = { id: 'iv1', label: 'Tarea iVirtual', grade: 90, maxGrade: 100, dueAt: '2026-11-10T06:59:00.000Z', kind: 'ivirtual', source: 'ivirtual' };
+const ITEM_CR = { id: 'cr1', label: 'Tarea Classroom', grade: null, maxGrade: 50, dueAt: '2026-11-25T06:59:00.000Z', kind: 'classroom', source: 'classroom' };
+
+test('utilidades: fuentes ordenadas, materia sin sources y secciones sin fuentes vacías', () => {
+  assert.deepEqual(U.courseSources({ ...UNIFICADA, sources: [...UNIFICADA.sources].reverse() }).map(s => s.source), ['ivirtual', 'classroom', 'itson_api']);
+  assert.deepEqual(U.courseSources(COURSE_IT), [{ source: 'itson_api', id: COURSE_IT.id, name: 'Cálculo', period: '03', finalGrade: '9', updatedAt: COURSE_IT.updatedAt }]);
+  assert.equal(U.courseHasItems(COURSE_IT), false);
+  assert.equal(U.courseHasItems({ ...COURSE_IT, sources: [UNIFICADA.sources[2], UNIFICADA.sources[1]] }), true);
+  assert.equal(U.itemSource({ ...ITEM, source: undefined }), 'ivirtual');
+
+  const secciones = U.sourceSections(UNIFICADA, [ITEM_CR, ITEM_IV]);
+  assert.deepEqual(secciones.map(s => [s.entry.source, s.items.map(i => i.id)]), [['ivirtual', ['iv1']], ['classroom', ['cr1']], ['itson_api', []]]);
+  // Classroom sin tareas e ITSON sin calificación no tienen sección.
+  const sinDatos = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => (s.source === 'itson_api' ? { ...s, finalGrade: null } : s)) };
+  assert.deepEqual(U.sourceSections(sinDatos, [ITEM_IV]).map(s => s.entry.source), ['ivirtual']);
+});
+
+// Renderiza CoursesPage expandiendo sus componentes locales (sin hooks). Los
+// componentes importados quedan como nodos con nombre ('Button', 'SkeletonList').
+function renderCourses(props) {
+  const jsx = (type, p) => ({ type, props: p });
+  const courses = compile('utils/courses.ts', require);
+  const { CoursesPage } = compile('pages/CoursesPage.tsx', id => {
+    if (id === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
+    if (id === '@/components/icons') return { I: new Proxy({}, { get: () => () => null }) };
+    if (id === '@/utils/courses') return courses;
+    if (id === '@/utils/styles') return { focusRing: '' };
+    return new Proxy({}, { get: (_, key) => key });
+  });
+  const expand = node => {
+    if (Array.isArray(node)) return node.map(expand);
+    if (!node || typeof node !== 'object') return node;
+    if (typeof node.type === 'function') return expand(node.type(node.props));
+    return { type: node.type, props: { ...node.props, children: expand(node.props?.children) } };
+  };
+  const tree = expand(CoursesPage({
+    state: { status: 'ready', courses: [UNIFICADA] }, itemsById: {}, selectedId: null,
+    onOpen() {}, onClose() {}, onRetry() {}, onRetryItems() {}, onGo() {},
+    ivirtualLink: { linked: true }, classroomConnected: true, now: NOW, ...props,
+  }));
+  const all = [];
+  const walk = n => { if (Array.isArray(n)) return n.forEach(walk); if (n && typeof n === 'object') { all.push(n); walk(n.props?.children); } };
+  walk(tree);
+  const text = n => [n?.props?.children].flat(Infinity).map(c => (typeof c === 'string' || typeof c === 'number' ? String(c) : c && typeof c === 'object' ? text(c) : '')).join('');
+  return { all, texto: text(tree), conFuente: tipo => all.filter(n => n.props?.['data-source'] && n.type === tipo) };
+}
+
+test('la lista muestra una sola tarjeta por materia unificada con los indicadores de sus fuentes', () => {
+  const r = renderCourses({});
+  const tarjetas = r.all.filter(n => n.type === 'li');
+  assert.equal(tarjetas.length, 1);
+  assert.deepEqual(r.conFuente('span').map(n => n.props['data-source']), ['ivirtual', 'classroom', 'itson_api']);
+  assert.match(r.texto, /Ingeniería de Software/);
+  assert.match(r.texto, /iVirtual.*Google Classroom.*API de ITSON/);
+  // Una materia de una sola fuente conserva el texto de antes y no lleva indicadores.
+  const sola = renderCourses({ state: { status: 'ready', courses: [COURSE_IT] } });
+  assert.equal(sola.conFuente('span').length, 0);
+  assert.match(sola.texto, /API de ITSON · Semestre 3/);
+});
+
+test('el detalle de una materia unificada tiene una sección por fuente con sus datos', () => {
+  const entry = { status: 'ready', items: [ITEM_CR, ITEM_IV], updatedAt: UNIFICADA.updatedAt };
+  const r = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: entry } });
+  const secciones = r.conFuente('section');
+  assert.deepEqual(secciones.map(s => s.props['data-source']), ['ivirtual', 'classroom', 'itson_api']);
+  const textoDe = fuente => {
+    const s = secciones.find(x => x.props['data-source'] === fuente);
+    const partes = [];
+    const walk = n => { if (Array.isArray(n)) return n.forEach(walk); if (typeof n === 'string') partes.push(n); else if (n && typeof n === 'object') walk(n.props?.children); };
+    walk(s);
+    return partes.join(' ');
+  };
+  assert.match(textoDe('ivirtual'), /Tarea iVirtual/);
+  assert.match(textoDe('ivirtual'), /90/);
+  assert.doesNotMatch(textoDe('ivirtual'), /Tarea Classroom/);
+  assert.match(textoDe('classroom'), /Tarea Classroom/);
+  assert.match(textoDe('itson_api'), /Semestre 5/);
+  assert.match(textoDe('itson_api'), /9/);
+});
+
+test('el detalle omite las fuentes sin datos y conserva carga y error', () => {
+  const soloIv = { status: 'ready', items: [ITEM_IV], updatedAt: UNIFICADA.updatedAt };
+  const sinItson = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => (s.source === 'itson_api' ? { ...s, finalGrade: null } : s)) };
+  const r = renderCourses({ state: { status: 'ready', courses: [sinItson] }, selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: soloIv } });
+  assert.deepEqual(r.conFuente('section').map(s => s.props['data-source']), ['ivirtual']);
+
+  const cargando = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'loading', items: [], updatedAt: UNIFICADA.updatedAt } } });
+  assert.ok(cargando.all.some(n => n.props?.['aria-label'] === 'Cargando tareas'));
+  assert.equal(cargando.conFuente('section').length, 0);
+
+  const error = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'error', items: [], updatedAt: UNIFICADA.updatedAt } } });
+  assert.match(error.texto, /No pudimos cargar las tareas de esta materia/);
+  // Con el error de tareas sigue a la vista la calificación de ITSON, que no depende de /items.
+  assert.deepEqual(error.conFuente('section').map(s => s.props['data-source']), ['ivirtual', 'itson_api']);
+
+  const vacia = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => ({ ...s, finalGrade: null })) };
+  const sinNada = renderCourses({ state: { status: 'ready', courses: [vacia] }, selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [], updatedAt: UNIFICADA.updatedAt } } });
+  assert.match(sinNada.texto, /Sin tareas ni calificaciones registradas/);
+});
+
+test('App pide /items de una materia unificada aunque su fuente principal sea ITSON', async () => {
+  const principalItson = { ...COURSE_IT, sources: [{ source: 'itson_api', id: COURSE_IT.id, name: 'Cálculo', period: '03', finalGrade: '9', updatedAt: COURSE_IT.updatedAt },
+    { source: 'classroom', id: COURSE_CR.id, name: 'Cálculo', period: null, finalGrade: null, updatedAt: COURSE_IT.updatedAt }] };
+  const { h, calls, page } = await enMaterias({ courses: [principalItson], items: { [COURSE_IT.id]: [ITEM_CR] } });
+  try {
+    page().props.onOpen(COURSE_IT.id);
+    await h.settle();
+    assert.deepEqual(rutas(calls, '/api/courses/'), [`/api/courses/${COURSE_IT.id}/items`]);
+    assert.deepEqual(page().props.itemsById[COURSE_IT.id].items, [ITEM_CR]);
+  } finally { h.restore(); }
+});

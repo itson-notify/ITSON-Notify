@@ -58,7 +58,12 @@ const enHoras = (h: number) => new Date(Date.now() + h * HORA).toISOString()
 
 export const MOCK_COURSES: Course[] = [
   { id: 'mock-ivirtual-1', name: 'Programación Avanzada', source: 'ivirtual', period: null, finalGrade: '92.5', updatedAt: enHoras(-2) },
-  { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2) },
+  // ITN-58b - Materia unificada: la misma en iVirtual, Classroom y la API de ITSON.
+  { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2), sources: [
+    { source: 'ivirtual', id: 'mock-ivirtual-2', name: 'Bases de Datos', period: null, finalGrade: null, updatedAt: enHoras(-2) },
+    { source: 'classroom', id: 'mock-classroom-3', name: 'Bases de Datos - Grupo 01', period: 'Grupo 01', finalGrade: null, updatedAt: enHoras(-5) },
+    { source: 'itson_api', id: 'mock-itson-3', name: 'BASES DE DATOS', period: '05', finalGrade: '9', updatedAt: enHoras(-30) },
+  ] },
   { id: 'mock-classroom-1', name: 'Inteligencia Artificial', source: 'classroom', period: 'Grupo 02', finalGrade: null, updatedAt: enHoras(-5) },
   { id: 'mock-classroom-2', name: 'Taller de Tesis', source: 'classroom', period: null, finalGrade: null, updatedAt: enHoras(-5) },
   { id: 'mock-itson-1', name: 'Cálculo Diferencial', source: 'itson_api', period: '03', finalGrade: '9', updatedAt: enHoras(-30) },
@@ -76,6 +81,7 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
   'mock-ivirtual-2': [
     { id: 'm6', label: 'Normalización hasta 3FN', grade: null, maxGrade: 100, dueAt: enHoras(20), kind: 'ivirtual' },
     { id: 'm7', label: 'Examen parcial 1', grade: 78.5, maxGrade: 100, dueAt: enHoras(-24 * 14), kind: 'ivirtual' },
+    { id: 'm11', label: 'Diagrama entidad-relación', grade: null, maxGrade: 20, dueAt: enHoras(24 * 2), kind: 'classroom', source: 'classroom' },
   ],
   'mock-classroom-1': [
     { id: 'm8', label: 'Práctica 2: árboles de decisión', grade: null, maxGrade: 100, dueAt: enHoras(-3), kind: 'classroom' },

@@ -1,6 +1,6 @@
 // ITN-58 - Utilidades puras de "Mis materias y tareas": orden, clasificación y textos.
 // Reciben `now` para poder probarlas con una hora fija.
-import type { Course, CourseItem, CourseSource } from '@/services/api'
+import type { Course, CourseItem, CourseSource, CourseSourceEntry } from '@/services/api'
 
 export const ZONA_ITSON = 'America/Hermosillo'
 
@@ -89,4 +89,32 @@ export function periodLabel(course: Pick<Course, 'source' | 'period'>): string |
   if (!period) return null
   if (course.source === 'itson_api' && /^\d{1,2}$/.test(period)) return `Semestre ${Number(period)}`
   return period
+}
+
+// ── ITN-58b - Materias unificadas ───────────────────────────────────────────
+
+export const SOURCE_ORDER: CourseSource[] = ['ivirtual', 'classroom', 'itson_api']
+
+/** Fuentes de la materia en orden iVirtual, Classroom, ITSON; sin `sources` usa la propia. */
+export function courseSources(course: Course): CourseSourceEntry[] {
+  const lista = course.sources?.length
+    ? course.sources
+    : [{ source: course.source, id: course.id, name: course.name, period: course.period, finalGrade: course.finalGrade, updatedAt: course.updatedAt }]
+  return [...lista].sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source))
+}
+
+/** Hay algo que pedir a /items: alguna fuente con tareas (iVirtual o Classroom). */
+export const courseHasItems = (course: Course) => courseSources(course).some(s => s.source !== 'itson_api')
+
+/** Fuente de un item: `source` si viene, si no `kind`. */
+export const itemSource = (item: CourseItem): 'ivirtual' | 'classroom' => item.source ?? item.kind
+
+/**
+ * Una sección por fuente con datos, en orden iVirtual, Classroom, ITSON. Se omite la
+ * fuente que no tiene ni items ni calificación final.
+ */
+export function sourceSections(course: Course, items: CourseItem[]): { entry: CourseSourceEntry; items: CourseItem[] }[] {
+  return courseSources(course)
+    .map(entry => ({ entry, items: entry.source === 'itson_api' ? [] : items.filter(i => itemSource(i) === entry.source) }))
+    .filter(({ entry, items }) => items.length > 0 || Boolean(entry.finalGrade))
 }
