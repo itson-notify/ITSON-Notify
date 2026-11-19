@@ -23,10 +23,13 @@ async function ejecutarClassroom({ env = process.env, crearCliente = createClass
     seen.add(key);
     try {
       const result = await client.sync(student);
+      if (result.status === 401) {
+        failures++;
+        break;
+      }
       if (result.ok) processed++;
       else if (result.needsRelink || result.status === 409) skipped++;
       else failures++;
-      if (result.status === 401) break;
     } catch { failures++; }
   }
   // No bodies, account identities, academic metadata or arbitrary error messages.

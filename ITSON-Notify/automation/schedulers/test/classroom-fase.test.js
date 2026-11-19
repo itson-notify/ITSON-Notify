@@ -35,6 +35,38 @@ test('invalid enumeration fails closed, 401 stops requests', async () => {
   }
   assert.equal(calls, 1);
 });
+test('401 always counts as failure and stops subsequent requests even with relink or ok flags', async () => {
+  for (const ok of [false, true]) {
+    const calls = [], logs = [];
+    const students = ['a', 'b'].map(id => ({ userId: id, googleId: id }));
+    const code = await ejecutarClassroom({ env, log: s => logs.push(s), crearCliente: () => ({
+      listActive: async () => ({ ok: true, data: { students } }),
+      sync: async student => {
+        calls.push(student.userId);
+        return { ok, status: 401, needsRelink: true };
+      },
+    }) });
+    assert.equal(code, 1);
+    assert.deepEqual(calls, ['a']);
+    assert.deepEqual(logs, ['Classroom: procesadas=0 omitidas=0 fallidas=1']);
+  }
+});
+test('409 remains skipped without retry and allows the next student to succeed', async () => {
+  for (const needsRelink of [false, true]) {
+    const calls = [], logs = [];
+    const students = ['a', 'b'].map(id => ({ userId: id, googleId: id }));
+    const code = await ejecutarClassroom({ env, log: s => logs.push(s), crearCliente: () => ({
+      listActive: async () => ({ ok: true, data: { students } }),
+      sync: async student => {
+        calls.push(student.userId);
+        return student.userId === 'a' ? { ok: false, status: 409, needsRelink } : { ok: true };
+      },
+    }) });
+    assert.equal(code, 0);
+    assert.deepEqual(calls, ['a', 'b']);
+    assert.deepEqual(logs, ['Classroom: procesadas=1 omitidas=1 fallidas=0']);
+  }
+});
 test('cron executes Classroom after ITSON, preserves calendar and other phases after exceptions', async () => {
   const order = [];
   const code = await arrancar({ correr: async () => { order.push('ivirtual'); throw new Error(); },
