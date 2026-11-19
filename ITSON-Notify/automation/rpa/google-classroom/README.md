@@ -26,12 +26,21 @@ Se rechazan redirecciones. La fábrica permite inyectar `fetchImpl` y
 ni mensajes externos. `listActive` consulta `/internal/classroom/active` y
 `read` envía `{ userId, googleId }` a `/internal/classroom/read`.
 
-El cron actual no añade una fase Classroom. Persistencia, detección de tareas
-y notificaciones quedan fuera de esta integración (ITN-43/44).
+ITN-43 añade `schedulers/classroom-fase.js` al cron, después de ITSON API y antes
+del calendario. Se habilita explícitamente con `CLASSROOM_SYNC_ENABLED=true`;
+`RPA_PAUSADO=true` evita cualquier consulta. `client.sync(account)` envía
+`{ userId, googleId, sync: true }` al mismo `/read` y recibe únicamente
+`{ sync: { courses, coursework, newTasks } }`. Los nombres y títulos permanecen
+en backend. La sincronización admite `syncTimeoutMs` (120000 por defecto), sin
+reintentos automáticos; `409` omite la cuenta y los fallos individuales no
+interrumpen las demás. Solo se registran conteos.
 
-El OAuth actual solo admite `classroom.courses.readonly`; la lectura de tareas
-necesita también `classroom.coursework.me.readonly`, pendiente de configurar
-y obtener nuevo consentimiento. No se amplían permisos en esta rama.
+El backend admite los scopes de lectura `classroom.courses.readonly` y
+`classroom.coursework.me.readonly`. La configuración y el nuevo consentimiento
+individual siguen pendientes: cambiar código no concede permisos a tokens previos.
+Aplicar/revisar manualmente 006, 008, 014 y 016 antes de activar la fase.
+No se envían notificaciones: ITN-50/44 debe consumir la bandeja de eventos
+persistida en backend. Ver [ITN-43.md](../../../backend/ITN-43.md).
 
 Contrato, migración, privacidad y alta de usuarios:
 [ITN-59.md](../../../backend/ITN-59.md).

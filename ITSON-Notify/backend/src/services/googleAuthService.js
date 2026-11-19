@@ -8,6 +8,7 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 const CLASSROOM_SCOPE = "https://www.googleapis.com/auth/classroom.courses.readonly";
+const CLASSROOM_WORK_SCOPE = "https://www.googleapis.com/auth/classroom.coursework.me.readonly";
 
 function createPkcePair() {
   const verifier = crypto.randomBytes(32).toString("base64url");
@@ -102,8 +103,9 @@ async function verifyGoogleIdToken(idToken, { clientId, nonce, fetchImpl = fetch
 
 // Conserva el refresh token anterior cuando Google no envía uno nuevo.
 // Nunca persiste el access token: ITN-42 podrá obtener uno con el refresh token.
-async function saveGoogleAuthorization({ supabase, googleId, email, name, authoritativeEmail, refreshToken, scope, secret }) {
-  if (!scope?.split(" ").includes(CLASSROOM_SCOPE)) throw new Error("classroom_scope_not_granted");
+async function saveGoogleAuthorization({ supabase, googleId, email, name, authoritativeEmail, refreshToken, scope, secret, requiredScopes = [CLASSROOM_SCOPE] }) {
+  if (typeof scope !== 'string' || !requiredScopes.every(value => scope.split(' ').includes(value)) ||
+      !scope.split(' ').includes(CLASSROOM_SCOPE)) throw new Error("classroom_scope_not_granted");
 
   const { data: existing, error: lookupError } = await supabase
     .from("google_authorizations").select("user_id").eq("google_id", googleId).maybeSingle();
@@ -151,6 +153,6 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
 }
 
 module.exports = {
-  CLASSROOM_SCOPE, createPkcePair, generateAuthUrl, exchangeCodeForTokens,
+  CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization,
 };

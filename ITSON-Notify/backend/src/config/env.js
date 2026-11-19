@@ -19,7 +19,8 @@ const GOOGLE_OAUTH_VARIABLES = [
 ];
 
 const ALLOWED_GOOGLE_OAUTH_SCOPE = "https://www.googleapis.com/auth/classroom.courses.readonly";
-const ALLOWED_GOOGLE_OAUTH_SCOPES = Object.freeze([ALLOWED_GOOGLE_OAUTH_SCOPE]);
+const ALLOWED_GOOGLE_OAUTH_SCOPES = Object.freeze([ALLOWED_GOOGLE_OAUTH_SCOPE,
+  'https://www.googleapis.com/auth/classroom.coursework.me.readonly']);
 const ALLOWED_GOOGLE_OAUTH_ENABLED_VALUES = Object.freeze(["true", "false", "1", "0"]);
 
 // La llave compartida con el worker debe ser difícil de adivinar
@@ -71,7 +72,8 @@ function parseAndValidateScopes(rawScopes) {
     return { valid: false, scopes: [] };
   }
 
-  const allAllowed = scopes.every((scope) => ALLOWED_GOOGLE_OAUTH_SCOPES.includes(scope));
+  const allAllowed = scopes.includes(ALLOWED_GOOGLE_OAUTH_SCOPE) &&
+    scopes.every((scope) => ALLOWED_GOOGLE_OAUTH_SCOPES.includes(scope));
   if (!allAllowed) {
     return { valid: false, scopes: [] };
   }
@@ -133,7 +135,7 @@ function loadGoogleOAuthConfig(valor) {
     const scopeResult = parseAndValidateScopes(rawScopes);
     if (!scopeResult.valid) {
       invalidas.push(
-        `GOOGLE_OAUTH_SCOPES (solo se permite el scope de lectura ${ALLOWED_GOOGLE_OAUTH_SCOPE})`,
+        `GOOGLE_OAUTH_SCOPES (requiere courses.readonly; solo se permiten scopes de lectura Classroom autorizados)`,
       );
     } else {
       parsedScopes = scopeResult.scopes;

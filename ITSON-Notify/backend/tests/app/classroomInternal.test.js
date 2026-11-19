@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const request = require('supertest');
 const { createApp } = require('../../src/app');
 const { createCoursesService } = require('../../src/services/classroomCourses');
-const { saveGoogleAuthorization, CLASSROOM_SCOPE } = require('../../src/services/googleAuthService');
+const { saveGoogleAuthorization, CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE } = require('../../src/services/googleAuthService');
 const { encrypt } = require('../../src/utils/secureToken');
 const { createFakeSupabase } = require('../helpers/fakeSupabase');
 const { API_KEY, CREDENTIALS_KEY } = require('../helpers/payloads');
@@ -16,7 +16,7 @@ function setup(responses = []) {
   const config = { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY,
     googleAuthSecret: secret, googleOAuth: { enabled: true, clientId: 'synthetic-id', clientSecret: 'synthetic-secret' } };
   db.tables.google_authorizations.push({ user_id: identity.userId, google_id: identity.googleId,
-    scope: CLASSROOM_SCOPE, status: 'active', refresh_token: encrypt({ token: 'synthetic-refresh' }, secret, 'google-refresh') });
+    scope: `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}`, status: 'active', refresh_token: encrypt({ token: 'synthetic-refresh' }, secret, 'google-refresh') });
   const calls = [], logs = [];
   const classroomFetch = async (...args) => {
     calls.push(args); assert.ok(responses.length, 'Unexpected request'); return responses.shift();
@@ -26,6 +26,67 @@ function setup(responses = []) {
   return { db, config, app, calls, logs,
     service: createCoursesService({ config, supabase: db.client, fetchImpl: classroomFetch }),
     read: (body = identity) => request(app).post('/internal/classroom/read').set('x-api-key', API_KEY).send(body) };
+}
+
+test('sync opt in persists backend metadata and exposes only counts', async () => {
+  const s = setup([token(), json({ courses: [{ id: '1', name: 'PRIVATE COURSE', ownerId: 'PRIVATE' }] }),
+    json({ courseWork: [{ id: '2', courseId: '1', title: 'PRIVATE TITLE', creatorUserId: 'PRIVATE',
+      description: 'PRIVATE', state: 'PUBLISHED' }] })]);
+  const userId = '00000000-0000-4000-8000-000000000001';
+  s.db.tables.google_authorizations[0].user_id = userId;
+  let writes = 0;
+  s.db.client.rpc = async (name, args) => {
+    writes++;
+    assert.equal(args.p_user_id, userId);
+    assert.equal(args.p_google_id, identity.googleId);
+    assert.equal(args.p_courses[0].name, 'PRIVATE COURSE');
+    assert.equal(args.p_courses[0].coursework[0].title, 'PRIVATE TITLE');
+    assert.doesNotMatch(JSON.stringify(args), /creator|owner|description|refresh|access_token/);
+    return { data: { courses: 1, coursework: 1, newTasks: 0 } };
+  };
+  const res = await s.read({ userId, googleId: identity.googleId, sync: true, courses: [{ id: 'attacker' }] });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { sync: { courses: 1, coursework: 1, newTasks: 0 } });
+  assert.doesNotMatch(JSON.stringify([res.body, s.logs]), /PRIVATE|synthetic|refresh/);
+  assert.equal(writes, 1);
+});
+
+test('sync failure after a partial Google read performs no writes', async () => {
+  const s = setup([token(), json({ courses: [{ id: '1', name: 'PRIVATE' }, { id: '3', name: 'PRIVATE' }] }),
+    json({ courseWork: [{ id: '2', courseId: '1', title: 'PRIVATE' }] }), json({}, 503)]);
+  const userId = '00000000-0000-4000-8000-000000000001';
+  s.db.tables.google_authorizations[0].user_id = userId;
+  s.db.client.rpc = () => { assert.fail('Partial snapshots must not persist'); };
+  assert.equal((await s.read({ userId, googleId: identity.googleId, sync: true })).status, 503);
+});
+
+test('coursework scope is required before refresh, refreshed scope cannot downgrade it', async () => {
+  const s = setup();
+  s.db.tables.google_authorizations[0].scope = CLASSROOM_SCOPE;
+  assert.equal((await s.read()).status, 403);
+  assert.equal(s.calls.length, 0);
+  const downgraded = setup([json({ access_token: 'synthetic', token_type: 'Bearer', expires_in: 3600, scope: CLASSROOM_SCOPE })]);
+  assert.equal((await downgraded.read()).status, 403);
+  assert.equal(downgraded.calls.length, 1);
+});
+
+test('sync validates flag and UUID before reading Google', async () => {
+  const s = setup();
+  for (const sync of ['true', {}, 1, true]) assert.equal((await s.read({ ...identity, sync })).status, 400);
+  assert.equal(s.calls.length, 0);
+});
+
+for (const [code, status] of [['42501', 409], ['PGRST202', 503], ['XX000', 500]]) {
+  test(`sync RPC failure ${code} returns fixed status without academic data`, async () => {
+    const s = setup([token(), json({ courses: [] })]);
+    const userId = '00000000-0000-4000-8000-000000000001';
+    s.db.tables.google_authorizations[0].user_id = userId;
+    s.db.client.rpc = async () => ({ error: { code, message: 'PRIVATE synthetic-refresh' } });
+    const res = await s.read({ userId, googleId: identity.googleId, sync: true });
+    assert.equal(res.status, status);
+    assert.deepEqual(Object.keys(res.body), ['error']);
+    assert.doesNotMatch(JSON.stringify([res.body, s.logs]), /PRIVATE|synthetic|refresh/);
+  });
 }
 test('internal authentication precedes JSON parsing and Google access', async () => {
   const s = setup();

@@ -35,6 +35,13 @@ const validoConOAuth = () => ({
 });
 
 describe("loadConfig", () => {
+  test('admite lectura de tareas junto a cursos, exige cursos y sigue rechazando escritura', () => {
+    const work = 'https://www.googleapis.com/auth/classroom.coursework.me.readonly';
+    const env = { ...validoConOAuth(), GOOGLE_OAUTH_SCOPES: `${ALLOWED_GOOGLE_OAUTH_SCOPE} ${work} ${work}` };
+    assert.deepEqual(loadConfig(env).googleOAuth.scopes, [ALLOWED_GOOGLE_OAUTH_SCOPE, work]);
+    assert.throws(() => loadConfig({ ...env, GOOGLE_OAUTH_SCOPES: work }), /GOOGLE_OAUTH_SCOPES/);
+    assert.throws(() => loadConfig({ ...env, GOOGLE_OAUTH_SCOPES: `${env.GOOGLE_OAUTH_SCOPES} https://www.googleapis.com/auth/classroom.coursework.me` }), /GOOGLE_OAUTH_SCOPES/);
+  });
   test("lee la configuración válida sin Google OAuth (integración deshabilitada)", () => {
     const config = loadConfig(valido());
     assert.equal(config.port, 3000);

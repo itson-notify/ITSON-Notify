@@ -1,6 +1,7 @@
 // ITN-42: reuse ITN-41 encryption and ITN-49 pagination. No token persistence.
 const { decrypt } = require('../utils/secureToken');
-const { CLASSROOM_SCOPE } = require('./googleAuthService');
+const { CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE } = require('./googleAuthService');
+const { normalizeCourses, persistClassroom } = require('./classroomSync');
 const { createClassroomClient, ClassroomError } = require('./classroomClient');
 const { isMissingAuthorizationStatus } = require('./googleAuthorizationSchema');
 
@@ -27,7 +28,7 @@ function numericFields(value, keys) {
 function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, timeoutMs = 15000 }) {
   const client = createClassroomClient({ fetchImpl, timeoutMs });
 
-  async function refresh(refreshToken) {
+  async function refresh(refreshToken, requiredScopes) {
     const oauth = config.googleOAuth;
     if (!oauth?.enabled || !oauth.clientId || !oauth.clientSecret) {
       throw new CoursesError(503, 'classroom_no_disponible');
@@ -53,7 +54,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
           typeof data.token_type !== 'string' || data.token_type.toLowerCase() !== 'bearer' ||
           !Number.isFinite(data.expires_in) || data.expires_in <= 0) throw upstream();
       if (data.scope !== undefined && (typeof data.scope !== 'string' ||
-          !data.scope.split(' ').includes(CLASSROOM_SCOPE))) {
+          !requiredScopes.every(scope => data.scope.split(' ').includes(scope)))) {
         throw new CoursesError(403, 'classroom_sin_permisos');
       }
       return data.access_token;
@@ -64,7 +65,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     }
   }
 
-  async function getAccessToken({ userId, googleId }) {
+  async function getAccessToken({ userId, googleId }, requiredScopes = [CLASSROOM_SCOPE]) {
     const load = columns => supabase.from('google_authorizations').select(columns)
       .eq('user_id', userId).eq('google_id', googleId).maybeSingle();
     let { data, error } = await load('user_id,google_id,scope,refresh_token,status');
@@ -75,13 +76,13 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     if (error) throw new CoursesError(500, 'error_interno');
     if (!data || data.user_id !== userId || data.google_id !== googleId) throw relink();
     if (data.status === 'needs_relink') throw relink();
-    if (typeof data.scope !== 'string' || !data.scope.split(' ').includes(CLASSROOM_SCOPE)) {
+    if (typeof data.scope !== 'string' || !requiredScopes.every(scope => data.scope.split(' ').includes(scope))) {
       throw new CoursesError(403, 'classroom_sin_permisos');
     }
     const credential = decrypt(data.refresh_token, config.googleAuthSecret, 'google-refresh');
     if (typeof credential?.token !== 'string' || !credential.token) throw relink();
     try {
-      return await refresh(credential.token);
+      return await refresh(credential.token, requiredScopes);
     } catch (error) {
       if (error instanceof CoursesError && error.status === 409) {
         let { error: saveError } = await supabase.from('google_authorizations')
@@ -117,18 +118,32 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
   }
 
   // Internal worker projection: no tokens, course names, titles or email.
-  async function readForWorker(identity) {
-    const accessToken = await getAccessToken(identity);
+  async function readForWorker(identity, { sync = false } = {}) {
+    const accessToken = await getAccessToken(identity, [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE]);
     try {
       const courses = await client.listCourses(accessToken, { studentId: 'me' });
       const result = [];
       for (const course of courses) {
         const work = await client.listCourseWork(accessToken, course.id);
+        if (sync) {
+          result.push({ ...course, coursework: work });
+          continue;
+        }
         result.push({ id: course.id, coursework: work.map(item => ({
           id: item.id,
           ...(item.dueDate ? { dueDate: numericFields(item.dueDate, ['year', 'month', 'day']) } : {}),
           ...(item.dueTime ? { dueTime: numericFields(item.dueTime, ['hours', 'minutes', 'seconds', 'nanos']) } : {}),
         })) });
+      }
+      if (sync) {
+        let normalized;
+        try { normalized = normalizeCourses(result); } catch { throw upstream(); }
+        try { return await persistClassroom(supabase, identity, normalized); }
+        catch (error) {
+          throw new CoursesError(error.syncStatus ?? 500,
+            error.syncStatus === 409 ? 'classroom_requiere_autorizacion' :
+              error.syncStatus === 503 ? 'classroom_migracion_requerida' : 'error_interno');
+        }
       }
       return { courses: result };
     } catch (error) {
