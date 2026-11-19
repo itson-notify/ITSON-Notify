@@ -8,12 +8,16 @@ import type { Page } from '@/types'
 
 // `short` es la etiqueta de la barra inferior: con cinco secciones, "Notificaciones" y
 // "Configuración" no caben en un teléfono de 320px. El nombre completo va en aria-label.
-const NAV: { key: Page; label: string; short: string; icon: IconFn }[] = [
+// ITN-61 - La barra inferior solo admite cinco secciones: Perfil (`bottomBar: false`)
+// sale de ella y en móvil se abre desde el botón de cuenta del encabezado. En el
+// sidebar (md+) siguen todas.
+const NAV: { key: Page; label: string; short: string; icon: IconFn; bottomBar?: false }[] = [
   { key: 'inicio', label: 'Inicio', short: 'Inicio', icon: I.house },
   { key: 'materias', label: 'Materias', short: 'Materias', icon: I.bookOpen },
+  { key: 'calendario', label: 'Calendario', short: 'Calendario', icon: I.calendar },
   { key: 'notificaciones', label: 'Notificaciones', short: 'Avisos', icon: I.bell },
   { key: 'configuracion', label: 'Configuración', short: 'Ajustes', icon: I.settings },
-  { key: 'perfil', label: 'Perfil', short: 'Perfil', icon: I.user },
+  { key: 'perfil', label: 'Perfil', short: 'Perfil', icon: I.user, bottomBar: false },
 ]
 
 export function AppLayout({ student, page, unread, itsonError, onGo, onHelp, onLogout, children }: {
@@ -74,11 +78,20 @@ export function AppLayout({ student, page, unread, itsonError, onGo, onHelp, onL
               <span className="w-7 h-7 rounded-lg bg-[#2563EB] text-white flex items-center justify-center">{I.bell(13)}</span>
               <span className="text-[15px] font-semibold text-[#111827]">ITSON Notify</span>
             </div>
-            <button onClick={() => onGo('notificaciones')} aria-label={`Notificaciones, ${unread} sin leer`}
-              className={`relative w-11 h-11 -mr-2 flex items-center justify-center rounded-lg text-[#64748B] hover:text-[#2563EB] cursor-pointer ${focusRing}`}>
-              {I.bell(21)}
-              {unread > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-[#2563EB] ring-2 ring-white" />}
-            </button>
+            <div className="flex items-center gap-1 -mr-2">
+              <button onClick={() => onGo('notificaciones')} aria-label={`Notificaciones, ${unread} sin leer`}
+                className={`relative w-11 h-11 flex items-center justify-center rounded-lg text-[#64748B] hover:text-[#2563EB] cursor-pointer ${focusRing}`}>
+                {I.bell(21)}
+                {unread > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-[#2563EB] ring-2 ring-white" />}
+              </button>
+              {/* ITN-61 - Perfil ya no está en la barra inferior: se abre desde aquí. */}
+              <button onClick={() => onGo('perfil')} aria-label="Perfil" aria-current={page === 'perfil' ? 'page' : undefined}
+                className={`w-11 h-11 flex items-center justify-center rounded-lg cursor-pointer ${focusRing}`}>
+                <span aria-hidden="true" className={`w-8 h-8 rounded-full text-[12px] font-semibold flex items-center justify-center ${page === 'perfil' ? 'bg-[#2563EB] text-white ring-2 ring-[#BFDBFE]' : 'bg-[#EFF6FF] text-[#2563EB]'}`}>
+                  {student.initials || I.user(16)}
+                </span>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -87,7 +100,7 @@ export function AppLayout({ student, page, unread, itsonError, onGo, onHelp, onL
 
       {/* Bottom navigation (móvil) */}
       <nav aria-label="Principal" className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-[#E5E7EB] flex pb-[env(safe-area-inset-bottom)]">
-        {NAV.map(item => {
+        {NAV.filter(item => item.bottomBar !== false).map(item => {
           const b = badge(item.key)
           const active = page === item.key
           return (

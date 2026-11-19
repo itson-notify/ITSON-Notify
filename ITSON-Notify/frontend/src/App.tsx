@@ -10,16 +10,18 @@ import { NotificationsPage } from '@/pages/NotificationsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { CoursesPage } from '@/pages/CoursesPage'
+import { CalendarPage } from '@/pages/CalendarPage'
 import { DEFAULT_SETTINGS, INITIAL_NOTIFS, STUDENT } from '@/services/mockData'
 import {
-  ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getCourseItems, getCourses, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
+  ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getCalendar, getCourseItems, getCourses, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
   markRead, unlinkIvirtual, type Course, type ItsonProfile, type IvirtualLink,
 } from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { googleSession, logoutGoogle } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
 import { studentView } from '@/utils/student'
-import type { ConfirmReq, CourseItemsEntry, CoursesState, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
+import { calendarWindow } from '@/utils/calendar'
+import type { CalendarState, ConfirmReq, CourseItemsEntry, CoursesState, Filter, Notif, Notify, Page, Settings, SyncProps } from '@/types'
 
 /* ════════════════════════════════════════════════════════════════════════════
    ITSON Notify — frontend mobile-first
@@ -33,6 +35,7 @@ import type { ConfirmReq, CourseItemsEntry, CoursesState, Filter, Notif, Notify,
 // Sin mock, las notificaciones solo existen si llegan del backend.
 const EMPTY_NOTIFS = mockMode ? INITIAL_NOTIFS : []
 const EMPTY_COURSES: CoursesState = { status: 'idle', courses: [] }
+const EMPTY_CALENDAR: CalendarState = { status: 'idle', events: [], from: null, to: null }
 
 // ITN-58 - Sube al cerrar la sesión: una respuesta que llega después no se aplica.
 let sessionEpoch = 0
@@ -61,6 +64,8 @@ export default function App() {
   const [coursesState, setCoursesState] = useState<CoursesState>(EMPTY_COURSES)
   const [courseItems, setCourseItems] = useState<Record<string, CourseItemsEntry>>({})
   const [courseId, setCourseId] = useState<string | null>(null)
+  // ITN-61 - Calendario académico (en memoria, como las materias).
+  const [calendarState, setCalendarState] = useState<CalendarState>(EMPTY_CALENDAR)
   // ITN-58 - Correo de la sesión (/api/me o Google). Sin mock es lo único que se sabe
   // del alumno además de la carrera: la API no da el nombre.
   const [sessionEmail, setSessionEmail] = useState<string | null>(null)
@@ -83,6 +88,7 @@ export default function App() {
     setItsonProfile(mockMode ? EMPTY_ITSON_PROFILE : null); setProfileOpen(false)
     sessionEpoch++
     setCoursesState(EMPTY_COURSES); setCourseItems({}); setCourseId(null); setSessionEmail(null)
+    setCalendarState(EMPTY_CALENDAR)
   }
   // Un 401 significa que la sesión ya no sirve: se vuelve a Onboarding.
   const sessionExpired = () => {
@@ -167,6 +173,26 @@ export default function App() {
   const retryCourseItems = (id: string) => {
     const course = coursesState.courses.find(c => c.id === id)
     if (course && courseItems[id]?.status !== 'loading') loadCourseItems(course)
+  }
+
+  // ITN-61 - Calendario. Se pide al entrar a la pantalla (y al volver a entrar) con la
+  // ventana de calendarWindow; si ya hay una petición en curso no se repite. Mientras
+  // carga o si falla, se conserva la última lista buena. Sin mock, getCalendar solo usa la API.
+  const loadCalendar = () => {
+    if (calendarState.status === 'loading') return
+    const epoch = sessionEpoch
+    const { from, to } = calendarWindow(Date.now())
+    setCalendarState(s => ({ ...s, status: 'loading' }))
+    getCalendar(from, to)
+      .then(events => {
+        if (epoch === sessionEpoch) setCalendarState({ status: 'ready', events, from, to })
+      })
+      .catch(error => {
+        if (epoch !== sessionEpoch) return
+        if (error instanceof ApiError && error.status === 401) return sessionExpired()
+        const unavailable = error instanceof ApiError && error.status === 503 && error.code === 'calendario_no_disponible'
+        setCalendarState(s => ({ ...s, status: unavailable ? 'unavailable' : 'error' }))
+      })
   }
 
   // ITN-55 - Quitar la matrícula con confirmación. Un 404 es "ya no estaba".
@@ -255,6 +281,7 @@ export default function App() {
   const go = (p: Page) => {
     setPage(p); setSelectedId(null); setCourseId(null); window.scrollTo(0, 0)
     if (p === 'materias') loadCourses()
+    if (p === 'calendario') loadCalendar()
   }
   const openNotif = (id: string) => {
     const wasUnread = notifs.some(n => n.id === id && n.unread)
@@ -375,6 +402,7 @@ export default function App() {
             onRetry={loadCourses} onRetryItems={retryCourseItems} onGo={go}
             ivirtualLink={mockMode ? null : ivirtualLink} classroomConnected={settings.classroomConnected} />
         )}
+        {page === 'calendario' && <CalendarPage state={calendarState} onRetry={loadCalendar} />}
         {page === 'notificaciones' && (
           <NotificationsPage notifs={visible} settings={settings} filter={filter} setFilter={setFilter} selectedId={selectedId}
             onOpen={openNotif} onClose={() => setSelectedId(null)} onMarkAll={markAll} onMarkUnread={markUnread} sync={syncProps} />

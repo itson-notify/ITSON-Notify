@@ -1,4 +1,4 @@
-import type { Course, CourseItem } from '@/services/api'
+import type { CalendarEvent, Course, CourseItem } from '@/services/api'
 import type { Notif, Settings } from '@/types'
 
 /* Datos simulados mientras el frontend no está conectado al backend.
@@ -86,6 +86,38 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
   'mock-itson-1': [],
   'mock-itson-2': [],
 }
+
+// ITN-61 - Calendario académico simulado (eventos inventados). Las fechas se calculan
+// desde que carga la app, en hora de Hermosillo (UTC-7 todo el año), para que siempre
+// haya eventos pasados, de hoy y próximos, de todo el día y con hora.
+const DESFASE_HMO = 7 * HORA
+const diaHmo = (dias: number) => new Date(Date.now() - DESFASE_HMO + dias * 24 * HORA).toISOString().slice(0, 10)
+const instanteHmo = (dia: string, hora: string) => new Date(Date.parse(`${dia}T${hora}:00.000Z`) + DESFASE_HMO).toISOString()
+
+function mockEvento(id: string, title: string, category: string | null, desde: number, hasta: number, horas?: [string, string], description: string | null = null): CalendarEvent {
+  const startDate = diaHmo(desde)
+  const endDate = diaHmo(hasta)
+  const [inicio, fin] = horas ?? ['00:00', '23:59']
+  return {
+    id, title, description, category, startDate, endDate, allDay: !horas,
+    startsAt: instanteHmo(startDate, inicio), endsAt: instanteHmo(endDate, fin), updatedAt: enHoras(-24),
+  }
+}
+
+export const MOCK_CALENDAR_EVENTS: CalendarEvent[] = [
+  mockEvento('mock-cal-1', 'Inicio de solicitudes de examen extraordinario', 'Registro Escolar', -10, -10),
+  mockEvento('mock-cal-2', 'Plática informativa de servicio social', 'Académicos', -3, -3, ['10:00', '11:30'], 'Sesión en línea para quienes ya cubren el 70% de créditos.'),
+  mockEvento('mock-cal-3', 'Periodo de evaluaciones finales', 'Registro Escolar', -1, 4),
+  mockEvento('mock-cal-4', 'Último día para bajas parciales', 'Registro Escolar', 0, 0),
+  mockEvento('mock-cal-5', 'Feria de proyectos de ingeniería', 'Académicos', 0, 0, ['16:00', '18:00']),
+  mockEvento('mock-cal-6', 'Último día de clases', 'Registro Escolar', 2, 2),
+  mockEvento('mock-cal-7', 'Ceremonia de reconocimiento académico', 'Académicos', 6, 6, ['18:00', '20:00']),
+  mockEvento('mock-cal-8', 'Mantenimiento programado del portal', null, 9, 9, ['22:00', '23:30']),
+  mockEvento('mock-cal-9', 'Examen no ordinario', 'Registro Escolar', 12, 13),
+  mockEvento('mock-cal-10', 'Vacaciones de invierno', 'Registro Escolar', 24, 40, undefined, 'Sin actividades académicas ni administrativas.'),
+  mockEvento('mock-cal-11', 'Carga académica en línea', 'Registro Escolar', 42, 44),
+  mockEvento('mock-cal-12', 'Primer día de clases', 'Registro Escolar', 47, 47),
+]
 
 // [H10] Preguntas frecuentes enfocadas en tareas concretas del alumno
 export const FAQ: { q: string; a: string }[] = [
