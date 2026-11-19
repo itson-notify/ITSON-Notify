@@ -18,7 +18,7 @@ const workSchema = z.object({
     nanos: z.number().int().min(0).max(999999999).default(0) }).optional(),
 });
 const schema = z.array(z.object({ id, name: z.string().min(1).max(3000), section: optionalText,
-  courseState: optionalText, alternateLink: link, coursework: z.array(workSchema) }));
+  courseState: optionalText, alternateLink: link, coursework: z.array(workSchema).optional() }));
 
 function dueAt(item) {
   if (!item.dueDate) {
@@ -49,15 +49,17 @@ function normalizeCourses(raw) {
     }
     return [...values.values()];
   }
+  // ITN-43b: a course without the coursework key (courses-only scope) stays without it, so
+  // sync_classroom leaves its tasks and baseline untouched. coursework: [] is a real empty list.
   return unique(courses.map(course => ({
     id: course.id, name: course.name, section: course.section ?? null,
     course_state: course.courseState ?? null, alternate_link: course.alternateLink ?? null,
-    coursework: unique(course.coursework.map(item => {
+    ...(course.coursework === undefined ? {} : { coursework: unique(course.coursework.map(item => {
       if (item.courseId !== course.id) throw new Error('course_identity_mismatch');
       return { id: item.id, title: item.title, work_type: item.workType ?? null,
         state: item.state ?? 'PUBLISHED', alternate_link: item.alternateLink ?? null,
         due_at: dueAt(item), source_created_at: item.creationTime ?? null, source_updated_at: item.updateTime ?? null };
-    })),
+    })) }),
   })));
 }
 

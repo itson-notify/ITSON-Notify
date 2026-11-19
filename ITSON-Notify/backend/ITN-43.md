@@ -288,3 +288,34 @@ Dictamen de remediación: **PASS local**. No constituye aprobación de Pedro ni
 habilitación de producción. No se envían mensajes, notificaciones ni cambios a
 GitHub; sin push, PR nuevo, merge, despliegue, migración remota o cambios a Railway,
 Supabase/Google Cloud. El commit local separado queda autorizado tras certificación.
+
+## ITN-43b — sync solo cursos y migración 017
+
+Las cuentas actuales solo conceden `classroom.courses.readonly`. Con este cambio la
+sync (`readForWorker` con `sync: true`) ya no responde 403 por falta del scope de tareas:
+
+* Siempre exige `CLASSROOM_SCOPE`; sin él responde 403 `classroom_sin_permisos`
+  (el worker ya lo omite con `permissionsMissing`).
+* Si el scope guardado en `google_authorizations` (y el del token renovado, cuando
+  Google lo informa) incluye `CLASSROOM_WORK_SCOPE`, lista y envía tareas como antes.
+* Si no, no llama a `listCourseWork` y envía cada curso **sin** la clave `coursework`.
+  `normalizeCourses` conserva la ausencia; `coursework: []` sigue siendo una lista
+  vacía válida. Sin `sync`, el contrato ITN-59 no cambia.
+
+`database/migrations/017_classroom_baseline.sql` (sin `begin/commit`, `lock_timeout` 5s):
+
+* Agrega `classroom_courses.coursework_baseline_at` (nullable; filas existentes en null).
+* Redefine `sync_classroom(uuid, text, jsonb)` con la misma firma, permisos y resultado.
+  Un curso sin arreglo `coursework` solo se guarda: no toca tareas, eventos ni baseline.
+  Con arreglo, la primera carga de tareas de cada curso es baseline silencioso y fija
+  `coursework_baseline_at`; solo las tareas nuevas `PUBLISHED` posteriores crean
+  eventos en `classroom_task_events`.
+* Consecuencia: cursos ya sincronizados con 016 harán una carga baseline silenciosa
+  en su primera sync con tareas después de aplicar 017.
+
+Validación: `node scripts/verify-classroom-sync-sql.cjs <bin>` cubre solo cursos,
+baseline tardío, evento posterior e idempotencia. Pendiente manual: aplicar 017 y
+redesplegar el backend. Con 016 un curso sin `coursework` también se guarda sin
+tareas, pero 016 notificaría todas las tareas de un curso existente en su primera
+carga; por eso 017 debe estar aplicada antes de que alguna cuenta conceda el scope
+de tareas.

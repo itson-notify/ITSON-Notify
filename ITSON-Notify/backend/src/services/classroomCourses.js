@@ -57,7 +57,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
           !requiredScopes.every(scope => data.scope.split(' ').includes(scope)))) {
         throw new CoursesError(403, 'classroom_sin_permisos');
       }
-      return data.access_token;
+      return { accessToken: data.access_token, scope: data.scope };
     } catch (error) {
       if (error instanceof CoursesError) throw error;
       if (error instanceof SyntaxError) throw upstream();
@@ -65,7 +65,8 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     }
   }
 
-  async function getAccessToken({ userId, googleId }, requiredScopes = [CLASSROOM_SCOPE]) {
+  // Returns the access token plus the stored and refreshed scope strings (never logged).
+  async function authorize({ userId, googleId }, requiredScopes = [CLASSROOM_SCOPE]) {
     const load = columns => supabase.from('google_authorizations').select(columns)
       .eq('user_id', userId).eq('google_id', googleId).maybeSingle();
     let { data, error } = await load('user_id,google_id,scope,refresh_token,status');
@@ -82,7 +83,8 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     const credential = decrypt(data.refresh_token, config.googleAuthSecret, 'google-refresh');
     if (typeof credential?.token !== 'string' || !credential.token) throw relink();
     try {
-      return await refresh(credential.token, requiredScopes);
+      const { accessToken, scope } = await refresh(credential.token, requiredScopes);
+      return { accessToken, storedScope: data.scope, refreshedScope: scope };
     } catch (error) {
       if (error instanceof CoursesError && error.status === 409) {
         let { error: saveError } = await supabase.from('google_authorizations')
@@ -98,6 +100,10 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
       }
       throw error;
     }
+  }
+
+  async function getAccessToken(identity, requiredScopes = [CLASSROOM_SCOPE]) {
+    return (await authorize(identity, requiredScopes)).accessToken;
   }
 
   async function listCourses(identity) {
@@ -118,13 +124,23 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
   }
 
   // Internal worker projection: no tokens, course names, titles or email.
+  // ITN-43b: sync only requires the courses scope. Tasks are read and persisted only when
+  // both the stored grant and the refreshed token (if it reports scopes) include the task
+  // scope; otherwise courses are sent WITHOUT the coursework key so SQL leaves tasks untouched.
   async function readForWorker(identity, { sync = false } = {}) {
-    const accessToken = await getAccessToken(identity, sync === true
-      ? [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE] : [CLASSROOM_SCOPE]);
+    const { accessToken, storedScope, refreshedScope } = await authorize(identity, [CLASSROOM_SCOPE]);
+    const has = (scope, value) => typeof scope === 'string' && scope.split(' ').includes(value);
+    const withWork = sync !== true || (has(storedScope, CLASSROOM_WORK_SCOPE) &&
+      (refreshedScope === undefined || has(refreshedScope, CLASSROOM_WORK_SCOPE)));
     try {
       const courses = await client.listCourses(accessToken, { studentId: 'me' });
       const result = [];
       for (const course of courses) {
+        if (sync === true && !withWork) {
+          const { coursework: _ignored, ...courseOnly } = course;
+          result.push(courseOnly);
+          continue;
+        }
         const work = await client.listCourseWork(accessToken, course.id);
         if (sync === true) {
           result.push({ ...course, coursework: work });

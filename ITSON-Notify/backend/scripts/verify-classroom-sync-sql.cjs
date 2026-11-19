@@ -45,16 +45,23 @@ async function main() {
       '014_google_authorization_status.sql']) {
       sql(fs.readFileSync(path.join(migrations, file), 'utf8'));
     }
-    const migration = fs.readFileSync(path.join(migrations, '016_classroom_sync.sql'), 'utf8');
-    assert.doesNotMatch(migration, /^\s*(begin|commit)\s*;/im);
+    const m016 = fs.readFileSync(path.join(migrations, '016_classroom_sync.sql'), 'utf8');
+    const m017 = fs.readFileSync(path.join(migrations, '017_classroom_baseline.sql'), 'utf8');
+    for (const text of [m016, m017]) assert.doesNotMatch(text, /^\s*(begin|commit)\s*;/im);
+    assert.match(m017, /set local lock_timeout = '5s'/);
+    const migration = `${m016}\n${m017}`;
     const absent = () => assert.match(sql(`select case when to_regclass('public.classroom_task_events') is null
       and to_regprocedure('public.sync_classroom(uuid,text,jsonb)') is null
+      and not exists (select 1 from information_schema.columns where table_schema = 'public'
+        and table_name = 'classroom_courses' and column_name = 'coursework_baseline_at')
       then 'MIGRATION_ROLLBACK_OK' else 'FAILED' end;`), /MIGRATION_ROLLBACK_OK/);
     sql(`begin;\n${migration}\nrollback;`);
     absent();
     assert.throws(() => sql(`begin;\n${migration}\nselect 1/0;\ncommit;`), /psql failed/);
     absent();
     for (let attempt = 0; attempt < 2; attempt++) sql(`begin;\n${migration}\ncommit;`);
+    // 017 alone is also replayable on top of an applied 016.
+    sql(`begin;\n${m017}\ncommit;`);
     sql(fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomSync.sql'), 'utf8'));
     // Real privilege failures share 42501 but must never emit the business marker.
     for (const [table, privilege] of [['app_users', 'update'], ['google_authorizations', 'select']]) {
@@ -85,7 +92,7 @@ async function main() {
     assert.equal(results.filter(out => /"newTasks": 0/.test(out)).length, 1);
     sql(`select test_assert((select count(*) = 1 from classroom_task_events e join classroom_coursework w on w.id = e.coursework_id
       where w.external_coursework_id = 'concurrent'), 'concurrent unique event');`);
-    console.log('CLASSROOM_SQL_OK: baseline, dedup, timestamps, isolation, relink, rollback, concurrent writers, RLS, migration replay, external transaction rollback');
+    console.log('CLASSROOM_SQL_OK: courses-only, per-course task baseline (017), baseline, dedup, timestamps, isolation, relink, rollback, concurrent writers, RLS, migration replay, external transaction rollback');
   } catch (error) {
     console.error(error.message);
     throw error;

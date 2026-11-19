@@ -90,16 +90,17 @@ for (const [name, work] of [['documented', CLASSROOM_WORK_SCOPE], ['alternative'
   });
 }
 
-for (const [name, stored, refreshed, expectedCalls] of [
-  ['documented grant and documented refresh', CLASSROOM_WORK_SCOPE, CLASSROOM_WORK_SCOPE, 3],
-  ['alternative stored grant', alternate, CLASSROOM_WORK_SCOPE, 0],
-  ['write scope cannot substitute for task read scope', 'https://www.googleapis.com/auth/classroom.coursework.me', CLASSROOM_WORK_SCOPE, 0],
-  ['broader student scope cannot substitute for personal task scope', 'https://www.googleapis.com/auth/classroom.coursework.students.readonly', CLASSROOM_WORK_SCOPE, 0],
-  ['alternative refreshed scope', CLASSROOM_WORK_SCOPE, alternate, 1],
-  ['refresh without scope uses the stored grant', CLASSROOM_WORK_SCOPE, undefined, 3],
+// ITN-43b: sync never fails for a missing task scope; it falls back to courses-only.
+for (const [name, stored, refreshed, mode] of [
+  ['documented grant and documented refresh', CLASSROOM_WORK_SCOPE, CLASSROOM_WORK_SCOPE, 'tasks'],
+  ['alternative stored grant', alternate, CLASSROOM_WORK_SCOPE, 'courses'],
+  ['write scope cannot substitute for task read scope', 'https://www.googleapis.com/auth/classroom.coursework.me', CLASSROOM_WORK_SCOPE, 'courses'],
+  ['broader student scope cannot substitute for personal task scope', 'https://www.googleapis.com/auth/classroom.coursework.students.readonly', CLASSROOM_WORK_SCOPE, 'courses'],
+  ['alternative refreshed scope', CLASSROOM_WORK_SCOPE, alternate, 'courses'],
+  ['refresh without scope uses the stored grant', CLASSROOM_WORK_SCOPE, undefined, 'tasks'],
 ]) test(`readForWorker sync: ${name}`, async () => {
-  const db = createFakeSupabase(), calls = [];
-  db.client.rpc = async () => ({ data: { courses: 1, coursework: 1, newTasks: 0 } });
+  const db = createFakeSupabase(), calls = [], rpcArgs = [];
+  db.client.rpc = async (rpcName, args) => { rpcArgs.push(args); return { data: { courses: 1, coursework: 1, newTasks: 0 } }; };
   db.tables.google_authorizations.push({ user_id: identity.userId, google_id: identity.googleId,
     status: 'active', scope: scopes(stored), refresh_token: encrypt({ token: 'synthetic-refresh' }, secret, 'google-refresh') });
   const service = createCoursesService({ config, supabase: db.client, fetchImpl: async url => {
@@ -107,12 +108,13 @@ for (const [name, stored, refreshed, expectedCalls] of [
     if (url === 'https://oauth2.googleapis.com/token') return json({ access_token: 'synthetic-access',
       token_type: 'Bearer', expires_in: 3600, ...(refreshed === undefined ? {} : { scope: scopes(refreshed) }) });
     if (new URL(url).pathname === '/v1/courses') return json({ courses: [{ id: 'c1', name: 'Synthetic course' }] });
+    assert.equal(mode, 'tasks', 'Courses-only sync must not list coursework');
     assert.equal(new URL(url).pathname, '/v1/courses/c1/courseWork');
     return json({ courseWork: [{ id: 'w1', courseId: 'c1', title: 'Synthetic task' }] });
   } });
-  if (expectedCalls === 3) assert.deepEqual(await service.readForWorker(identity, { sync: true }), { sync: { courses: 1, coursework: 1, newTasks: 0 } });
-  else await assert.rejects(service.readForWorker(identity, { sync: true }), { status: 403, code: 'classroom_sin_permisos' });
-  assert.equal(calls.length, expectedCalls);
+  assert.deepEqual(await service.readForWorker(identity, { sync: true }), { sync: { courses: 1, coursework: 1, newTasks: 0 } });
+  assert.equal(calls.length, mode === 'tasks' ? 3 : 2);
+  assert.equal(Object.hasOwn(rpcArgs[0].p_courses[0], 'coursework'), mode === 'tasks');
   assert.equal(db.tables.google_authorizations[0].status, 'active');
   assert.equal(db.calls.filter(call => call.op !== 'select').length, 0);
 });
@@ -138,7 +140,14 @@ test('courses-only OAuth config can save alternative metadata but does not certi
     scope: scopes(alternate), secret, requiredScopes: [CLASSROOM_SCOPE] });
   const row = db.tables.google_authorizations[0];
   assert.equal(row.scope, scopes(alternate));
-  const service = createCoursesService({ config, supabase: db.client,
-    fetchImpl: async () => { assert.fail('Task scope must fail before refresh'); } });
-  await assert.rejects(service.readForWorker({ userId: row.user_id, googleId: row.google_id }, { sync: true }), { status: 403 });
+  let rpcArgs;
+  db.client.rpc = async (rpcName, args) => { rpcArgs = args; return { data: { courses: 1, coursework: 0, newTasks: 0 } }; };
+  const service = createCoursesService({ config, supabase: db.client, fetchImpl: async url => {
+    if (url === 'https://oauth2.googleapis.com/token') return json({ access_token: 'synthetic-access',
+      token_type: 'Bearer', expires_in: 3600, scope: scopes(alternate) });
+    assert.equal(new URL(url).pathname, '/v1/courses', 'Alternative scope must not certify task access');
+    return json({ courses: [{ id: 'c1', name: 'Synthetic course' }] });
+  } });
+  await service.readForWorker({ userId: row.user_id, googleId: row.google_id }, { sync: true });
+  assert.equal(Object.hasOwn(rpcArgs.p_courses[0], 'coursework'), false);
 });
