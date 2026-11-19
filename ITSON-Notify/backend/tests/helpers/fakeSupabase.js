@@ -94,6 +94,15 @@ const TABLES = {
     uniques: [["endpoint"]],
     notNull: ["user_id", "endpoint", "p256dh", "auth"]
   },
+  // 015 (ITN-60): calendario académico; external_id único y ends_at >= starts_at.
+  calendar_events: {
+    uniques: [["external_id"]],
+    notNull: ["external_id", "title", "starts_at", "ends_at", "all_day"],
+    defaults: { description: null, category: null },
+    defaultNow: ["updated_at"],
+    checks: { external_id: (v) => typeof v === "string" && /^[0-9]{1,12}$/.test(v) },
+    rowCheck: (r) => Date.parse(r.ends_at) >= Date.parse(r.starts_at),
+  },
 };
 
 // Primer check que la fila (o el cambio de un update) no cumple.
@@ -104,7 +113,7 @@ function checkViolado(def, row) {
   return null;
 }
 
-const TIMESTAMPS = new Set(["captured_at", "created_at", "first_seen_at", "last_seen_at"]);
+const TIMESTAMPS = new Set(["captured_at", "created_at", "first_seen_at", "last_seen_at", "starts_at", "ends_at"]);
 
 const norm = (v) => (v === undefined ? null : v);
 const keyOf = (row, cols) => JSON.stringify(cols.map((c) => norm(row[c])));
@@ -197,6 +206,17 @@ class Query {
   lt(column, value) {
     this.usados.push(column);
     this.filters.push((r) => norm(r[column]) !== null && compare(column, r[column], value) < 0);
+    return this;
+  }
+  // ITN-60 - Comparaciones inclusivas (timestamps por instante, ver TIMESTAMPS).
+  gte(column, value) {
+    this.usados.push(column);
+    this.filters.push((r) => norm(r[column]) !== null && compare(column, r[column], value) >= 0);
+    return this;
+  }
+  lte(column, value) {
+    this.usados.push(column);
+    this.filters.push((r) => norm(r[column]) !== null && compare(column, r[column], value) <= 0);
     return this;
   }
   order(column, { ascending = true } = {}) {

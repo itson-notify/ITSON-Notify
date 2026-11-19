@@ -331,7 +331,7 @@ describe("dos fases independientes en arrancar", () => {
   test("la fase de la API corre aunque iVirtual lance, y el código combina las dos", async (t) => {
     const alertar = t.mock.fn(async () => {});
     const api = t.mock.fn(async () => 0);
-    const codigo = await arrancar({
+    const codigo = await arrancar({ correrCalendario: async () => {},
       correr: async () => {
         throw new TypeError("x");
       },
@@ -347,7 +347,7 @@ describe("dos fases independientes en arrancar", () => {
   test("una excepción en la fase de la API no cambia el resultado de iVirtual y alerta con su fuente", async (t) => {
     const alertar = t.mock.fn(async () => {});
     const ivirtual = t.mock.fn(async () => 0);
-    const codigo = await arrancar({
+    const codigo = await arrancar({ correrCalendario: async () => {},
       correr: ivirtual,
       correrApi: async () => {
         throw new RangeError("y");
@@ -362,15 +362,15 @@ describe("dos fases independientes en arrancar", () => {
 
   test("sin cuentas de iVirtual, la fase de la API corre igual", async (t) => {
     const api = t.mock.fn(async () => 0);
-    assert.equal(await arrancar({ correr: async () => 0, correrApi: api, alertar: async () => {}, logError: () => {} }), 0);
+    assert.equal(await arrancar({ correrCalendario: async () => {}, correr: async () => 0, correrApi: api, alertar: async () => {}, logError: () => {} }), 0);
     assert.equal(api.mock.callCount(), 1);
   });
 
   test("las dos en 0: 0; cualquiera en 1: 1", async (t) => {
     const base = { alertar: async () => {}, logError: () => {} };
-    assert.equal(await arrancar({ ...base, correr: async () => 0, correrApi: async () => 0 }), 0);
-    assert.equal(await arrancar({ ...base, correr: async () => 1, correrApi: async () => 0 }), 1);
-    assert.equal(await arrancar({ ...base, correr: async () => 0, correrApi: async () => 1 }), 1);
+    assert.equal(await arrancar({ correrCalendario: async () => {}, ...base, correr: async () => 0, correrApi: async () => 0 }), 0);
+    assert.equal(await arrancar({ correrCalendario: async () => {}, ...base, correr: async () => 1, correrApi: async () => 0 }), 1);
+    assert.equal(await arrancar({ correrCalendario: async () => {}, ...base, correr: async () => 0, correrApi: async () => 1 }), 1);
   });
 });
 

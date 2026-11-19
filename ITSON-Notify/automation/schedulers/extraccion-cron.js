@@ -8,6 +8,7 @@ const { notificarFalloCritico, nombreErrorSeguro } = require("../monitors/alerta
 const { entregarResultados, leerConfigEntrega } = require("./entrega-backend");
 const { crearClienteCredenciales } = require("./credenciales-backend");
 const { ejecutarItsonApi } = require("./itson-api-fase");
+const { ejecutarCalendario } = require("./calendario-fase");
 
 // Punto de entrada del cron de Railway (ITN-25). Railway lo arranca según el
 // cronSchedule de .railway/railway.ts; corre UNA pasada y termina.
@@ -272,18 +273,35 @@ async function correrFase(correr, { fuente, alertar, logError }) {
   }
 }
 
+// ITN-60 - Fase del calendario académico con la misma limpieza de secretos.
+const correrCalendarioProceso = () => ejecutarCalendario({ ocultar: (texto) => ocultarValores(texto, process.env) });
+
+// ITN-60 - La fase del calendario no es crítica: no alerta y no cuenta para el
+// código de salida. Una excepción solo se registra con el nombre del error.
+async function correrCalendarioSinAlerta(correrCalendario, logError) {
+  try {
+    await correrCalendario();
+  } catch (error) {
+    logError(`Error en la fase del calendario: ${nombreErrorSeguro(error?.name) ?? "Error"}. Se sigue.`);
+  }
+}
+
 // ITN-55 - Dos fases independientes, una después de la otra: iVirtual (sin cambios)
 // y la API REST de ITSON. Cada una en su propio try/catch, así una excepción en una
 // no impide la otra, y la de la API corre aunque no haya cuentas de iVirtual. El
 // código de salida es 1 si cualquiera de las dos sale con 1.
+// ITN-60 - Al final corre la del calendario, que nunca cambia el código de salida
+// ni manda alertas.
 async function arrancar({
   correr = ejecutar,
   correrApi = correrItsonApi,
+  correrCalendario = correrCalendarioProceso,
   alertar = notificarFalloCritico,
   logError = console.error,
 } = {}) {
   const ivirtual = await correrFase(correr, { fuente: "worker-rpa", alertar, logError });
   const api = await correrFase(correrApi, { fuente: "itson-api", alertar, logError });
+  await correrCalendarioSinAlerta(correrCalendario, logError);
   return ivirtual === EXIT_CODES.ok && api === EXIT_CODES.ok ? EXIT_CODES.ok : EXIT_CODES.error;
 }
 

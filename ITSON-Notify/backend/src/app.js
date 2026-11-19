@@ -9,6 +9,7 @@ const { gradeSnapshotsRouter } = require("./routes/gradeSnapshots");
 const { credentialsRouter } = require("./routes/credentials");
 const { classroomInternalRouter } = require("./routes/classroomInternal");
 const { itsonProfilesInternalRouter } = require("./routes/itsonProfilesInternal");
+const { calendarInternalRouter } = require("./routes/calendarInternal");
 const { authGoogleRouter, getGoogleSession, sessionHash } = require("./routes/authGoogle");
 const { studentApiRouter } = require("./routes/studentApi");
 const { buildChannels } = require("./services/notificationChannels");
@@ -93,6 +94,8 @@ function createApp({
     "/internal/credentials",
     credentialsRouter({ supabase, logger, now, credentialCrypto }),
   );
+  // ITN-60 - Calendario académico público de ITSON que manda el worker.
+  app.use("/internal/calendar-events", calendarInternalRouter({ supabase, logger, now }));
 
   // Autenticación y autorización con Google Classroom (ITN-41)
   app.use(
