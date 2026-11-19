@@ -15,6 +15,7 @@ const { loadConfig } = require("../../src/config/env");
 const { createApp } = require("../../src/app");
 const { buildChannels } = require("../../src/services/notificationChannels");
 const { createFakeSupabase } = require("../helpers/fakeSupabase");
+const { encrypt } = require("../../src/utils/secureToken");
 
 const BACKEND_DIR = path.resolve(__dirname, "../..");
 const FRONTEND = "http://localhost:5173";
@@ -127,20 +128,39 @@ describe("buildChannels con llaves rechazadas", () => {
 });
 
 describe("Endpoints /push con push deshabilitado", () => {
+  // Sesión de Google sembrada en el Supabase simulado (mismo formato que authGoogle).
+  function crearSesion(db, secret) {
+    const userId = crypto.randomUUID();
+    const sessionId = crypto.randomBytes(16).toString("hex");
+    const exp = Date.now() + 60 * 60 * 1000;
+    db.tables.app_users.push({ id: userId, email: "alumno@potros.itson.edu.mx" });
+    db.tables.google_app_sessions.push({
+      id: crypto.createHash("sha256").update(sessionId).digest("hex"),
+      user_id: userId,
+      google_id: "g12345",
+      expires_at: new Date(exp).toISOString(),
+    });
+    const token = encrypt({ userId, googleId: "g12345", sessionId, exp }, secret, "google-session");
+    return { userId, cookie: `itn41_google_session=${token}` };
+  }
+
   function appSinPush() {
     const { publica, privada } = llavesInvalidas();
+    const secret = crypto.randomBytes(32).toString("hex");
     const config = {
       ...loadConfig({ ...baseEnv(), VAPID_PUBLIC_KEY: publica, VAPID_PRIVATE_KEY: privada }),
       credentialsEncryptionKey: crypto.randomBytes(32),
-      googleAuthSecret: crypto.randomBytes(32).toString("hex"),
+      googleAuthSecret: secret,
     };
+    assert.equal(config.pushEnabled, false);
+    const db = createFakeSupabase();
     const errores = [];
     const app = createApp({
       config,
-      supabase: createFakeSupabase().client,
+      supabase: db.client,
       logger: { info: () => {}, warn: () => {}, error: (...a) => errores.push(a) },
     });
-    return { app, errores };
+    return { app, db, secret, errores };
   }
 
   test("GET /push/vapid-public-key responde 503 push_no_disponible", async () => {
@@ -150,22 +170,50 @@ describe("Endpoints /push con push deshabilitado", () => {
     assert.deepEqual(res.body, { error: "push_no_disponible" });
   });
 
-  test("POST y DELETE /push/subscriptions responden 503 sin 500 ni stack", async () => {
-    const { app, errores } = appSinPush();
-    const post = await request(app)
+  test("POST /push/subscriptions responde 503 sin 500 ni stack y no guarda nada", async () => {
+    const { app, db, secret, errores } = appSinPush();
+    const { cookie } = crearSesion(db, secret);
+    const res = await request(app)
       .post("/push/subscriptions")
       .set("Origin", FRONTEND)
+      .set("Cookie", cookie)
       .send({ subscription: { endpoint: "https://push.test/1", keys: { p256dh: "a", auth: "b" } } });
-    assert.equal(post.status, 503);
-    assert.deepEqual(post.body, { error: "push_no_disponible" });
+    assert.equal(res.status, 503);
+    assert.deepEqual(res.body, { error: "push_no_disponible" });
+    assert.equal(db.tables.push_subscriptions.length, 0);
+    assert.equal(errores.length, 0);
+  });
 
-    const del = await request(app)
+  test("DELETE /push/subscriptions sigue borrando la suscripción propia (204)", async () => {
+    const { app, db, secret, errores } = appSinPush();
+    const { userId, cookie } = crearSesion(db, secret);
+    const otroUserId = crypto.randomUUID();
+    db.tables.push_subscriptions.push(
+      { id: "sub-1", user_id: userId, endpoint: "https://push.test/propio", p256dh: "a", auth: "b" },
+      { id: "sub-2", user_id: otroUserId, endpoint: "https://push.test/ajeno", p256dh: "c", auth: "d" },
+    );
+    const res = await request(app)
+      .delete("/push/subscriptions")
+      .set("Origin", FRONTEND)
+      .set("Cookie", cookie)
+      .send({ endpoint: "https://push.test/propio" });
+    assert.equal(res.status, 204);
+    assert.deepEqual(db.tables.push_subscriptions.map((s) => s.id), ["sub-2"]);
+    assert.equal(errores.length, 0);
+  });
+
+  test("DELETE /push/subscriptions mantiene sus controles: 401 sin sesión y 403 por origen", async () => {
+    const { app } = appSinPush();
+    const sinSesion = await request(app)
       .delete("/push/subscriptions")
       .set("Origin", FRONTEND)
       .send({ endpoint: "https://push.test/1" });
-    assert.equal(del.status, 503);
-    assert.deepEqual(del.body, { error: "push_no_disponible" });
-    assert.equal(errores.length, 0);
+    assert.equal(sinSesion.status, 401);
+    const otroOrigen = await request(app)
+      .delete("/push/subscriptions")
+      .set("Origin", "http://sitio-atacante.test")
+      .send({ endpoint: "https://push.test/1" });
+    assert.equal(otroOrigen.status, 403);
   });
 
   test("el preflight OPTIONS sigue respondiendo 204 con CORS", async () => {
