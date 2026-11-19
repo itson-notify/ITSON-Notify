@@ -29,8 +29,10 @@ HTTPS de `classroom.google.com`, sin credenciales. Fechas y horas se validan,
 incluidos días imposibles y pertenencia `courseId`. Duplicados exactos de páginas
 se colapsan; duplicados contradictorios abortan antes de escribir.
 
-Ambas variantes de `/read` requieren los dos scopes de lectura en la autorización
-almacenada y, si Google devuelve `scope` al renovar, también en esa respuesta.
+`/read` sin sync conserva ITN-59: solo exige `courses.readonly` en el grant
+almacenado y en la renovación cuando Google devuelve `scope`. `sync: true` exige
+además `classroom.coursework.me.readonly` en ambas comprobaciones. Esto no concede
+permisos en Google: el proveedor puede rechazar la lectura de tareas con 403.
 La consulta de cursos ITN-42 sigue requiriendo solo `courses.readonly`.
 Se reutilizan el cifrado, renovación, paginación y manejo de revocación de ITN-59.
 No se entrega ningún token al worker.
@@ -48,6 +50,9 @@ persiste `needs_relink` como antes; las cuentas marcadas no se vuelven a renovar
 No se ejecutan migraciones al arrancar. Función `SECURITY INVOKER`, ejecución
 solo por `service_role`, `search_path` explícito; bandeja con RLS y sin políticas
 de alumno. No se modifican las tablas ni las claves de 006.
+016 no incluye `BEGIN/COMMIT`: la herramienta que la aplica debe envolver el
+archivo completo en una transacción. En una aplicación manual también se debe
+abrir/cerrar esa transacción externamente para conservar atomicidad y `SET LOCAL`.
 
 La RPC bloquea el `app_user`, vuelve a comprobar y bloquea la autorización
 activa del par usuario/identidad antes de escribir. Serializa escritores del
@@ -62,6 +67,9 @@ eventos de ese alumno; los otros alumnos continúan.
   No se decide por proximidad de timestamps. El rol estudiante de Google lee
   tareas publicadas; esta implementación no detecta transiciones de borrador
   a publicado para cuentas docentes.
+  Si un borrador ya está persistido y luego se publica con el mismo ID, se
+  actualiza su estado, pero no se garantiza un evento nuevo: la detección actual
+  corresponde a inserciones de actividades publicadas en cursos conocidos.
 * `first_seen_at` usa el default de 006 al insertar y jamás se incluye en updates.
   `last_seen_at` y `updated_at` usan un instante del servidor tomado después del
   bloqueo. Las tareas ausentes se conservan con su última observación anterior.
@@ -79,7 +87,11 @@ aislamiento; calendario mantiene su semántica no crítica. Classroom se habilit
 solo con `CLASSROOM_SYNC_ENABLED=true`; por defecto no hace consultas.
 `RPA_PAUSADO=true` también la omite. Solo registra conteos, sin alertas ni
 metadatos académicos. Deduplica cuentas enumeradas, omite 409 sin reintentos,
-continúa tras fallos individuales y detiene llamadas ante 401. Su fallo afecta
+continúa tras fallos individuales y detiene llamadas ante 401. Solo el 403 con
+el código fijo del backend `classroom_sin_permisos` se cuenta como omitido;
+un 403 desconocido/malformado y 500/503 son fallos. El cliente devuelve únicamente
+un indicador booleano de permisos insuficientes, sin propagar cuerpos de error.
+Su fallo afecta
 el código final sin impedir calendario. Timeout HTTP sync: 120 segundos,
 configurable en la fábrica; no reintenta automáticamente.
 
@@ -116,7 +128,11 @@ nuevo. No se cambiaron credenciales, consentimiento, audiencia ni Google Cloud.
 Referencias oficiales revisadas: [scopes y visibilidad de courseWork.list](https://developers.google.com/workspace/classroom/reference/rest/v1/courses.courseWork/list)
 y [vencimiento en UTC](https://developers.google.com/workspace/classroom/reference/rest/v1/courses.courseWork).
 `dueDate` sin `dueTime` se guarda como 23:59 UTC, según el contrato Google;
-sin fecha se guarda NULL. Se conserva precisión de milisegundos para vencimiento.
+equivale a las **16:59 del mismo día en America/Hermosillo (UTC−7)**, no a las
+23:59 locales. Por ejemplo, `2026-11-20` se persiste como
+`2026-11-20T23:59:00.000Z` y se presenta como 20 de noviembre, 16:59 en Hermosillo.
+Se conserva la semántica Google, sin añadir siete horas para forzar fin de día
+local. Sin fecha se guarda NULL. Se conserva precisión de milisegundos para vencimiento.
 
 ## Validación offline reproducible
 
@@ -135,7 +151,8 @@ node --require ../backend/tests/helpers/offlineNetwork.cjs --test
 
 El preload bloquea transportes externos; fixtures y credenciales son sintéticos.
 El script SQL no acepta URL de conexión: crea un clúster PostgreSQL propio,
-puerto loopback efímero, aplica 006/008/014/016 y repite 016, ejecuta fixtures y
+puerto loopback efímero, aplica 006/008/014; prueba rollback explícito y por error
+de 016 dentro de transacciones externas, luego la aplica y repite, ejecuta fixtures y
 dos escritores concurrentes, detiene el servidor y elimina el directorio creado.
 Necesita binarios PostgreSQL locales y permiso para iniciar un proceso local.
 En Windows usa archivos para stdout/stderr del daemon, evitando heredar pipes.
@@ -212,3 +229,62 @@ Archivos existentes modificados:
 * `backend/src/services/googleAuthService.js`
 * `backend/tests/app/classroomInternal.test.js`
 * `backend/tests/config/env.test.js`
+
+## ITN-43-REVIEW-REMEDIATION-02
+
+Revisión real consultada mediante GitHub: `pedrizquierdo`, estado
+`CHANGES_REQUESTED`, enviada `2026-11-19T06:28:50Z` en
+[PR #37](https://github.com/itson-notify/ITSON-Notify/pull/37).
+Preflight: rama solicitada, HEAD `e13678f424055912026047381e0857d43f85efd4`,
+únicamente los dos archivos OAuth locales esperados sin seguimiento.
+
+* R1: 401 se contabiliza antes de cualquier otro indicador y detiene solicitudes.
+  403 solo se omite si el cliente reconoce `classroom_sin_permisos`; los cuerpos
+  desconocidos/malformados permanecen como fallo. 409 y relink sin un estado HTTP
+  contradictorio se omiten. 500/503 y estados desconocidos no se ocultan aunque
+  aparezcan indicadores contradictorios de éxito/relink. Se mantiene el aislamiento.
+* R2: se restaura validación local de cursos para lectura ITN-59; exclusivamente
+  `sync === true` requiere A y persiste. Se prueban grants y renovaciones en ambos
+  modos, sin cambios a la lista permitida ni equivalencias OAuth.
+* R3: se documenta 23:59 UTC = 16:59 America/Hermosillo del mismo día, sin cambiar
+  la semántica del proveedor.
+* R4: 006/007 documentan aplicación manual en SQL Editor; no hay runner/configuración
+  automática versionada en el código/documentación pertinente ni workflows.
+  Pedro confirma que la herramienta operativa envuelve la transacción, pero su
+  nombre/versión no consta en el repositorio. 016 delega la transacción al ejecutor;
+  el verificador local reproduce ese contrato sin afirmar acceso al servicio real.
+* R5: se explicita la limitación de eventos al pasar de borrador existente a publicado.
+
+Certificación final local: backend **612/612**, automation **273/273**, cero
+fallos, canceladas u omitidas; ambas suites con bloqueo de red externa, incluidos
+empaquetados aislados, OAuth, ITN-42/59, privacidad y fuentes existentes.
+Selección focalizada previa: backend **149/149**, automation Classroom **13/13**.
+SQL PostgreSQL local 18.6: `CLASSROOM_SQL_OK`; rollback externo explícito y por
+error de 016 sin tabla/función residual, aplicación, reaplicación y regresiones
+de baseline/dedup/idempotencia/aislamiento/RLS/concurrencia correctas.
+`CLASSROOM_SYNC_ENABLED` sigue sin habilitar por defecto; no se cambia su configuración.
+
+Los dos archivos OAuth se conservan e integran tras revisión manual y escaneo de
+patrones de credenciales, con fixtures sintéticos. El informe original se mantiene
+como evidencia histórica con un seguimiento añadido; las pruebas de tareas se
+adaptan al modo sync. El HTTP 200 de Playground informado por el usuario no
+certifica qué scope técnico se concedió. Permanece HOLD para normalizar A/B.
+
+Archivos de este commit de remediación, relativos a `ITSON-Notify/`:
+
+* `automation/rpa/google-classroom/README.md`
+* `automation/rpa/google-classroom/client.js`
+* `automation/schedulers/classroom-fase.js`
+* `automation/schedulers/test/classroom-fase.test.js`
+* `backend/ITN-43.md`
+* `backend/ITN-43-OAUTH-SCOPE-01.md` (investigación local integrada)
+* `backend/scripts/verify-classroom-sync-sql.cjs`
+* `backend/src/services/classroomCourses.js`
+* `backend/tests/app/classroomInternal.test.js`
+* `backend/tests/services/classroomOAuthScopes.test.js` (pruebas locales integradas)
+* `database/migrations/016_classroom_sync.sql`
+
+Dictamen de remediación: **PASS local**. No constituye aprobación de Pedro ni
+habilitación de producción. No se envían mensajes, notificaciones ni cambios a
+GitHub; sin push, PR nuevo, merge, despliegue, migración remota o cambios a Railway,
+Supabase/Google Cloud. El commit local separado queda autorizado tras certificación.

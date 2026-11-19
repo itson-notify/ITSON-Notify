@@ -119,13 +119,14 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
 
   // Internal worker projection: no tokens, course names, titles or email.
   async function readForWorker(identity, { sync = false } = {}) {
-    const accessToken = await getAccessToken(identity, [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE]);
+    const accessToken = await getAccessToken(identity, sync === true
+      ? [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE] : [CLASSROOM_SCOPE]);
     try {
       const courses = await client.listCourses(accessToken, { studentId: 'me' });
       const result = [];
       for (const course of courses) {
         const work = await client.listCourseWork(accessToken, course.id);
-        if (sync) {
+        if (sync === true) {
           result.push({ ...course, coursework: work });
           continue;
         }
@@ -135,7 +136,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
           ...(item.dueTime ? { dueTime: numericFields(item.dueTime, ['hours', 'minutes', 'seconds', 'nanos']) } : {}),
         })) });
       }
-      if (sync) {
+      if (sync === true) {
         let normalized;
         try { normalized = normalizeCourses(result); } catch { throw upstream(); }
         try { return await persistClassroom(supabase, identity, normalized); }

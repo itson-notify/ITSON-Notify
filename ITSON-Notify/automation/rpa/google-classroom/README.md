@@ -32,7 +32,10 @@ del calendario. Se habilita explícitamente con `CLASSROOM_SYNC_ENABLED=true`;
 `{ userId, googleId, sync: true }` al mismo `/read` y recibe únicamente
 `{ sync: { courses, coursework, newTasks } }`. Los nombres y títulos permanecen
 en backend. La sincronización admite `syncTimeoutMs` (120000 por defecto), sin
-reintentos automáticos; `409` omite la cuenta y los fallos individuales no
+reintentos automáticos; `409` y el `403` identificado por el backend como
+`classroom_sin_permisos` omiten la cuenta. `401` cuenta como fallo y detiene
+solicitudes; `403` desconocido, `500/503` y otros errores siguen siendo fallos.
+Los fallos individuales no
 interrumpen las demás. Solo se registran conteos.
 
 El backend admite los scopes de lectura `classroom.courses.readonly` y

@@ -42,9 +42,19 @@ async function main() {
       grant select, update on app_users to service_role;`);
     const migrations = path.resolve(__dirname, '../../database/migrations');
     for (const file of ['006_classroom_courses_coursework.sql', '008_google_classroom_authorization.sql',
-      '014_google_authorization_status.sql', '016_classroom_sync.sql', '016_classroom_sync.sql']) {
+      '014_google_authorization_status.sql']) {
       sql(fs.readFileSync(path.join(migrations, file), 'utf8'));
     }
+    const migration = fs.readFileSync(path.join(migrations, '016_classroom_sync.sql'), 'utf8');
+    assert.doesNotMatch(migration, /^\s*(begin|commit)\s*;/im);
+    const absent = () => assert.match(sql(`select case when to_regclass('public.classroom_task_events') is null
+      and to_regprocedure('public.sync_classroom(uuid,text,jsonb)') is null
+      then 'MIGRATION_ROLLBACK_OK' else 'FAILED' end;`), /MIGRATION_ROLLBACK_OK/);
+    sql(`begin;\n${migration}\nrollback;`);
+    absent();
+    assert.throws(() => sql(`begin;\n${migration}\nselect 1/0;\ncommit;`), /psql failed/);
+    absent();
+    for (let attempt = 0; attempt < 2; attempt++) sql(`begin;\n${migration}\ncommit;`);
     sql(fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomSync.sql'), 'utf8'));
     const concurrent = text => new Promise((resolve, reject) => {
       const child = spawn(executable('psql'), args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -60,7 +70,7 @@ async function main() {
     assert.equal(results.filter(out => /"newTasks": 0/.test(out)).length, 1);
     sql(`select test_assert((select count(*) = 1 from classroom_task_events e join classroom_coursework w on w.id = e.coursework_id
       where w.external_coursework_id = 'concurrent'), 'concurrent unique event');`);
-    console.log('CLASSROOM_SQL_OK: baseline, dedup, timestamps, isolation, relink, rollback, concurrent writers, RLS, migration replay');
+    console.log('CLASSROOM_SQL_OK: baseline, dedup, timestamps, isolation, relink, rollback, concurrent writers, RLS, migration replay, external transaction rollback');
   } catch (error) {
     console.error(error.message);
     throw error;

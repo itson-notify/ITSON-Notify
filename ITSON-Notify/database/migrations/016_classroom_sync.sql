@@ -1,6 +1,6 @@
 -- ITN-43. Review/apply manually; never executed at startup.
 -- Requires 006, 008, 014. One atomic snapshot per student, including event outbox.
-begin;
+-- The migration runner must wrap this entire file in one transaction.
 set local lock_timeout = '5s';
 
 create table if not exists public.classroom_task_events (
@@ -87,4 +87,3 @@ end;
 $$;
 revoke all on function public.sync_classroom(uuid, text, jsonb) from public, anon, authenticated;
 grant execute on function public.sync_classroom(uuid, text, jsonb) to service_role;
-commit;

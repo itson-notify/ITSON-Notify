@@ -63,11 +63,38 @@ test('sync failure after a partial Google read performs no writes', async () => 
 test('coursework scope is required before refresh, refreshed scope cannot downgrade it', async () => {
   const s = setup();
   s.db.tables.google_authorizations[0].scope = CLASSROOM_SCOPE;
-  assert.equal((await s.read()).status, 403);
+  await assert.rejects(s.service.readForWorker(identity, { sync: true }), { status: 403 });
   assert.equal(s.calls.length, 0);
   const downgraded = setup([json({ access_token: 'synthetic', token_type: 'Bearer', expires_in: 3600, scope: CLASSROOM_SCOPE })]);
-  assert.equal((await downgraded.read()).status, 403);
+  await assert.rejects(downgraded.service.readForWorker(identity, { sync: true }), { status: 403 });
   assert.equal(downgraded.calls.length, 1);
+});
+
+for (const [label, storedWork, refreshedWork, sync, status, calls] of [
+  ['legacy courses-only grant and refresh', false, false, false, 200, 3],
+  ['legacy courses-only grant with additional refreshed permission', false, true, false, 200, 3],
+  ['legacy refresh keeps only courses', true, false, false, 200, 3],
+  ['sync refuses missing stored coursework', false, true, true, 403, 0],
+  ['sync refuses missing refreshed coursework', true, false, true, 403, 1],
+  ['sync accepts both stored and refreshed scopes', true, true, true, 200, 3],
+]) test(`ITN-59 compatibility: ${label}`, async () => {
+  const s = setup([json({ access_token: 'synthetic-access', token_type: 'Bearer', expires_in: 3600,
+    scope: refreshedWork ? `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}` : CLASSROOM_SCOPE }),
+  json({ courses: [{ id: 'c1', name: 'PRIVATE' }] }),
+  json({ courseWork: [{ id: 'w1', courseId: 'c1', title: 'PRIVATE', dueDate: { year: 2026, month: 11, day: 20 } }] })]);
+  const userId = '00000000-0000-4000-8000-000000000001';
+  Object.assign(s.db.tables.google_authorizations[0], { user_id: userId,
+    scope: storedWork ? `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}` : CLASSROOM_SCOPE });
+  let writes = 0;
+  s.db.client.rpc = async () => { writes++; return { data: { courses: 1, coursework: 1, newTasks: 0 } }; };
+  const res = await s.read({ userId, googleId: identity.googleId, ...(sync ? { sync: true } : {}) });
+  assert.equal(res.status, status);
+  assert.equal(s.calls.length, calls);
+  assert.equal(writes, sync && status === 200 ? 1 : 0);
+  if (status === 200) assert.deepEqual(res.body, sync ? { sync: { courses: 1, coursework: 1, newTasks: 0 } } :
+    { courses: [{ id: 'c1', coursework: [{ id: 'w1', dueDate: { year: 2026, month: 11, day: 20 } }] }] });
+  else assert.deepEqual(res.body, { error: 'classroom_sin_permisos' });
+  assert.doesNotMatch(JSON.stringify([res.body, s.logs]), /PRIVATE|synthetic|refresh_token/);
 });
 
 test('sync validates flag and UUID before reading Google', async () => {

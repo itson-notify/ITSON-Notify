@@ -27,8 +27,9 @@ async function ejecutarClassroom({ env = process.env, crearCliente = createClass
         failures++;
         break;
       }
-      if (result.ok) processed++;
-      else if (result.needsRelink || result.status === 409) skipped++;
+      if (result.ok && (result.status === undefined || (result.status >= 200 && result.status < 300))) processed++;
+      else if (result.status === 409 || (result.status === 403 && result.permissionsMissing === true) ||
+          (result.needsRelink && result.status === undefined)) skipped++;
       else failures++;
     } catch { failures++; }
   }

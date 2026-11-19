@@ -13,7 +13,16 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
         headers: { 'x-api-key': apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      if (!response.ok) return { ok: false, status: response.status, needsRelink: response.status === 409 };
+      if (!response.ok) {
+        const failure = { ok: false, status: response.status, needsRelink: response.status === 409 };
+        if (response.status === 403) {
+          // Only the backend's fixed OAuth error may be skipped; discard all other body data.
+          try {
+            if ((await response.json())?.error === 'classroom_sin_permisos') failure.permissionsMissing = true;
+          } catch { /* An unknown/malformed 403 remains a failure. */ }
+        }
+        return failure;
+      }
       const data = await response.json();
       const valid = body?.sync === true
         ? data?.sync && ['courses', 'coursework', 'newTasks'].every(key => Number.isSafeInteger(data.sync[key]) && data.sync[key] >= 0)
