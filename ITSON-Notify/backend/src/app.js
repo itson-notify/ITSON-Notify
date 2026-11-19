@@ -114,12 +114,22 @@ function createApp({
   // Suscripciones Web Push del navegador móvil
   app.use("/push", frontendCors(config, "GET, POST, DELETE, OPTIONS"), express.json({ limit: "64kb" }));
 
-  app.get("/push/vapid-public-key", (req, res) => {
-    if (!config.vapidPublicKey) return res.status(503).json({ error: "push_no_disponible" });
+  // Push es opcional: sin configuración VAPID válida, la llave pública y el alta
+  // de suscripción responden 503 controlado (sin 500 ni stack). El DELETE sigue
+  // funcionando: borrar una suscripción no necesita llaves VAPID.
+  // config.pushEnabled lo fija loadConfig; las configs armadas a mano (pruebas)
+  // sin ese campo caen al criterio anterior: hay llave pública.
+  const pushEnabled = (config.pushEnabled ?? true) && Boolean(config.vapidPublicKey);
+  const requirePush = (req, res, next) => {
+    if (!pushEnabled) return res.status(503).json({ error: "push_no_disponible" });
+    next();
+  };
+
+  app.get("/push/vapid-public-key", requirePush, (req, res) => {
     res.json({ publicKey: config.vapidPublicKey });
   });
 
-  app.post("/push/subscriptions", async (req, res, next) => {
+  app.post("/push/subscriptions", requirePush, async (req, res, next) => {
     if (req.get("origin") !== frontendOrigin) {
       return res.status(403).json({ error: "origen_no_permitido" });
     }
