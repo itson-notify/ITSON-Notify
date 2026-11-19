@@ -2,6 +2,7 @@
 // Si falta alguna o es inválida, el arranque falla con un mensaje que nombra
 // la variable, nunca su valor.
 const { sameApiKey } = require("../middleware/apiKey");
+const { validateVapidConfig, VAPID_SUBJECT_DEFAULT } = require("./vapid");
 
 const REQUERIDAS = [
   "PORT",
@@ -170,16 +171,18 @@ function loadConfig(env = process.env) {
   const faltanBase = REQUERIDAS.filter((name) => valor(name) === "");
   const oauthResult = loadGoogleOAuthConfig(valor);
 
-  const vapidPublicKey = valor("VAPID_PUBLIC_KEY") || null;
-  const vapidPrivateKey = valor("VAPID_PRIVATE_KEY") || null;
-  const vapidSubject = valor("VAPID_SUBJECT") || "mailto:notificaciones@itson.edu.mx";
+  // Push es opcional: llaves VAPID ausentes, incompletas o inválidas NO tumban el
+  // arranque. Se deshabilita push y server.js registra un solo aviso sin valores.
+  const vapid = validateVapidConfig({
+    publicKey: valor("VAPID_PUBLIC_KEY"),
+    privateKey: valor("VAPID_PRIVATE_KEY"),
+    subject: valor("VAPID_SUBJECT"),
+  });
+  const vapidPublicKey = vapid.enabled ? vapid.publicKey : null;
+  const vapidPrivateKey = vapid.enabled ? vapid.privateKey : null;
+  const vapidSubject = vapid.enabled ? vapid.subject : VAPID_SUBJECT_DEFAULT;
 
-  // Si se define una llave VAPID sin la otra, se reporta la que falta.
-  const faltanVapid = [];
-  if (vapidPublicKey && !vapidPrivateKey) faltanVapid.push("VAPID_PRIVATE_KEY");
-  if (!vapidPublicKey && vapidPrivateKey) faltanVapid.push("VAPID_PUBLIC_KEY");
-
-  const faltan = [...faltanBase, ...oauthResult.faltan, ...faltanVapid];
+  const faltan = [...faltanBase, ...oauthResult.faltan];
   if (faltan.length > 0) {
     throw new Error(`Faltan variables de entorno: ${faltan.join(", ")}`);
   }
@@ -259,6 +262,8 @@ function loadConfig(env = process.env) {
     googleOAuth: oauthResult.config,
     vapidPublicKey,
     vapidSubject,
+    pushEnabled: vapid.enabled,
+    pushDisabledReason: vapid.reason,
   };
 
   // No son enumerables para evitar exposición accidental en logs o serialización JSON.

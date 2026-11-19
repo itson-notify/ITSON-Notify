@@ -20,13 +20,25 @@ function main() {
   }
 
   const logger = createLogger();
+  // Push es opcional: si VAPID falta o es inválida se avisa UNA vez, sin valores.
+  if (!config.pushEnabled) {
+    logger.warn("push_deshabilitado", { reason: config.pushDisabledReason });
+  }
   const supabase = createSupabaseClient(config);
   const notificationRepo = createNotificationRepository(supabase);
   // Email si existe RESEND_API_KEY: cada aviso va al correo del alumno (app_users.email),
   // salvo que NOTIFY_EMAIL_TO (solo pruebas) lo fuerce a una dirección fija.
-  // web_push si existen llaves VAPID.
+  // web_push solo si las llaves VAPID pasaron la validación de loadConfig: se
+  // toman de config (no de process.env) para no volver a usar llaves inválidas.
   const channels = buildChannels({
-    env: process.env,
+    env: {
+      RESEND_API_KEY: process.env.RESEND_API_KEY,
+      NOTIFY_EMAIL_TO: process.env.NOTIFY_EMAIL_TO,
+      NOTIFY_EMAIL_FROM: process.env.NOTIFY_EMAIL_FROM,
+      VAPID_PUBLIC_KEY: config.vapidPublicKey,
+      VAPID_PRIVATE_KEY: config.vapidPrivateKey,
+      VAPID_SUBJECT: config.vapidSubject,
+    },
     logger,
     pushRepo: notificationRepo,
     emailRepo: notificationRepo,

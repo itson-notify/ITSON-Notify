@@ -112,10 +112,24 @@ function createApp({
   );
 
   // Suscripciones Web Push del navegador móvil
-  app.use("/push", frontendCors(config, "GET, POST, DELETE, OPTIONS"), express.json({ limit: "64kb" }));
+  // Push es opcional: sin configuración VAPID válida, todo /push responde 503
+  // controlado (sin 500 ni stack). El preflight OPTIONS lo resuelve el CORS antes.
+  // config.pushEnabled lo fija loadConfig; las configs armadas a mano (pruebas)
+  // sin ese campo caen al criterio anterior: hay llave pública.
+  const pushEnabled = config.pushEnabled ?? Boolean(config.vapidPublicKey);
+  app.use(
+    "/push",
+    frontendCors(config, "GET, POST, DELETE, OPTIONS"),
+    (req, res, next) => {
+      if (!pushEnabled || !config.vapidPublicKey) {
+        return res.status(503).json({ error: "push_no_disponible" });
+      }
+      next();
+    },
+    express.json({ limit: "64kb" }),
+  );
 
   app.get("/push/vapid-public-key", (req, res) => {
-    if (!config.vapidPublicKey) return res.status(503).json({ error: "push_no_disponible" });
     res.json({ publicKey: config.vapidPublicKey });
   });
 

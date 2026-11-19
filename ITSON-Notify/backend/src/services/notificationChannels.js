@@ -187,15 +187,21 @@ function buildChannels({
   }
 
   if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY && pushRepo) {
-    channels.push(
-      webPushChannel({
-        vapidPublicKey: env.VAPID_PUBLIC_KEY,
-        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
-        vapidSubject: env.VAPID_SUBJECT || "mailto:notificaciones@itson.edu.mx",
-        pushRepo,
-        webpushImpl,
-      }),
-    );
+    // Push es opcional: si setVapidDetails rechaza las llaves, se omite el canal
+    // en lugar de tumbar el proceso. Nunca se registra el mensaje del error.
+    try {
+      channels.push(
+        webPushChannel({
+          vapidPublicKey: env.VAPID_PUBLIC_KEY,
+          vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+          vapidSubject: env.VAPID_SUBJECT || "mailto:notificaciones@itson.edu.mx",
+          pushRepo,
+          webpushImpl,
+        }),
+      );
+    } catch {
+      logger.warn("canal_web_push_omitido", { reason: "vapid_invalida" });
+    }
   }
 
   return channels;
