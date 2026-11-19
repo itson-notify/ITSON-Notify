@@ -36,14 +36,18 @@ do $$ begin
   begin
     perform test_snapshot('00000000-0000-4000-8000-000000000001','g2',array['attacker']);
     raise exception 'cross identity accepted';
-  exception when insufficient_privilege then null; end;
+  exception when insufficient_privilege then
+    if sqlerrm <> 'classroom_authorization_required' then raise; end if;
+  end;
 end; $$;
 update google_authorizations set status = 'needs_relink' where google_id = 'g1';
 do $$ begin
   begin
     perform test_snapshot('00000000-0000-4000-8000-000000000001','g1',array['revoked']);
     raise exception 'revoked accepted';
-  exception when insufficient_privilege then null; end;
+  exception when insufficient_privilege then
+    if sqlerrm <> 'classroom_authorization_required' then raise; end if;
+  end;
 end; $$;
 update google_authorizations set status = 'active' where google_id = 'g1';
 
@@ -70,3 +74,15 @@ select test_assert(not has_function_privilege('anon','public.sync_classroom(uuid
 select test_assert(not has_function_privilege('authenticated','public.sync_classroom(uuid,text,jsonb)','EXECUTE'), 'authenticated cannot sync');
 select test_assert(not has_table_privilege('authenticated','classroom_task_events','SELECT'), 'events private');
 select test_assert((select relrowsecurity from pg_class where oid = 'public.classroom_task_events'::regclass), 'events RLS');
+
+-- Missing user must emit exactly the same stable business signal.
+set role service_role;
+do $$ begin
+  begin
+    perform sync_classroom('00000000-0000-4000-8000-000000000099','absent','[]'::jsonb);
+    raise exception 'missing user accepted';
+  exception when insufficient_privilege then
+    if sqlerrm <> 'classroom_authorization_required' then raise; end if;
+  end;
+end; $$;
+reset role;

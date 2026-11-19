@@ -103,7 +103,7 @@ test('sync validates flag and UUID before reading Google', async () => {
   assert.equal(s.calls.length, 0);
 });
 
-for (const [code, status] of [['42501', 409], ['PGRST202', 503], ['XX000', 500]]) {
+for (const [code, status] of [['42501', 500], ['PGRST202', 503], ['XX000', 500]]) {
   test(`sync RPC failure ${code} returns fixed status without academic data`, async () => {
     const s = setup([token(), json({ courses: [] })]);
     const userId = '00000000-0000-4000-8000-000000000001';
@@ -300,4 +300,43 @@ test('OAuth database write failures propagate without dropping status or hiding 
       email: 'synthetic@example.test', scope: CLASSROOM_SCOPE, secret, refreshToken: 'synthetic-new' }),
     { code: '42501' });
   }
+});
+
+// Cross-service contract test only: production artifacts remain independent.
+for (const [label, error, status, exitCode] of [
+  ['known authorization conflict', { code: '42501', message: 'classroom_authorization_required' }, 409, 0],
+  ['missing table privileges', { code: '42501', message: 'permission denied for table app_users PRIVATE' }, 500, 1],
+  ['RLS denial', { code: '42501', message: 'new row violates row-level security policy PRIVATE' }, 500, 1],
+  ['missing signal', { code: '42501' }, 500, 1],
+  ['signal with unknown code', { code: 'XX000', message: 'classroom_authorization_required' }, 500, 1],
+  ['nonexact signal', { code: '42501', message: 'classroom_authorization_required PRIVATE' }, 500, 1],
+  ['missing RPC', { code: 'PGRST202', message: 'PRIVATE' }, 503, 1],
+]) test('SQL failure through backend, HTTP worker and cron: ' + label, async () => {
+  const { ejecutarClassroom } = require('../../../automation/schedulers/classroom-fase');
+  const { createClassroomWorkerClient } = require('../../../automation/rpa/google-classroom');
+  const s = setup([token(), json({ courses: [] })]);
+  const userId = '00000000-0000-4000-8000-000000000001';
+  s.db.tables.google_authorizations[0].user_id = userId;
+  s.db.client.rpc = async () => ({ error: { ...error, details: 'PRIVATE', hint: 'PRIVATE' } });
+  const responses = [], bodies = [], logs = [];
+  const client = createClassroomWorkerClient({ baseUrl: 'https://synthetic.test', apiKey: API_KEY,
+    fetchImpl: async (url, options) => {
+      const res = url.endsWith('/active')
+        ? await request(s.app).get('/internal/classroom/active').set('x-api-key', API_KEY)
+        : await s.read(JSON.parse(options.body));
+      if (!url.endsWith('/active')) {
+        responses.push(res.status);
+        bodies.push(res.body);
+      }
+      return json(res.body, res.status);
+    } });
+  const code = await ejecutarClassroom({ env: { CLASSROOM_SYNC_ENABLED: 'true' }, crearCliente: () => client,
+    log: line => logs.push(line), logError: line => logs.push(line) });
+  assert.equal(code, exitCode);
+  assert.deepEqual(responses, [status]);
+  assert.deepEqual(bodies, [{ error: status === 409 ? 'classroom_requiere_autorizacion' :
+    status === 503 ? 'classroom_migracion_requerida' : 'error_interno' }]);
+  assert.deepEqual(logs, [status === 409 ? 'Classroom: procesadas=0 omitidas=1 fallidas=0' :
+    'Classroom: procesadas=0 omitidas=0 fallidas=1']);
+  assert.doesNotMatch(JSON.stringify([logs, s.logs]), /PRIVATE|permission denied|row-level|classroom_authorization_required/);
 });

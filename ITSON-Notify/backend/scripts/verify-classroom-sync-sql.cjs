@@ -56,6 +56,21 @@ async function main() {
     absent();
     for (let attempt = 0; attempt < 2; attempt++) sql(`begin;\n${migration}\ncommit;`);
     sql(fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomSync.sql'), 'utf8'));
+    // Real privilege failures share 42501 but must never emit the business marker.
+    for (const [table, privilege] of [['app_users', 'update'], ['google_authorizations', 'select']]) {
+      sql(`revoke ${privilege} on public.${table} from service_role;`);
+      sql(`set role service_role; do $$ begin
+        begin
+          perform sync_classroom('00000000-0000-4000-8000-000000000001','g1','[]'::jsonb);
+          raise exception 'missing infrastructure privilege accepted';
+        exception when insufficient_privilege then
+          if sqlerrm = 'classroom_authorization_required' then
+            raise exception 'infrastructure failure used business marker';
+          end if;
+        end;
+      end; $$; reset role;`);
+      sql(`grant ${privilege} on public.${table} to service_role;`);
+    }
     const concurrent = text => new Promise((resolve, reject) => {
       const child = spawn(executable('psql'), args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       let out = '', err = '';

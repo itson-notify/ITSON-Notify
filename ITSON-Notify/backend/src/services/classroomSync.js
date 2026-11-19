@@ -68,7 +68,10 @@ async function persistClassroom(supabase, identity, courses) {
   if (error) {
     // Route sanitizes all messages; only these fixed statuses are public.
     const failure = new Error('classroom_sync_failed');
-    failure.syncStatus = error.code === '42501' ? 409 :
+    // Only this exact pair is emitted by sync_classroom's authorization guards.
+    // Generic insufficient_privilege (including RLS/ACL failures) must remain visible.
+    const authorizationConflict = error.code === '42501' && error.message === 'classroom_authorization_required';
+    failure.syncStatus = authorizationConflict ? 409 :
       ['42883', 'PGRST202', '42703', '42P01'].includes(error.code) ? 503 : 500;
     throw failure;
   }

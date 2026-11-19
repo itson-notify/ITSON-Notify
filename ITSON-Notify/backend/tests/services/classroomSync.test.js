@@ -42,7 +42,7 @@ test('RPC only receives normalized metadata and authenticated identity, returns 
     return { data: { courses: 1, coursework: 1, newTasks: 0, private: 'PRIVATE' } };
   } }, identity, rows);
   assert.deepEqual(result, { sync: { courses: 1, coursework: 1, newTasks: 0 } });
-  for (const [code, status] of [['42501', 409], ['PGRST202', 503], ['XX000', 500]]) {
+  for (const [code, status] of [['42501', 500], ['PGRST202', 503], ['XX000', 500]]) {
     await assert.rejects(persistClassroom({ rpc: async () => ({ error: { code, message: 'PRIVATE' } }) }, identity, rows),
       error => error.syncStatus === status && !error.message.includes('PRIVATE'));
   }
