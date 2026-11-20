@@ -77,11 +77,69 @@ function setup({ enabled = true, scope = BASE_SCOPE, status = "active", google =
     if (url === "https://www.googleapis.com/oauth2/v3/certs") return { ok: true, json: async () => ({ keys: [JWK] }) };
     throw new Error("URL Google no esperada");
   };
+  installRpcs(db);
   const auth = express();
   auth.use("/auth/google", authGoogleRouter({ config: config(enabled), supabase: db.client, logger, fetchImpl }));
   const api = createApp({ config: config(enabled), supabase: db.client, logger, channels: [] });
   return { db, logs, auth, api, exchange };
 }
+
+// Simula las funciones de la 018 con su misma semántica (validaciones, regla de
+// autorización, escrituras restringidas al alumno). Si fallan, no tocan nada (rollback).
+const rpcError = (code, message) => ({ data: null, error: { code, message } });
+function installRpcs(db) {
+  db.rpcArgs = [];
+  const list = value => (typeof value === "string" ? value.split(" ").filter(Boolean) : []);
+  const find = ({ p_user_id, p_google_id }) => db.tables.google_authorizations
+    .find(g => g.user_id === p_user_id && g.google_id === p_google_id);
+  const userExists = id => db.tables.app_users.some(u => u.id === id);
+  db.rpcHandlers.activate_classroom_tasks = args => {
+    db.rpcArgs.push({ name: "activate_classroom_tasks", args });
+    const granted = list(args.p_granted_scope);
+    if (!granted.includes(CLASSROOM_WORK_SCOPE)) return rpcError("22023", "classroom_tasks_scope_not_granted");
+    if (args.p_refresh_token != null && (!args.p_refresh_token || !granted.includes(CLASSROOM_SCOPE))) {
+      return rpcError("22023", "classroom_courses_scope_not_granted");
+    }
+    const grant = userExists(args.p_user_id) ? find(args) : null;
+    if (!grant || grant.status !== "active" || !list(grant.scope).includes(CLASSROOM_SCOPE)) {
+      return rpcError("42501", "classroom_authorization_required");
+    }
+    const wasActive = list(grant.scope).includes(CLASSROOM_WORK_SCOPE);
+    let courses = 0;
+    if (!wasActive) {
+      for (const c of db.tables.classroom_courses) {
+        if (c.user_id === args.p_user_id && c.coursework_baseline_at != null) { c.coursework_baseline_at = null; courses++; }
+      }
+    }
+    grant.scope = Array.from(new Set([...list(grant.scope), ...granted, CLASSROOM_WORK_SCOPE])).join(" ");
+    if (args.p_refresh_token != null) grant.refresh_token = args.p_refresh_token;
+    grant.updated_at = new Date().toISOString();
+    return { data: { activated: !wasActive, courses }, error: null };
+  };
+  db.rpcHandlers.disable_classroom_tasks = args => {
+    db.rpcArgs.push({ name: "disable_classroom_tasks", args });
+    const grant = userExists(args.p_user_id) ? find(args) : null;
+    if (!grant) return rpcError("42501", "classroom_authorization_required");
+    if (list(grant.scope).includes(CLASSROOM_WORK_SCOPE)) {
+      grant.scope = list(grant.scope).filter(v => v !== CLASSROOM_WORK_SCOPE).join(" ");
+      grant.updated_at = new Date().toISOString();
+    }
+    const mine = r => r.user_id === args.p_user_id;
+    const events = db.tables.classroom_task_events.filter(mine).length;
+    const coursework = db.tables.classroom_coursework.filter(mine).length;
+    db.tables.classroom_task_events = db.tables.classroom_task_events.filter(r => !mine(r));
+    db.tables.classroom_coursework = db.tables.classroom_coursework.filter(r => !mine(r));
+    let courses = 0;
+    for (const c of db.tables.classroom_courses) {
+      if (mine(c) && c.coursework_baseline_at != null) { c.coursework_baseline_at = null; courses++; }
+    }
+    return { data: { events, coursework, courses }, error: null };
+  };
+}
+// Sin la 018: el fake responde PGRST202 como PostgREST.
+const withoutMigration = db => { delete db.rpcHandlers.activate_classroom_tasks; delete db.rpcHandlers.disable_classroom_tasks; };
+const WRITE_OPS = new Set(["insert", "upsert", "update", "delete"]);
+const dataWrites = db => db.calls.filter(c => WRITE_OPS.has(c.op) && c.table !== "google_app_sessions");
 
 const cookie = ({ userId, googleId, sessionId }, exp = Date.now() + 60_000) =>
   `itn41_google_session=${encrypt({ userId, googleId, sessionId, exp }, SECRET, "google-session")}`;
@@ -278,6 +336,14 @@ describe("ITN-43c callback en modo tareas", () => {
     assert.deepEqual(decrypt(grant.refresh_token, SECRET, "google-refresh"), { token: "refresh-nuevo-secreto" });
     assert.equal(grant.status, "active");
     assert.equal(JSON.stringify(ctx.db.tables).includes("access-token-secreto"), false);
+    // Una sola llamada: la función atómica, con el refresh token ya cifrado y ninguna otra escritura.
+    assert.deepEqual(ctx.db.rpcArgs.map(c => c.name), ["activate_classroom_tasks"]);
+    const args = ctx.db.rpcArgs[0].args;
+    assert.deepEqual([args.p_user_id, args.p_google_id], [ALUMNA.userId, ALUMNA.googleId]);
+    // Google devolvió openid + userinfo.email + cursos + tareas: a la base solo llegan los de Classroom.
+    assert.equal(args.p_granted_scope, `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}`);
+    assert.equal(JSON.stringify(args).includes("refresh-nuevo-secreto"), false);
+    assert.deepEqual(dataWrites(ctx.db), []);
     // Activación nueva: baseline en null para que la primera sync con tareas sea silenciosa.
     assert.equal(ctx.db.tables.classroom_courses[0].coursework_baseline_at, null);
     // No crea sesión nueva ni toca al otro alumno.
@@ -291,6 +357,7 @@ describe("ITN-43c callback en modo tareas", () => {
     const flow = await start(ctx);
     assert.equal(await callback(ctx, flow, "code=codigo-43c"), "ok");
     const grant = grantOf(ctx.db);
+    assert.equal(ctx.db.rpcArgs[0].args.p_refresh_token, null);
     assert.deepEqual(decrypt(grant.refresh_token, SECRET, "google-refresh"), { token: OLD_REFRESH });
     assert.ok(scopes(grant.scope).includes(CLASSROOM_SCOPE));
     assert.ok(scopes(grant.scope).includes(CLASSROOM_WORK_SCOPE));
@@ -302,14 +369,45 @@ describe("ITN-43c callback en modo tareas", () => {
     const flow = await start(ctx);
     assert.equal(await callback(ctx, flow, "code=codigo-43c"), "error");
     assert.deepEqual(grantOf(ctx.db), before);
+    assert.deepEqual(ctx.db.rpcArgs, []);
   });
 
-  it("sin la columna de la 017 no amplía el scope", async () => {
+  it("sin la 018: error, no amplía el scope y no escribe por ningún otro camino", async () => {
     const ctx = setup();
-    ctx.db.withoutColumn("classroom_courses", "coursework_baseline_at");
+    seedClassroom(ctx.db, ALUMNA);
+    withoutMigration(ctx.db);
+    const before = { ...grantOf(ctx.db) };
     const flow = await start(ctx);
     assert.equal(await callback(ctx, flow, "code=codigo-43c"), "error");
-    assert.equal(grantOf(ctx.db).scope, BASE_SCOPE);
+    assert.deepEqual(grantOf(ctx.db), before);
+    assert.notEqual(ctx.db.tables.classroom_courses[0].coursework_baseline_at, null);
+    assert.equal(ctx.db.calls.filter(c => c.rpc).length, 1);
+    assert.deepEqual(dataWrites(ctx.db), []);
+    assert.ok(ctx.logs.some(line => line.includes("migracion_pendiente")));
+    assertNoSecretsLogged(ctx.logs);
+  });
+
+  it("la función rechaza la autorización (42501) o falla: error y sin cambios", async () => {
+    for (const error of [{ code: "42501", message: "classroom_authorization_required" },
+      { code: "P0001", message: "detalle interno de Supabase" }]) {
+      const ctx = setup();
+      seedClassroom(ctx.db, ALUMNA);
+      ctx.db.rpcHandlers.activate_classroom_tasks = () => ({ data: null, error });
+      const before = { ...grantOf(ctx.db) };
+      const flow = await start(ctx);
+      assert.equal(await callback(ctx, flow, "code=codigo-43c"), "error");
+      assert.deepEqual(grantOf(ctx.db), before);
+      assert.deepEqual(dataWrites(ctx.db), []);
+      assert.equal(ctx.logs.join("\n").includes("detalle interno"), false);
+    }
+  });
+
+  it("ya activas: no limpia la baseline", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
+    seedClassroom(ctx.db, ALUMNA);
+    const flow = await start(ctx);
+    assert.equal(await callback(ctx, flow, "code=codigo-43c"), "ok");
+    assert.notEqual(ctx.db.tables.classroom_courses[0].coursework_baseline_at, null);
   });
 
   it("si la bandera se apaga a mitad del flujo no cambia nada", async () => {
@@ -348,65 +446,15 @@ describe("ITN-43c /api/classroom/tasks-authorization", () => {
     assert.ok(scopes(grantOf(ctx.db).scope).includes(CLASSROOM_WORK_SCOPE));
   });
 
-  it("DELETE sin la 018: quita el scope, borra tareas y eventos y limpia baseline solo de ese alumno", async () => {
-    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
-    seedClassroom(ctx.db, ALUMNA);
-    seedClassroom(ctx.db, OTRO);
-    const res = await request(ctx.api).delete("/api/classroom/tasks-authorization")
-      .set("Origin", FRONTEND).set("Cookie", cookie(ALUMNA));
-    assert.equal(res.status, 204);
-    const grant = grantOf(ctx.db);
-    assert.equal(grant.scope, BASE_SCOPE);
-    assert.deepEqual(decrypt(grant.refresh_token, SECRET, "google-refresh"), { token: OLD_REFRESH });
-    const of = (table, who) => ctx.db.tables[table].filter(r => r.user_id === who.userId);
-    assert.equal(of("classroom_task_events", ALUMNA).length, 0);
-    assert.equal(of("classroom_coursework", ALUMNA).length, 0);
-    assert.equal(of("classroom_courses", ALUMNA).length, 1);
-    assert.equal(of("classroom_courses", ALUMNA)[0].coursework_baseline_at, null);
-    // El otro alumno queda intacto.
-    assert.equal(of("classroom_task_events", OTRO).length, 1);
-    assert.equal(of("classroom_coursework", OTRO).length, 1);
-    assert.notEqual(of("classroom_courses", OTRO)[0].coursework_baseline_at, null);
-    assert.ok(scopes(grantOf(ctx.db, OTRO).scope).includes(CLASSROOM_WORK_SCOPE));
-    // Orden seguro: primero el scope, después eventos, tareas y baseline.
-    const order = ctx.db.calls.filter(c => c.op === "update" || c.op === "delete").map(c => `${c.op}:${c.table}`);
-    assert.deepEqual(order, ["update:google_authorizations", "delete:classroom_task_events",
-      "delete:classroom_coursework", "update:classroom_courses"]);
-    assertNoSecretsLogged(ctx.logs);
-  });
-
-  it("DELETE con la 018 usa la función atómica con el alumno de la sesión", async () => {
-    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
-    const calls = [];
-    ctx.db.rpcHandlers.disable_classroom_tasks = args => { calls.push(args); return { data: {}, error: null }; };
-    const res = await request(ctx.api).delete("/api/classroom/tasks-authorization")
-      .set("Origin", FRONTEND).set("Cookie", cookie(ALUMNA));
-    assert.equal(res.status, 204);
-    assert.deepEqual(calls, [{ p_user_id: ALUMNA.userId, p_google_id: ALUMNA.googleId }]);
-    assert.equal(ctx.db.calls.some(c => c.op === "delete"), false);
-  });
-
-  it("DELETE con un error de la función distinto de «no existe» responde 500 sin borrar nada", async () => {
-    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
-    seedClassroom(ctx.db, ALUMNA);
-    ctx.db.rpcHandlers.disable_classroom_tasks = () => ({ data: null, error: { code: "40P01", message: "deadlock" } });
-    const res = await request(ctx.api).delete("/api/classroom/tasks-authorization")
-      .set("Origin", FRONTEND).set("Cookie", cookie(ALUMNA));
-    assert.equal(res.status, 500);
-    assert.equal(ctx.db.tables.classroom_coursework.length, 1);
-    assert.ok(scopes(grantOf(ctx.db).scope).includes(CLASSROOM_WORK_SCOPE));
-  });
-
-  // Regla de autorización de la desactivación (igual que la 018): exige el grant de ese
-  // user_id y google_id con cualquier status; sin él responde 409 y no borra nada.
+  // Regla de autorización de la desactivación (la de la 018): exige el grant de ese user_id y
+  // google_id con cualquier status; sin él la función lanza 42501 → 403 y no borra nada.
   const del = ctx => request(ctx.api).delete("/api/classroom/tasks-authorization").set("Origin", FRONTEND).set("Cookie", cookie(ALUMNA));
   const of = (ctx, table, who = ALUMNA) => ctx.db.tables[table].filter(r => r.user_id === who.userId);
-  const writes = ctx => ctx.db.calls.filter(c => c.op === "update" || c.op === "delete");
   function assertUntouched(ctx) {
     assert.equal(of(ctx, "classroom_task_events").length, 1);
     assert.equal(of(ctx, "classroom_coursework").length, 1);
     assert.notEqual(of(ctx, "classroom_courses")[0].coursework_baseline_at, null);
-    assert.deepEqual(writes(ctx), []);
+    assert.deepEqual(dataWrites(ctx.db), []);
   }
   function assertCleaned(ctx) {
     assert.equal(grantOf(ctx.db).scope, BASE_SCOPE);
@@ -416,31 +464,76 @@ describe("ITN-43c /api/classroom/tasks-authorization", () => {
     assert.equal(of(ctx, "classroom_courses")[0].coursework_baseline_at, null);
     assert.equal(of(ctx, "classroom_task_events", OTRO).length, 1);
     assert.equal(of(ctx, "classroom_coursework", OTRO).length, 1);
+    assert.notEqual(of(ctx, "classroom_courses", OTRO)[0].coursework_baseline_at, null);
+    assert.ok(scopes(grantOf(ctx.db, OTRO).scope).includes(CLASSROOM_WORK_SCOPE));
   }
 
-  it("DELETE sin la 018 y google_id distinto: 409 y no borra nada", async () => {
+  it("DELETE usa SOLO la función atómica con el alumno de la sesión y limpia solo a ese alumno", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
+    seedClassroom(ctx.db, ALUMNA);
+    seedClassroom(ctx.db, OTRO);
+    const res = await del(ctx);
+    assert.equal(res.status, 204);
+    assertCleaned(ctx);
+    assert.deepEqual(decrypt(grantOf(ctx.db).refresh_token, SECRET, "google-refresh"), { token: OLD_REFRESH });
+    assert.deepEqual(ctx.db.rpcArgs, [{ name: "disable_classroom_tasks", args: { p_user_id: ALUMNA.userId, p_google_id: ALUMNA.googleId } }]);
+    assert.deepEqual(ctx.db.calls.filter(c => c.table === "google_authorizations" || c.table?.startsWith("classroom_")), []);
+    assertNoSecretsLogged(ctx.logs);
+  });
+
+  for (const code of ["PGRST202", "42883"]) {
+    it(`DELETE sin la 018 (${code}): 503 migracion_pendiente y ningún camino de escritura alterno`, async () => {
+      const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
+      seedClassroom(ctx.db, ALUMNA);
+      if (code === "PGRST202") withoutMigration(ctx.db);
+      else ctx.db.rpcHandlers.disable_classroom_tasks = () => rpcError(code, "function public.disable_classroom_tasks does not exist");
+      const before = JSON.stringify(ctx.db.tables);
+      const res = await del(ctx);
+      assert.equal(res.status, 503);
+      assert.deepEqual(res.body, { error: "migracion_pendiente" });
+      // Solo la llamada a la función: ni lecturas ni escrituras de grant/tareas por otra vía.
+      assert.deepEqual(ctx.db.calls.filter(c => c.rpc), [{ rpc: "disable_classroom_tasks" }]);
+      assert.deepEqual(ctx.db.calls.filter(c => c.table === "google_authorizations" || c.table?.startsWith("classroom_")), []);
+      assert.equal(JSON.stringify(ctx.db.tables), before);
+      assert.equal(JSON.stringify(res.body).includes("does not exist"), false);
+    });
+  }
+
+  it("DELETE con un error de la función distinto de «no existe»: 500 genérico sin borrar nada", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
+    seedClassroom(ctx.db, ALUMNA);
+    ctx.db.rpcHandlers.disable_classroom_tasks = () => rpcError("40P01", "deadlock detected detalle interno");
+    const res = await del(ctx);
+    assert.equal(res.status, 500);
+    assert.deepEqual(res.body, { error: "error_interno" });
+    assertUntouched(ctx);
+    assert.ok(scopes(grantOf(ctx.db).scope).includes(CLASSROOM_WORK_SCOPE));
+    assert.equal(ctx.logs.join("\n").includes("detalle interno"), false);
+  });
+
+  it("DELETE con google_id distinto: 403 y no borra nada", async () => {
     const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
     seedClassroom(ctx.db, ALUMNA);
     grantOf(ctx.db).google_id = "google-otra-cuenta";
     const res = await del(ctx);
-    assert.equal(res.status, 409);
+    assert.equal(res.status, 403);
     assert.deepEqual(res.body, { error: "classroom_requiere_autorizacion" });
     assertUntouched(ctx);
     assert.ok(scopes(grantOf(ctx.db).scope).includes(CLASSROOM_WORK_SCOPE));
     assertNoSecretsLogged(ctx.logs);
   });
 
-  it("DELETE sin la 018 y sin autorización: 409 y no borra nada", async () => {
+  it("DELETE sin autorización: 403 y no borra nada", async () => {
     const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
     seedClassroom(ctx.db, ALUMNA);
     ctx.db.tables.google_authorizations = ctx.db.tables.google_authorizations.filter(g => g.user_id !== ALUMNA.userId);
     const res = await del(ctx);
-    assert.equal(res.status, 409);
+    assert.equal(res.status, 403);
     assert.deepEqual(res.body, { error: "classroom_requiere_autorizacion" });
     assertUntouched(ctx);
   });
 
-  it("DELETE sin la 018 con autorización en needs_relink: sí limpia scope, tareas, eventos y baseline", async () => {
+  it("DELETE con autorización en needs_relink: sí limpia scope, tareas, eventos y baseline", async () => {
     const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}`, status: "needs_relink" });
     seedClassroom(ctx.db, ALUMNA);
     seedClassroom(ctx.db, OTRO);
@@ -450,35 +543,13 @@ describe("ITN-43c /api/classroom/tasks-authorization", () => {
     assert.equal(grantOf(ctx.db).status, "needs_relink");
   });
 
-  it("DELETE sin la 018 con autorización activa: limpia como antes", async () => {
+  it("DELETE con otro 42501 (permiso de infraestructura): 500, no 403", async () => {
     const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
     seedClassroom(ctx.db, ALUMNA);
-    seedClassroom(ctx.db, OTRO);
-    const res = await del(ctx);
-    assert.equal(res.status, 204);
-    assertCleaned(ctx);
-  });
-
-  it("DELETE con la 018 que rechaza la autorización (42501): 409 sin usar el respaldo", async () => {
-    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
-    seedClassroom(ctx.db, ALUMNA);
-    ctx.db.rpcHandlers.disable_classroom_tasks = () => ({
-      data: null, error: { code: "42501", message: "classroom_authorization_required" },
-    });
-    const res = await del(ctx);
-    assert.equal(res.status, 409);
-    assert.deepEqual(res.body, { error: "classroom_requiere_autorizacion" });
-    assertUntouched(ctx);
-  });
-
-  it("DELETE con la 018 y otro 42501 (permiso de infraestructura) responde 500, no 409", async () => {
-    const ctx = setup({ scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
-    seedClassroom(ctx.db, ALUMNA);
-    ctx.db.rpcHandlers.disable_classroom_tasks = () => ({
-      data: null, error: { code: "42501", message: "permission denied for function disable_classroom_tasks" },
-    });
+    ctx.db.rpcHandlers.disable_classroom_tasks = () => rpcError("42501", "permission denied for function disable_classroom_tasks");
     const res = await del(ctx);
     assert.equal(res.status, 500);
+    assert.deepEqual(res.body, { error: "error_interno" });
     assertUntouched(ctx);
   });
 

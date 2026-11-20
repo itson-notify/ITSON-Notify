@@ -55,14 +55,19 @@ cambia nada (ver «Riesgos»).
    * scope devuelto sin `CLASSROOM_WORK_SCOPE` (consentimiento parcial) → `?tareas=rechazada`;
    * refresh token nuevo cuyo scope no incluya cursos → `?tareas=error` (no se sustituye el
      token del login por uno que no lee cursos);
-   * si todo va bien: si las tareas no estaban activas pone `coursework_baseline_at = null`
-     en los cursos del alumno (la primera sync con tareas será baseline silencioso), y
-     después une los scopes (`guardado ∪ devuelto ∪ CLASSROOM_WORK_SCOPE`) en
-     `google_authorizations`. Si Google manda refresh token se guarda cifrado y
-     `status = active`; si no, se conserva el anterior. El access token nunca se persiste.
-     → `?tareas=ok`.
-   * No crea sesión nueva. Cualquier excepción → `?tareas=error`, sin cambios parciales en
-     el grant (la limpieza de baseline previa es inocua: sin el scope no hay tareas).
+   * si todo va bien llama a `activate_classroom_tasks(user_id, google_id, scope_devuelto,
+     refresh_token_cifrado|null)` (018), que en **una transacción** y con el mismo orden de
+     candados que `sync_classroom` (`app_users FOR UPDATE` → grant `FOR UPDATE`): exige el grant
+     `(user_id, google_id)` con `status = active` y el scope de cursos (si no, 42501
+     `classroom_authorization_required`); si las tareas no estaban activas pone
+     `coursework_baseline_at = null` en los cursos del alumno (la primera sync con tareas será
+     baseline silencioso); une los scopes (`guardado ∪ devuelto ∪ CLASSROOM_WORK_SCOPE`, sin
+     duplicados, en orden) y, si Google mandó refresh token, lo guarda (ya cifrado por el
+     backend); si no, conserva el anterior. Una sync concurrente espera al commit y nunca ve un
+     estado intermedio. El access token nunca se persiste. → `?tareas=ok`.
+   * No crea sesión nueva. Cualquier excepción → `?tareas=error` sin cambios (la función
+     revierte todo). Sin la 018 → `?tareas=error` con log `migracion_pendiente`, sin escribir
+     por otro camino.
 4. **`GET /api/classroom/tasks-authorization`** (sesión) → `{ enabled, granted, needsRelink }`.
    `granted` = scope guardado con `CLASSROOM_WORK_SCOPE` y sin `needs_relink`.
 5. **`DELETE /api/classroom/tasks-authorization`** (sesión + `Origin` exacto, como el resto de
@@ -70,23 +75,20 @@ cambia nada (ver «Riesgos»).
    cursos y el refresh token), borra `classroom_task_events` y `classroom_coursework` del
    alumno y pone `coursework_baseline_at = null` en sus cursos. Solo afecta a
    `req.student.userId`.
-   * **Regla de autorización (con y sin 018):** antes de tocar nada debe existir la fila
+   * **Regla de autorización:** antes de tocar nada debe existir la fila
      `google_authorizations` con `user_id` **y** `google_id` de la sesión, **sea cual sea su
      `status`**. Un grant en `needs_relink` **sí** puede desactivar: el alumno debe poder
      borrar sus datos aunque su token esté roto. Si la fila no existe (otro `google_id` o sin
-     autorización) responde **409 `classroom_requiere_autorizacion`** (el mismo error de
-     Classroom que usan `/auth/google/tasks` y Materias) y no borra ni actualiza nada. Los
-     borrados siguen restringidos a `user_id`.
-   * Con la migración **018** aplicada usa `disable_classroom_tasks(user_id, google_id)`:
-     una transacción con el mismo candado que `sync_classroom` (`app_users FOR UPDATE`) más
-     `FOR UPDATE` sobre el grant `(user_id, google_id)`. Sin grant lanza
-     `classroom_authorization_required` (42501), que la ruta traduce a 409. Otro 42501 (p. ej.
-     falta de permiso de infraestructura) sigue siendo 500.
-   * Sin la 018 (PostgREST `PGRST202` / `42883`) primero lee el grant `(user_id, google_id)`
-     (cualquier `status`; si no existe → 409 sin escribir) y luego hace los pasos en este orden: scope →
-     eventos → tareas → baseline. Cada paso es idempotente; si uno falla responde 500 y
-     repetir el DELETE completa la limpieza. Cualquier otro error de la función → 500 sin
-     borrar nada.
+     autorización) la función lanza `classroom_authorization_required` (42501) y la ruta
+     responde **403 `classroom_requiere_autorizacion`** sin borrar ni actualizar nada.
+   * Usa **solo** `disable_classroom_tasks(user_id, google_id)` (018): una transacción con el
+     mismo candado que `sync_classroom` (`app_users FOR UPDATE`) más `FOR UPDATE` sobre el
+     grant `(user_id, google_id)`.
+   * Respuestas con código fijo, nunca con el mensaje de Supabase: sin la 018 (PostgREST
+     `PGRST202` / `42883`) → **503 `migracion_pendiente`** sin escribir por ningún otro camino
+     (ya no hay respaldo sin transacción); 42501 de negocio → **403**; cualquier otro error
+     (incluido un 42501 de infraestructura, p. ej. falta de permiso de `service_role`) →
+     **500 `error_interno`**.
    * No revoca el grant en Google: la revocación de Google es de todo el grant y tiraría
      también el login. Por eso el login (`saveGoogleAuthorization`) ya **no** guarda el
      scope de tareas que Google devuelva por autorización incremental si el alumno no lo
@@ -143,17 +145,19 @@ Sección «Tareas de Classroom», solo si `enabled` y Classroom conectado:
 
 ## Migraciones
 
-* **017 obligatoria antes de encender la bandera.** Si falta `coursework_baseline_at`, la
-  activación falla con `?tareas=error` y no amplía el scope (evita notificaciones en bloque).
-* **018 propuesta, sin aplicar:** `database/migrations/018_disable_classroom_tasks.sql`
-  (`disable_classroom_tasks(uuid, text)`, `security invoker`, `execute` solo para
-  `service_role`). Opcional: el backend funciona sin ella (pasos en orden seguro) y la
-  usa automáticamente cuando existe. Validada contra `postgres:16` desechable sin red:
-  `node scripts/verify-classroom-sync-sql.cjs --docker postgres:16` (016+017+018 en una
-  transacción y reaplicable, limpieza, aislamiento, candado compartido con una sync
-  concurrente en ambos órdenes, `service_role` + invoker, y la regla de autorización:
-  otro `google_id` y sin grant → 42501 sin cambios; `needs_relink` y activa → limpian).
-  Pruebas SQL: `backend/tests/sql/classroomTasksDisable.sql` y `classroomTasksDisableAuth.sql`.
+* **017 y 018 obligatorias antes de encender la bandera.** Sin la 018 activar y desactivar
+  fallan sin escribir nada (`?tareas=error` / 503 `migracion_pendiente`); ya no hay respaldo
+  en JS.
+* **018 propuesta, sin aplicar:** `database/migrations/018_classroom_tasks_authorization.sql`
+  (`activate_classroom_tasks(uuid, text, text, text)` y `disable_classroom_tasks(uuid, text)`,
+  `security invoker`, `search_path` fijo, `execute` solo para `service_role`). Validada contra
+  `postgres:16` desechable sin red: `node scripts/verify-classroom-sync-sql.cjs --docker postgres:16`
+  (016+017+018 en una transacción y reaplicable; desactivación: limpieza, aislamiento, candado
+  compartido con una sync en ambos órdenes, regla de autorización; activación: caso feliz, sin
+  autorización usable → 42501 sin cambios, fallo forzado a mitad → rollback completo,
+  concurrencia con `sync_classroom` en ambos órdenes y mezclada sin deadlock, permisos).
+  Pruebas SQL: `backend/tests/sql/classroomTasksDisable.sql`, `classroomTasksDisableAuth.sql`
+  y `classroomTasksActivate.sql`.
 
 ## Riesgos conocidos
 
@@ -168,16 +172,19 @@ Sección «Tareas de Classroom», solo si `enabled` y Classroom conectado:
 
 ## Pruebas
 
-* `backend/tests/routes/classroomTasksAuth.test.js` (32): bandera apagada, sesión, origen,
+* `backend/tests/routes/classroomTasksAuth.test.js`: bandera apagada, sesión, origen,
   `needs_relink`, URL de autorización (solo tareas, incremental, PKCE, nonce), state
   inválido, `mode` falsificado en la query, rechazo, permisos parciales, cuenta distinta,
-  sesión distinta, concesión correcta (scopes unidos, refresh token nuevo cifrado, sin
-  access token, baseline limpia, sin sesión nueva), refresh token conservado, refresh
-  token sin cursos, sin 017, bandera apagada a mitad del flujo, GET de estado, DELETE (con
-  y sin 018, orden, aislamiento de otro alumno, error de la función; regla de
-  autorización del respaldo y de la 018: otro `google_id` y sin grant → 409 sin escribir,
-  `needs_relink` y activa → limpian, 42501 de infraestructura → 500), reactivación y
-  decisión del alumno en re-login. Ningún log contiene tokens, código, scopes ni títulos.
+  sesión distinta, concesión correcta (una sola RPC, refresh token cifrado antes de la RPC,
+  sin access token, baseline limpia, sin sesión nueva), refresh token conservado, refresh
+  token sin cursos, sin 018 / RPC que rechaza o falla → `error` sin escribir, ya activas,
+  bandera apagada a mitad del flujo, GET de estado, DELETE (solo RPC, aislamiento, sin 018 →
+  503 sin ningún otro acceso a tablas, error → 500 genérico, otro `google_id` y sin grant →
+  403, `needs_relink` limpia, 42501 de infraestructura → 500), reactivación y decisión del
+  alumno en re-login. Ningún log contiene tokens, código, scopes, títulos ni mensajes de Supabase.
+* `backend/tests/services/classroomTasksAuthorization.test.js`: con un cliente que solo tiene
+  `rpc()` (cualquier otro acceso lanza) comprueba que no existe camino de escritura alterno
+  y el mapeo de errores a 503/403/500.
 * `backend/tests/config/env.test.js`: parseo de la bandera.
 * `frontend/tests/classroomTasks.test.cjs` (14): cliente, mock, mensajes, tarjeta (oculta,
   no activadas, activadas, revocada), retorno `?tareas=…`, Activar, Desactivar con

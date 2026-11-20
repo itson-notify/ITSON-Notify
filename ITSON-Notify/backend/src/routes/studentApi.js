@@ -12,7 +12,7 @@ const { studentCredentialsRouter } = require("./studentCredentials");
 const { itsonProfileRouter } = require("./itsonProfile");
 const { createCoursesService, CoursesError } = require("../services/classroomCourses");
 const {
-  getTasksAuthorization, disableTasks, TasksAuthorizationError, DISABLE_REQUIRES_AUTHORIZATION,
+  getTasksAuthorization, disableTasks, TasksAuthorizationError,
 } = require("../services/classroomTasksAuthorization");
 const { parseCalendarRange } = require("../models/calendarEvent");
 const { createCalendarRepository, esTablaFaltante } = require("../repositories/calendarRepository");
@@ -73,9 +73,12 @@ function studentApiRouter({
     try {
       await disableTasks(supabase, req.student);
     } catch (error) {
-      // Sin autorización (user_id, google_id): mismo 409 que el resto de Classroom; nada se borró.
-      if (error instanceof TasksAuthorizationError && error.code === DISABLE_REQUIRES_AUTHORIZATION) {
-        return res.status(409).json({ error: DISABLE_REQUIRES_AUTHORIZATION });
+      // Códigos fijos sin mensajes de Supabase: 503 migracion_pendiente (sin la 018 no se escribe
+      // nada por otro camino), 403 classroom_requiere_autorizacion (42501 de negocio; nada se
+      // borró) y 500 error_interno para el resto.
+      if (error instanceof TasksAuthorizationError) {
+        if (error.status >= 500) logger?.warn?.("classroom_tareas_desactivacion_fallida", { error_code: error.code });
+        return res.status(error.status).json({ error: error.code });
       }
       throw error;
     }

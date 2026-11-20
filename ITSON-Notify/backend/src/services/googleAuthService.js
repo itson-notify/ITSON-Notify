@@ -109,7 +109,6 @@ async function verifyGoogleIdToken(idToken, { clientId, nonce, fetchImpl = fetch
 const scopeList = scope => (typeof scope === "string" ? scope.split(" ").filter(Boolean) : []);
 const hasScope = (scope, value) => scopeList(scope).includes(value);
 const withoutScope = (scope, value) => scopeList(scope).filter(item => item !== value).join(" ");
-const unionScopes = (...scopes) => Array.from(new Set(scopes.flatMap(scopeList))).join(" ");
 
 // Conserva el refresh token anterior cuando Google no envía uno nuevo.
 // Nunca persiste el access token: ITN-42 podrá obtener uno con el refresh token.
@@ -169,5 +168,5 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
 
 module.exports = {
   CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, createPkcePair, generateAuthUrl, exchangeCodeForTokens,
-  verifyGoogleIdToken, saveGoogleAuthorization, hasScope, withoutScope, unionScopes,
+  verifyGoogleIdToken, saveGoogleAuthorization, hasScope, withoutScope,
 };
