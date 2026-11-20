@@ -14,9 +14,11 @@ const {
 } = require("../../src/repositories/classroomDeliveryRepository");
 const {
   DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS,
+  createClassroomEmailTransport,
   loadClassroomDispatchConfig,
   parseClassroomDispatchFlag,
   parseClassroomDispatchAllowedUsers,
+  RESEND_IDEMPOTENCY_TTL_MS,
 } = require("../../src/services/classroomDeliveryService");
 const { sessionHash } = require("../../src/middleware/studentSession");
 const { encrypt } = require("../../src/utils/secureToken");
@@ -79,11 +81,22 @@ function createDispatchSupabaseHarness({ nowMs = T0 } = {}) {
       const event = tables.classroom_task_events.find((e) => e.id === p_event_id);
       if (!event) return { data: { status: "missing_event", deliveries: [] }, error: null };
 
+      const projectMaterialized = (d) => ({
+        id: d.id,
+        event_id: d.event_id,
+        channel: d.channel,
+        state: d.state,
+        required_channels: [...d.required_channels],
+        policy_version: d.policy_version,
+        attempts: d.attempts,
+        last_error_code: d.last_error_code,
+      });
+
       const existing = tables.classroom_notification_deliveries
         .filter((d) => d.source === "classroom" && d.event_id === p_event_id)
         .sort((a, b) => a.channel.localeCompare(b.channel));
       if (existing.length > 0) {
-        return { data: { status: "existing", deliveries: existing.map((d) => ({ ...d })) }, error: null };
+        return { data: { status: "existing", deliveries: existing.map(projectMaterialized) }, error: null };
       }
 
       const work = tables.classroom_coursework.find((w) => w.id === event.coursework_id);
@@ -166,7 +179,7 @@ function createDispatchSupabaseHarness({ nowMs = T0 } = {}) {
       return {
         data: {
           status: initialState === "pending" ? "materialized" : initialState,
-          deliveries: created.map((d) => ({ ...d })),
+          deliveries: created.map(projectMaterialized),
         },
         error: null,
       };
@@ -209,7 +222,22 @@ function createDispatchSupabaseHarness({ nowMs = T0 } = {}) {
       target.claim_token = crypto.randomUUID();
       target.lease_until = new Date(clock + leaseSecs * 1000).toISOString();
       target.updated_at = nowIso();
-      return { data: { ...target }, error: null };
+      return {
+        data: {
+          id: target.id,
+          event_id: target.event_id,
+          user_id: target.user_id,
+          source: target.source,
+          channel: target.channel,
+          state: target.state,
+          attempts: target.attempts,
+          claim_token: target.claim_token,
+          lease_until: target.lease_until,
+          required_channels: [...target.required_channels],
+          policy_version: target.policy_version,
+        },
+        error: null,
+      };
     }
 
     if (name === "begin_classroom_delivery_send") {
@@ -827,5 +855,57 @@ describe("Validación de CLASSROOM_DISPATCH_ENABLED y CLASSROOM_DISPATCH_ALLOWED
       parseClassroomDispatchAllowedUsers(" Piloto.Classroom@Example.Test , * , "),
       ["piloto.classroom@example.test"],
     );
+  });
+
+  test("regresión TTL: POST /internal/classroom/dispatch con transporte Resend real pasa a unknown tras timeout posterior al TTL y no reintenta", async () => {
+    const h = createDispatchSupabaseHarness();
+    const logs = [];
+    const logger = createLogger((line) => logs.push(line));
+    const piloto = seedStudentAndEvent(h, { email: "piloto.real@potros.itson.edu.mx" });
+
+    let resendCalls = 0;
+    const realResendTransport = createClassroomEmailTransport({
+      apiKey: "re_test_dispatch_ttl",
+      fetchImpl: async () => {
+        resendCalls += 1;
+        const err = new Error("Simulated timeout after TTL");
+        err.name = "TimeoutError";
+        throw err;
+      },
+    });
+
+    const app = createApp({
+      config: {
+        internalApiKey: API_KEY,
+        credentialsEncryptionKey: CREDENTIALS_KEY,
+        googleAuthSecret: SECRET,
+        frontendUrl: "http://localhost:5173",
+        classroomDispatchEnabled: true,
+        classroomDispatchAllowedUsers: ["piloto.real@potros.itson.edu.mx"],
+      },
+      supabase: h.supabase,
+      logger,
+      now: h.now,
+      classroomTransports: { email: realResendTransport },
+      classroomDeliveryRepo: h.repo,
+    });
+
+    // Materializamos primero y avanzamos el reloj más allá del TTL de Idempotency-Key (23h)
+    await h.repo.materializeEvent({ eventId: piloto.eventId, channels: ["email"] });
+    h.advanceClock(RESEND_IDEMPOTENCY_TTL_MS + 60_000);
+
+    const res1 = await request(app).post(RUTA).set("x-api-key", API_KEY).send({});
+    assert.equal(res1.status, 200);
+    assert.deepEqual(res1.body, { procesados: 1, enviados: 0, fallidos: 1 });
+    assert.equal(resendCalls, 1);
+    assert.equal(h.tables.classroom_notification_deliveries[0].state, "unknown");
+    assert.equal(h.tables.classroom_notification_deliveries[0].last_error_code, "resend_ambiguous_timeout");
+
+    // Segunda llamada posterior: la entrega en unknown jamás se reintenta automáticamente
+    h.advanceClock(120_000);
+    const res2 = await request(app).post(RUTA).set("x-api-key", API_KEY).send({});
+    assert.equal(res2.status, 200);
+    assert.equal(resendCalls, 1);
+    assert.equal(h.tables.classroom_notification_deliveries[0].state, "unknown");
   });
 });

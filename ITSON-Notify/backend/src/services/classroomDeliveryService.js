@@ -254,6 +254,29 @@ function toClassroomDeliveryNotif(row) {
   };
 }
 
+// Margen máximo tolerado de desfase de reloj (BD ligeramente adelante de Node).
+const MAX_CLOCK_SKEW_MS = 60_000;
+
+// Determina si el intento sigue dentro de la ventana segura de Idempotency-Key.
+// Falla cerrado (false -> unknown) si falta la fecha persistida created_at, no es
+// una fecha ISO válida, está en el futuro más allá del margen de reloj o excedió el TTL.
+function isWithinIdempotencyWindow({
+  idempotencySupported,
+  idempotencyKey,
+  createdAt,
+  nowMs,
+  idempotencyTtlMs,
+}) {
+  if (idempotencySupported !== true) return false;
+  if (typeof idempotencyKey !== "string" || idempotencyKey.trim() === "") return false;
+  if (typeof createdAt !== "string" || createdAt.trim() === "") return false;
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs) || !Number.isFinite(nowMs)) return false;
+  const ageMs = nowMs - createdAtMs;
+  if (ageMs < -MAX_CLOCK_SKEW_MS) return false;
+  return ageMs <= idempotencyTtlMs;
+}
+
 // Adaptador tipado de correo (Resend) con Idempotency-Key estable por entrega.
 function createClassroomEmailTransport({
   apiKey,
@@ -282,12 +305,14 @@ function createClassroomEmailTransport({
       }
 
       const idempotencyKey = session?.idempotency_key;
-      const createdAtMs = session?.created_at ? Date.parse(session.created_at) : now();
-      const withinIdempotencyWindow =
-        idempotencySupported === true &&
-        typeof idempotencyKey === "string" &&
-        idempotencyKey.length > 0 &&
-        now() - (Number.isFinite(createdAtMs) ? createdAtMs : now()) <= idempotencyTtlMs;
+      const checkIdempotencyWindow = () =>
+        isWithinIdempotencyWindow({
+          idempotencySupported,
+          idempotencyKey,
+          createdAt: session?.created_at,
+          nowMs: now(),
+          idempotencyTtlMs,
+        });
 
       let res;
       try {
@@ -308,7 +333,8 @@ function createClassroomEmailTransport({
         });
       } catch {
         // Fallo de red o timeout tras iniciar la petición HTTP.
-        if (withinIdempotencyWindow) {
+        // Si falta created_at válido o ya venció el TTL, falla cerrado como unknown.
+        if (checkIdempotencyWindow()) {
           return {
             status: "not_accepted",
             permanent: false,
@@ -357,8 +383,9 @@ function createClassroomEmailTransport({
         };
       }
 
-      // 5xx: resultado ambiguo salvo que la ventana de Idempotency-Key siga vigente.
-      if (withinIdempotencyWindow) {
+      // 5xx: resultado ambiguo salvo que la ventana de Idempotency-Key siga vigente
+      // según la fecha persistida created_at devuelta por begin_classroom_delivery_send.
+      if (checkIdempotencyWindow()) {
         return {
           status: "not_accepted",
           permanent: false,
@@ -835,6 +862,7 @@ module.exports = {
   processClassroomDeliveries,
   createClassroomEmailTransport,
   createClassroomWebPushTransport,
+  isWithinIdempotencyWindow,
   buildClassroomTransports,
   parseClassroomDispatchFlag,
   parseClassroomDispatchAllowedUsers,

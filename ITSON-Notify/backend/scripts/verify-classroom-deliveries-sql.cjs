@@ -415,8 +415,75 @@ async function main() {
       );
     }
 
+    // (E) Real SQL-to-JS contract test: pipe actual PostgreSQL begin_classroom_delivery_send JSON
+    // directly into createClassroomEmailTransport to verify persisted created_at & TTL fail-closed behavior.
+    const {
+      createClassroomEmailTransport,
+      formatClassroomTaskMessage,
+      RESEND_IDEMPOTENCY_TTL_MS,
+    } = require("../src/services/classroomDeliveryService");
+
+    const evTtl = seedOneNewEvent("w-ttl-contract");
+    const beginContractOut = sql(`
+      set role service_role;
+      select public.materialize_classroom_deliveries('${evTtl}'::uuid, array['email'], 'v1');
+      with c as (select public.claim_classroom_delivery(60, 5) as row)
+      select 'BEGIN_JSON=' || public.begin_classroom_delivery_send(
+        (c.row->>'id')::uuid,
+        (c.row->>'claim_token')::uuid,
+        30, 5, 'v1:' || repeat('b', 64), 'v1'
+      )::text
+      from c;
+      reset role;
+    `);
+    const beginMatch = /BEGIN_JSON=(\{.*\})/.exec(beginContractOut);
+    assert.ok(beginMatch, `Failed to capture BEGIN_JSON: ${beginContractOut}`);
+    const pgSession = JSON.parse(beginMatch[1]);
+    assert.equal(pgSession.allowed, true);
+    assert.equal(typeof pgSession.created_at, "string");
+    const persistedCreatedAtMs = Date.parse(pgSession.created_at);
+    assert.ok(Number.isFinite(persistedCreatedAtMs), "PostgreSQL created_at parses as finite epoch ms");
+
+    const timeoutTransport = createClassroomEmailTransport({
+      apiKey: "re_contract_test",
+      fetchImpl: async () => {
+        const err = new Error("Simulated timeout");
+        err.name = "TimeoutError";
+        throw err;
+      },
+    });
+    const pgMessage = formatClassroomTaskMessage(pgSession.payload);
+
+    // 1) Timeout within TTL -> retryable with same Idempotency-Key
+    const withinRes = await timeoutTransport.send(pgMessage, pgSession, {
+      now: () => persistedCreatedAtMs + 60_000,
+    });
+    assert.equal(withinRes.status, "not_accepted");
+    assert.equal(withinRes.permanent, false);
+    assert.equal(withinRes.errorCode, "resend_transient_with_idempotency");
+
+    // 2) Timeout after TTL -> fail closed as unknown
+    const afterTtlRes = await timeoutTransport.send(pgMessage, pgSession, {
+      now: () => persistedCreatedAtMs + RESEND_IDEMPOTENCY_TTL_MS + 60_000,
+    });
+    assert.equal(afterTtlRes.status, "unknown");
+    assert.equal(afterTtlRes.errorCode, "resend_ambiguous_timeout");
+
+    // 3) Missing created_at -> fail closed as unknown
+    const sessionWithoutDate = { ...pgSession };
+    delete sessionWithoutDate.created_at;
+    const missingDateRes = await timeoutTransport.send(pgMessage, sessionWithoutDate, {
+      now: () => persistedCreatedAtMs + 1_000,
+    });
+    assert.equal(missingDateRes.status, "unknown");
+    assert.equal(missingDateRes.errorCode, "resend_ambiguous_timeout");
+
     console.log(
-      "CLASSROOM_DELIVERIES_SQL_OK: 019 rollback/replay, RLS/ACL, unified lock order (app_users->google_authorizations->event->delivery), concurrent disable vs materialize/begin_send/ack without 40P01 deadlock, ack sent only from sending/unknown, exhausted retry_wait->dead in claim, concurrent SKIP LOCKED claim",
+      `[CONTRACT E] real PG begin_classroom_delivery_send -> createClassroomEmailTransport: created_at=${pgSession.created_at}, withinTTL=${withinRes.status}, afterTTL=${afterTtlRes.status} (${afterTtlRes.errorCode}), missingDate=${missingDateRes.status} (PASS)`,
+    );
+
+    console.log(
+      "CLASSROOM_DELIVERIES_SQL_OK: 019 rollback/replay, RLS/ACL, unified lock order (app_users->google_authorizations->event->delivery), concurrent disable vs materialize/begin_send/ack without 40P01 deadlock, ack sent only from sending/unknown, exhausted retry_wait->dead in claim, concurrent SKIP LOCKED claim, beginSend created_at TTL contract",
     );
   } finally {
     if (startedDocker) {

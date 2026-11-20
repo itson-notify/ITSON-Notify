@@ -148,11 +148,22 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         "classroom_notification_deliveries",
       ]);
 
+      const projectMaterialized = (d) => ({
+        id: d.id,
+        event_id: d.event_id,
+        channel: d.channel,
+        state: d.state,
+        required_channels: [...d.required_channels],
+        policy_version: d.policy_version,
+        attempts: d.attempts,
+        last_error_code: d.last_error_code,
+      });
+
       const existing = tables.classroom_notification_deliveries
         .filter((d) => d.source === "classroom" && d.event_id === p_event_id)
         .sort((a, b) => a.channel.localeCompare(b.channel));
       if (existing.length > 0) {
-        return { data: { status: "existing", deliveries: existing.map((d) => ({ ...d })) }, error: null };
+        return { data: { status: "existing", deliveries: existing.map(projectMaterialized) }, error: null };
       }
 
       const work = tables.classroom_coursework.find((w) => w.id === event.coursework_id);
@@ -234,7 +245,7 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
       return {
         data: {
           status: initialState === "pending" ? "materialized" : initialState,
-          deliveries: created.map((d) => ({ ...d })),
+          deliveries: created.map(projectMaterialized),
         },
         error: null,
       };
@@ -311,7 +322,23 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
       target.claim_token = crypto.randomUUID();
       target.lease_until = new Date(clock + leaseSecs * 1000).toISOString();
       target.updated_at = nowIso();
-      return { data: { ...target }, error: null };
+      // Proyección exacta de claim_classroom_delivery en 019_classroom_notification_deliveries.sql
+      return {
+        data: {
+          id: target.id,
+          event_id: target.event_id,
+          user_id: target.user_id,
+          source: target.source,
+          channel: target.channel,
+          state: target.state,
+          attempts: target.attempts,
+          claim_token: target.claim_token,
+          lease_until: target.lease_until,
+          required_channels: [...target.required_channels],
+          policy_version: target.policy_version,
+        },
+        error: null,
+      };
     }
 
     if (name === "begin_classroom_delivery_send") {
@@ -1326,5 +1353,143 @@ describe("ITN-50 / ITN-44 - Revocación, desactivación (018), cambio de destina
         assert.deepEqual(trace.locks, CANONICAL_LOCK_ORDER);
       }
     }
+  });
+
+  test("15. Regresión TTL de idempotencia Resend: contrato RPC exacto (created_at), falta de fecha falla cerrado como unknown y timeout posterior al TTL nunca reintenta", async () => {
+    // (a) Verificar que las 4 RPCs del mock proyectan exactamente los mismos campos que PostgreSQL 019
+    const h = createLedgerTestHarness();
+    const { eventId } = seedStudentWithEvent(h);
+    const mat = await h.repo.materializeEvent({ eventId, channels: ["email"] });
+    assert.deepEqual(Object.keys(mat.deliveries[0]).sort(), [
+      "attempts",
+      "channel",
+      "event_id",
+      "id",
+      "last_error_code",
+      "policy_version",
+      "required_channels",
+      "state",
+    ]);
+
+    const claim = await h.repo.claimNextDelivery({ leaseSeconds: 60 });
+    assert.deepEqual(Object.keys(claim).sort(), [
+      "attempts",
+      "channel",
+      "claim_token",
+      "event_id",
+      "id",
+      "lease_until",
+      "policy_version",
+      "required_channels",
+      "source",
+      "state",
+      "user_id",
+    ]);
+
+    const begin = await h.repo.beginSend({
+      deliveryId: claim.id,
+      claimToken: claim.claim_token,
+      sendDeadlineSeconds: 30,
+      recipientFingerprint: computeRecipientFingerprint({
+        channel: "email",
+        email: "alumna.real@potros.itson.edu.mx",
+        secret: SECRET,
+      }),
+    });
+    assert.deepEqual(Object.keys(begin).sort(), [
+      "allowed",
+      "attempts",
+      "authorization_google_id",
+      "channel",
+      "claim_token",
+      "created_at",
+      "delivery_id",
+      "event_id",
+      "idempotency_key",
+      "payload",
+      "recipient_email",
+      "recipient_fingerprint",
+      "send_deadline",
+      "user_id",
+    ]);
+    assert.equal(begin.created_at, h.tables.classroom_notification_deliveries[0].created_at);
+
+    // (b) Si falta created_at o es una fecha inválida / futura fuera de margen, el transporte
+    // Resend DEBE fallar cerrado como 'unknown' (jamás hacer fallback a now())
+    for (const badCreatedAt of [undefined, null, "", "fecha-invalida", iso(10 * 60_000)]) {
+      const timeoutTransport = createClassroomEmailTransport({
+        apiKey: "re_test_key",
+        fetchImpl: async () => {
+          const err = new Error("Timeout");
+          err.name = "TimeoutError";
+          throw err;
+        },
+      });
+      const rTimeout = await timeoutTransport.send(
+        formatClassroomTaskMessage(begin.payload),
+        { ...begin, created_at: badCreatedAt },
+        { now: () => T0 + 1_000 },
+      );
+      assert.equal(rTimeout.status, "unknown", `timeout con created_at=${String(badCreatedAt)} debe ser unknown`);
+      assert.equal(rTimeout.errorCode, "resend_ambiguous_timeout");
+
+      const serverErrTransport = createClassroomEmailTransport({
+        apiKey: "re_test_key",
+        fetchImpl: async () => ({ ok: false, status: 502, json: async () => ({}) }),
+      });
+      const r502 = await serverErrTransport.send(
+        formatClassroomTaskMessage(begin.payload),
+        { ...begin, created_at: badCreatedAt },
+        { now: () => T0 + 1_000 },
+      );
+      assert.equal(r502.status, "unknown", `502 con created_at=${String(badCreatedAt)} debe ser unknown`);
+      assert.equal(r502.errorCode, "resend_ambiguous_after_ttl");
+    }
+
+    // (c) Regresión completa: timeout posterior al TTL (incluido cruce del TTL durante el timeout)
+    // deja la entrega en 'unknown' y una corrida posterior de processClassroomDeliveries NO reintenta.
+    const h2 = createLedgerTestHarness();
+    const { eventId: evId2 } = seedStudentWithEvent(h2);
+    await h2.repo.materializeEvent({ eventId: evId2, channels: ["email"] });
+
+    // Avanzamos el reloj hasta 5 segundos antes del límite del TTL y el timeout tarda 10 segundos,
+    // cruzando la frontera del TTL durante el vuelo.
+    h2.advanceClock(RESEND_IDEMPOTENCY_TTL_MS - 5_000);
+    let fetchCalls = 0;
+    const crossingTimeoutTransport = createClassroomEmailTransport({
+      apiKey: "re_test_key",
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        h2.advanceClock(10_000);
+        const err = new Error("Timeout crossing TTL");
+        err.name = "TimeoutError";
+        throw err;
+      },
+    });
+
+    const run1 = await processClassroomDeliveries({
+      repo: h2.repo,
+      transports: { email: crossingTimeoutTransport },
+      secret: SECRET,
+      now: h2.now,
+    });
+    assert.equal(fetchCalls, 1);
+    assert.equal(run1.unknown, 1);
+    assert.equal(run1.retryWait, 0);
+    assert.equal(run1.enviados, 0);
+    assert.equal(h2.tables.classroom_notification_deliveries[0].state, "unknown");
+    assert.equal(h2.tables.classroom_notification_deliveries[0].last_error_code, "resend_ambiguous_timeout");
+    assert.equal(h2.tables.classroom_task_events[0].delivered_at, null);
+
+    // Siguiente corrida tras avanzar el reloj: jamás vuelve a reclamar ni enviar
+    h2.advanceClock(120_000);
+    const run2 = await processClassroomDeliveries({
+      repo: h2.repo,
+      transports: { email: crossingTimeoutTransport },
+      secret: SECRET,
+      now: h2.now,
+    });
+    assert.equal(fetchCalls, 1, "no debe reintentar una entrega que pasó a unknown tras vencer el TTL");
+    assert.equal(run2.claimed, 0);
   });
 });
