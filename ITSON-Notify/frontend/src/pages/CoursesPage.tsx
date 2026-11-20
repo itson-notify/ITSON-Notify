@@ -3,7 +3,7 @@ import { I } from '@/components/icons'
 import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
-  classifyItem, courseSources, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
+  classifyItem, CLASSROOM_TASKS_NOTICE, courseSources, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
   SOURCE_LABEL, SOURCE_ORDER, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
@@ -160,7 +160,7 @@ function EmptyCourses({ ivirtualLink, classroomConnected, onGo, onRetry }: {
     return (
       <Notice title="Aún no vinculas iVirtual" action={toSettings}>
         Vincula tu cuenta de iVirtual en Configuración para ver tus materias, calificaciones y fechas de entrega.
-        {!classroomConnected && ' También puedes conectar Google Classroom para ver tus tareas.'}
+        {!classroomConnected && ' También puedes conectar Google Classroom para ver tus cursos.'}
       </Notice>
     )
   }
@@ -353,8 +353,8 @@ function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
         {cargando ? (
           <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden" role="status" aria-label="Cargando tareas"><SkeletonList rows={3} /></div>
         ) : secciones.length === 0 && !fallo && !perdida ? (
-          <Notice title="Sin tareas ni calificaciones registradas">
-            Ninguna de las fuentes de esta materia tiene tareas o calificaciones por ahora.
+          <Notice title={emptyCourseNotice(course).title}>
+            {emptyCourseNotice(course).body}
           </Notice>
         ) : (
           secciones.map(({ entry: fuente, items }) => {
@@ -372,6 +372,10 @@ function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
               </section>
             )
           })
+        )}
+        {/* Classroom sin tareas sincronizadas junto a otras fuentes con datos: se aclara que aún no llegan. */}
+        {!cargando && secciones.length > 0 && fuentes.some(f => f.source === 'classroom') && !secciones.some(s => s.entry.source === 'classroom') && (
+          <Notice title={CLASSROOM_TASKS_NOTICE.title}>{CLASSROOM_TASKS_NOTICE.body}</Notice>
         )}
       </div>
     </article>
@@ -402,7 +406,7 @@ function CourseDetail({ course, entry, now, onBack, onRetry }: {
       <div className="mt-6">
         {course.source === 'itson_api' ? (
           <Notice title="Solo calificación final">
-            De la API de ITSON solo se reporta la calificación final de cada materia. Las tareas y actividades se ven en las materias de iVirtual o de Google Classroom.
+            De la API de ITSON solo se reporta la calificación final de cada materia. Las tareas y actividades se ven en las materias de iVirtual.
           </Notice>
         ) : !entry || entry.status === 'loading' ? (
           <div className="bg-white border border-[#E5E7EB] rounded-lg overflow-hidden" role="status" aria-label="Cargando tareas"><SkeletonList rows={3} /></div>
@@ -415,10 +419,8 @@ function CourseDetail({ course, entry, now, onBack, onRetry }: {
             Puede que se haya actualizado tu lista de materias. Vuelve a la lista para ver la versión más reciente.
           </Notice>
         ) : groups.length === 0 ? (
-          <Notice title="Sin tareas registradas">
-            {course.source === 'classroom'
-              ? 'Esta clase de Google Classroom no tiene tareas publicadas por ahora.'
-              : 'Esta materia aún no tiene actividades registradas en iVirtual.'}
+          <Notice title={emptyCourseNotice(course).title}>
+            {emptyCourseNotice(course).body}
           </Notice>
         ) : (
           <div className="space-y-5">

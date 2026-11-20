@@ -54,7 +54,7 @@ export function SettingsPage({
 
   const disconnectClassroom = () => askConfirm({
     title: '¿Desconectar Google Classroom?',
-    body: 'Dejarás de recibir avisos de tareas. Puedes volver a conectarlo cuando quieras.',
+    body: 'Dejaremos de sincronizar tus cursos de Classroom. Puedes volver a conectarlo cuando quieras.',
     label: 'Desconectar', danger: true,
     onConfirm: async () => {
       try {

@@ -119,6 +119,25 @@ export function sourceSections(course: Course, items: CourseItem[]): { entry: Co
     .filter(({ entry, items }) => items.length > 0 || hasFinalGrade(entry.finalGrade))
 }
 
+/** Aviso de Classroom: sus tareas todavía no se sincronizan (no significa que no existan). */
+export const CLASSROOM_TASKS_NOTICE = {
+  title: 'Tareas de Classroom aún no disponibles',
+  body: 'Las tareas de Google Classroom todavía no están disponibles en ITSON Notify. Consulta Classroom para revisar tus actividades y entregas pendientes.',
+}
+
+/**
+ * Estado vacío del detalle de una materia. No afirma que no haya actividades: con
+ * Classroom explica que sus tareas aún no se sincronizan; sin Classroom, que aún no
+ * hay actividades sincronizadas.
+ */
+export function emptyCourseNotice(course: Course): { title: string; body: string } {
+  if (courseSources(course).some(s => s.source === 'classroom')) return CLASSROOM_TASKS_NOTICE
+  return {
+    title: 'Aún no hay actividades sincronizadas',
+    body: 'Todavía no hemos sincronizado actividades ni calificaciones de esta materia. Aparecerán aquí en cuanto lleguen de sus fuentes.',
+  }
+}
+
 // ── ITN-58c - Historial de calificaciones de la API de ITSON por semestre ────
 
 /** La API de ITSON manda null o '-' cuando aún no hay calificación final. */

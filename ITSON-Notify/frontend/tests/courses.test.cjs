@@ -415,7 +415,30 @@ test('el detalle omite las fuentes sin datos y conserva carga y error', () => {
 
   const vacia = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => ({ ...s, finalGrade: null })) };
   const sinNada = renderCourses({ state: { status: 'ready', courses: [vacia] }, selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [], updatedAt: UNIFICADA.updatedAt } } });
-  assert.match(sinNada.texto, /Sin tareas ni calificaciones registradas/);
+  // Con fuente Classroom no se afirma que no haya tareas: aún no se sincronizan.
+  assert.match(sinNada.texto, /Las tareas de Google Classroom todavía no están disponibles en ITSON Notify/);
+  assert.doesNotMatch(sinNada.texto, /Sin tareas ni calificaciones registradas/);
+});
+
+test('estado vacío del detalle: Classroom explica que sus tareas aún no llegan; sin Classroom es neutro', () => {
+  assert.equal(U.emptyCourseNotice(COURSE_CR).body,
+    'Las tareas de Google Classroom todavía no están disponibles en ITSON Notify. Consulta Classroom para revisar tus actividades y entregas pendientes.');
+  assert.equal(U.emptyCourseNotice(UNIFICADA), U.CLASSROOM_TASKS_NOTICE);
+  for (const curso of [COURSE_IV, COURSE_IT, { ...COURSE_IT, sources: [UNIFICADA.sources[0], UNIFICADA.sources[2]] }]) {
+    const { title, body } = U.emptyCourseNotice(curso);
+    assert.match(`${title} ${body}`, /sincronizad/);
+    assert.doesNotMatch(`${title} ${body}`, /Classroom|no tiene|Sin tareas/);
+  }
+
+  // Materia de iVirtual sin actividades (detalle de una sola fuente): texto neutro.
+  const iv = renderCourses({ state: { status: 'ready', courses: [COURSE_IV] }, selectedId: COURSE_IV.id, itemsById: { [COURSE_IV.id]: { status: 'ready', items: [], updatedAt: COURSE_IV.updatedAt } } });
+  assert.match(iv.texto, /Aún no hay actividades sincronizadas/);
+
+  // Unificada con datos de iVirtual pero sin tareas de Classroom: se aclara lo de Classroom.
+  const soloIv = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [ITEM_IV], updatedAt: UNIFICADA.updatedAt } } });
+  assert.match(soloIv.texto, /Tareas de Classroom aún no disponibles/);
+  const conCr = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [ITEM_IV, ITEM_CR], updatedAt: UNIFICADA.updatedAt } } });
+  assert.doesNotMatch(conCr.texto, /Tareas de Classroom aún no disponibles/);
 });
 
 test('App pide /items de una materia unificada aunque su fuente principal sea ITSON', async () => {
