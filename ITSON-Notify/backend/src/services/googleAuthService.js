@@ -16,7 +16,10 @@ function createPkcePair() {
   return { verifier, challenge };
 }
 
-function generateAuthUrl({ clientId, redirectUri, state, challenge, scopes = [CLASSROOM_SCOPE] }) {
+// ITN-43c - includeGrantedScopes pide autorización incremental (los permisos ya
+// concedidos viajan en el mismo grant). loginHint (el google_id de la sesión) preselecciona
+// la cuenta; no sustituye la verificación del ID token en el callback.
+function generateAuthUrl({ clientId, redirectUri, state, challenge, scopes = [CLASSROOM_SCOPE], includeGrantedScopes = false, loginHint }) {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -29,6 +32,8 @@ function generateAuthUrl({ clientId, redirectUri, state, challenge, scopes = [CL
     state,
     nonce: state,
   });
+  if (includeGrantedScopes) params.set("include_granted_scopes", "true");
+  if (typeof loginHint === "string" && loginHint) params.set("login_hint", loginHint);
   return `${GOOGLE_AUTH_URL}?${params}`;
 }
 
@@ -101,6 +106,11 @@ async function verifyGoogleIdToken(idToken, { clientId, nonce, fetchImpl = fetch
   return { googleId: payload.sub, email: payload.email, name: payload.name || "", authoritativeEmail };
 }
 
+const scopeList = scope => (typeof scope === "string" ? scope.split(" ").filter(Boolean) : []);
+const hasScope = (scope, value) => scopeList(scope).includes(value);
+const withoutScope = (scope, value) => scopeList(scope).filter(item => item !== value).join(" ");
+const unionScopes = (...scopes) => Array.from(new Set(scopes.flatMap(scopeList))).join(" ");
+
 // Conserva el refresh token anterior cuando Google no envía uno nuevo.
 // Nunca persiste el access token: ITN-42 podrá obtener uno con el refresh token.
 async function saveGoogleAuthorization({ supabase, googleId, email, name, authoritativeEmail, refreshToken, scope, secret, requiredScopes = [CLASSROOM_SCOPE] }) {
@@ -108,7 +118,7 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
       !scope.split(' ').includes(CLASSROOM_SCOPE)) throw new Error("classroom_scope_not_granted");
 
   const { data: existing, error: lookupError } = await supabase
-    .from("google_authorizations").select("user_id").eq("google_id", googleId).maybeSingle();
+    .from("google_authorizations").select("user_id, scope").eq("google_id", googleId).maybeSingle();
   if (lookupError) throw lookupError;
   if (!existing && !refreshToken) throw new Error("google_refresh_token_missing");
 
@@ -133,7 +143,12 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
 
   // UPDATE separado: un reconsentimiento sin refresh_token no debe borrar
   // el token anterior (upsert de campos omitidos podría ponerlo en NULL).
-  const row = { email, scope, updated_at: new Date().toISOString() };
+  // ITN-43c - El login no activa tareas. Con autorización incremental Google puede
+  // devolver el scope de tareas concedido antes; solo se guarda si ya estaba activo
+  // (el alumno no lo desactivó en Ajustes) o si el propio login lo solicita.
+  const keepWork = requiredScopes.includes(CLASSROOM_WORK_SCOPE) || hasScope(existing?.scope, CLASSROOM_WORK_SCOPE);
+  const storedScope = keepWork ? scope : withoutScope(scope, CLASSROOM_WORK_SCOPE);
+  const row = { email, scope: storedScope, updated_at: new Date().toISOString() };
   if (refreshToken) {
     row.refresh_token = encrypt({ token: refreshToken }, secret, "google-refresh");
     row.status = "active";
@@ -154,5 +169,5 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
 
 module.exports = {
   CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, createPkcePair, generateAuthUrl, exchangeCodeForTokens,
-  verifyGoogleIdToken, saveGoogleAuthorization,
+  verifyGoogleIdToken, saveGoogleAuthorization, hasScope, withoutScope, unionScopes,
 };

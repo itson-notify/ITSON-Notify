@@ -35,6 +35,17 @@ const validoConOAuth = () => ({
 });
 
 describe("loadConfig", () => {
+  test("ITN-43c: CLASSROOM_TASKS_AUTH_ENABLED es false por defecto, acepta booleanos y rechaza otros valores", () => {
+    assert.equal(loadConfig(valido()).classroomTasksAuthEnabled, false);
+    for (const [raw, esperado] of [["true", true], ["1", true], ["TRUE", true], ["false", false], ["0", false], ["", false]]) {
+      assert.equal(loadConfig({ ...valido(), CLASSROOM_TASKS_AUTH_ENABLED: raw }).classroomTasksAuthEnabled, esperado);
+    }
+    assert.throws(() => loadConfig({ ...valido(), CLASSROOM_TASKS_AUTH_ENABLED: "si" }), /CLASSROOM_TASKS_AUTH_ENABLED \(booleano inválido\)/);
+    // Encenderla no cambia el scope del login.
+    const config = loadConfig({ ...validoConOAuth(), CLASSROOM_TASKS_AUTH_ENABLED: "true" });
+    assert.deepEqual([...config.googleOAuth.scopes], [ALLOWED_GOOGLE_OAUTH_SCOPE]);
+  });
+
   test('admite lectura de tareas junto a cursos, exige cursos y sigue rechazando escritura', () => {
     const work = 'https://www.googleapis.com/auth/classroom.coursework.me.readonly';
     const env = { ...validoConOAuth(), GOOGLE_OAUTH_SCOPES: `${ALLOWED_GOOGLE_OAUTH_SCOPE} ${work} ${work}` };

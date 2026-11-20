@@ -15,9 +15,10 @@ import { DEFAULT_SETTINGS, INITIAL_NOTIFS, STUDENT } from '@/services/mockData'
 import {
   ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getCalendar, getCourseItems, getCourses, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
   markRead, unlinkIvirtual, type Course, type ItsonProfile, type IvirtualLink,
+  TASKS_AUTH_OFF, getTasksAuthorization, disableTasksAuthorization, type TasksAuthorization,
 } from '@/services/api'
 import { mockMode } from '@/services/backend'
-import { googleSession, logoutGoogle } from '@/services/googleAuth'
+import { activateClassroomTasks, connectGoogle, googleSession, logoutGoogle, tasksResultMessage } from '@/services/googleAuth'
 import { unsubscribeBrowserPush } from '@/services/pushNotifications'
 import { studentView } from '@/utils/student'
 import { calendarWindow } from '@/utils/calendar'
@@ -57,6 +58,8 @@ export default function App() {
   // leer. Solo trae la pista de la matrícula, nunca la completa.
   const [itsonProfile, setItsonProfile] = useState<ItsonProfile | null>(mockMode ? EMPTY_ITSON_PROFILE : null)
   const [profileOpen, setProfileOpen] = useState(false)
+  // ITN-43c - Autorización opcional de tareas de Classroom (apagada mientras no se sabe).
+  const [tasksAuth, setTasksAuth] = useState<TasksAuthorization>(TASKS_AUTH_OFF)
   const [helpQuery, setHelpQuery] = useState<string | null>(null)
   const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null)
   const [toast, setToast] = useState<{ id: number; text: string; undo?: () => void } | null>(null)
@@ -74,7 +77,8 @@ export default function App() {
   // Evita mostrar Onboarding un instante a quien ya tiene sesión. Al volver de Google
   // no se espera: Onboarding debe leer `from` de la URL antes de que se limpie.
   const [checkingSession, setCheckingSession] = useState(() =>
-    !mockMode && !new URLSearchParams(window.location.search).get('classroom'))
+    !mockMode && !new URLSearchParams(window.location.search).get('classroom') &&
+    !new URLSearchParams(window.location.search).get('tareas'))
 
   const notify: Notify = (text, undo) => {
     const id = Date.now()
@@ -90,6 +94,7 @@ export default function App() {
     sessionEpoch++
     setCoursesState(EMPTY_COURSES); setCourseItems({}); setCourseId(null); setSessionEmail(null)
     setCalendarState(EMPTY_CALENDAR)
+    setTasksAuth(TASKS_AUTH_OFF)
   }
   // Un 401 significa que la sesión ya no sirve: se vuelve a Onboarding.
   const sessionExpired = () => {
@@ -122,6 +127,8 @@ export default function App() {
     getIvirtualLink().then(setIvirtualLink).catch(() => setIvirtualLink(null))
     // ITN-55 - Igual: si falla, Ajustes dice que el estado no está disponible.
     getItsonProfile().then(setItsonProfile).catch(() => setItsonProfile(null))
+    // ITN-43c - Si falla, la tarjeta de tareas no se muestra; el resto sigue igual.
+    getTasksAuthorization().then(setTasksAuth).catch(() => setTasksAuth(TASKS_AUTH_OFF))
   }
 
   // ITN-58 - Materias. Se piden al entrar a la pantalla (y al volver a entrar); si ya hay
@@ -242,9 +249,11 @@ export default function App() {
     const params = new URLSearchParams(window.location.search)
     const result = params.get('classroom')
     const from = params.get('from')
+    // ITN-43c - Resultado de activar las tareas de Classroom desde Ajustes.
+    const tareas = params.get('tareas')
     // La procedencia restaura la navegación, nunca autentica al estudiante.
     // También al cancelar o fallar la consulta de sesión se vuelve a Configuración.
-    if (result && from === 'settings') { setOnboarded(true); setPage('configuracion') }
+    if ((result && from === 'settings') || tareas) { setOnboarded(true); setPage('configuracion') }
     googleSession()
       .then(session => {
         if (session.connected && session.email) {
@@ -261,19 +270,22 @@ export default function App() {
           if (result === 'auth_success') {
             notify('Google Classroom conectado con éxito')
           }
+          if (tareas) notify(tasksResultMessage(tareas))
         } else {
           if (!mockMode) setOnboarded(false)
           if (result === 'auth_success') notify('No se pudo verificar la autorización de Classroom')
+          if (tareas) notify(tasksResultMessage('error'))
         }
         if (result === 'error') notify('No se pudo conectar Google Classroom')
       })
       .catch(() => {
         if (result) notify('Error al verificar autorización de Classroom')
+        else if (tareas) notify(tasksResultMessage('error'))
         else if (!mockMode) notify('No se pudo conectar con el servidor. Intenta de nuevo.')
       })
       .finally(() => {
         setCheckingSession(false)
-        if (result) window.history.replaceState({}, document.title, window.location.pathname)
+        if (result || tareas) window.history.replaceState({}, document.title, window.location.pathname)
       })
   }, [])
 
@@ -330,6 +342,21 @@ export default function App() {
     setFirstRun(true)
     setTimeout(() => { setFirstRun(false); notify('Primera revisión terminada') }, 2200)
   }
+  // ITN-43c - Desactivar las tareas de Classroom: el backend quita el permiso y borra las
+  // tareas guardadas. Pide confirmación; un 401 vuelve a Onboarding.
+  const disableTasks = () => setConfirmReq({
+    title: '¿Desactivar las tareas de Classroom?',
+    body: 'Dejaremos de revisar tus tareas de Classroom y borraremos las que guardamos. Tu sesión y tus cursos siguen igual. Puedes volver a activarlas cuando quieras.',
+    label: 'Desactivar', danger: true,
+    onConfirm: async () => {
+      try {
+        await disableTasksAuthorization()
+        setTasksAuth(a => ({ ...a, granted: false }))
+        notify('Tareas de Classroom desactivadas')
+      } catch (error) { apiFailed(error, 'No se pudieron desactivar las tareas de Classroom') }
+    },
+  })
+
   const logout = () => setConfirmReq({
     title: '¿Cerrar sesión?',
     body: 'Dejarás de recibir avisos en este dispositivo hasta que vuelvas a entrar.',
@@ -414,7 +441,9 @@ export default function App() {
           <SettingsPage settings={settings} setSettings={setSettings} onFix={() => setLinkOpen(true)} askConfirm={setConfirmReq} notify={notify}
             ivirtualLink={mockMode ? undefined : ivirtualLink} onUnlinkItson={unlinkItson}
             itsonProfile={itsonProfile} onEditItsonProfile={() => setProfileOpen(true)} onRemoveItsonProfile={removeItsonProfile}
-            onDisconnected={mockMode ? undefined : endSession} />
+            onDisconnected={mockMode ? undefined : endSession}
+            tasksAuth={tasksAuth} onActivateTasks={activateClassroomTasks} onDisableTasks={disableTasks}
+            onReconnectClassroom={() => connectGoogle('settings')} />
         )}
         {page === 'perfil' && <ProfilePage student={student} settings={settings} matriculaHint={itsonProfile?.matriculaHint ?? null} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
       </AppLayout>

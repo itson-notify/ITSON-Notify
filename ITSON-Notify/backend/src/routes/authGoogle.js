@@ -5,8 +5,9 @@ const { encrypt, decrypt } = require("../utils/secureToken");
 const { SESSION_COOKIE, sessionHash, cookieValue, createSessionReader } = require("../middleware/studentSession");
 const {
   createPkcePair, generateAuthUrl, exchangeCodeForTokens,
-  verifyGoogleIdToken, saveGoogleAuthorization,
+  verifyGoogleIdToken, saveGoogleAuthorization, CLASSROOM_WORK_SCOPE,
 } = require("../services/googleAuthService");
+const { activateTasks, isUsableGrant, loadGrant } = require("../services/classroomTasksAuthorization");
 const { createNotificationRepository } = require("../repositories/notificationRepository");
 
 const STATE_COOKIE = "itn41_google_state";
@@ -55,8 +56,18 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     return url.toString();
   }
 
+  // ITN-43c - Resultado de la autorización de tareas, solo con valores del servidor.
+  const tasksEnabled = config.classroomTasksAuthEnabled === true;
+  function returnTasksToFrontend(result) {
+    const url = new URL(frontend);
+    url.searchParams.set("tareas", result);
+    url.searchParams.set("from", "settings");
+    return url.toString();
+  }
+  const oauthReady = () => oauth.enabled && oauth.clientId && oauth.clientSecret && secret && secret.length >= 32;
+
   router.get("/", (req, res) => {
-    if (!oauth.enabled || !oauth.clientId || !oauth.clientSecret || !secret || secret.length < 32) {
+    if (!oauthReady()) {
       return res.status(503).json({ error: "google_oauth_no_configurado" });
     }
     const { verifier, challenge } = createPkcePair();
@@ -64,8 +75,95 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     const from = req.query.from === "settings" ? "settings" : "onboarding";
     const pending = encrypt({ state, verifier, from, exp: now() + STATE_TTL_MS }, secret, "google-state");
     res.cookie(STATE_COOKIE, pending, { ...stateCookieOptions, maxAge: STATE_TTL_MS });
-    res.redirect(generateAuthUrl({ clientId: oauth.clientId, redirectUri: oauth.redirectUri, state, challenge, scopes: oauth.scopes }));
+    // ITN-43c - Con la bandera encendida el login pide autorización incremental para que
+    // un re-login conserve las tareas ya activadas. El scope solicitado no cambia.
+    res.redirect(generateAuthUrl({
+      clientId: oauth.clientId, redirectUri: oauth.redirectUri, state, challenge, scopes: oauth.scopes,
+      includeGrantedScopes: tasksEnabled,
+    }));
   });
+
+  // ITN-43c - Autorización incremental SOLO del scope de tareas, para un alumno con sesión
+  // y autorización de Google activa. Reusa /auth/google/callback: el modo «tareas» y la
+  // identidad de la sesión viajan dentro del state sellado por el servidor (AES-256-GCM
+  // con GOOGLE_AUTH_SECRET), que el cliente no puede leer ni falsificar.
+  router.get("/tasks", async (req, res) => {
+    if (!tasksEnabled) return res.status(404).json({ error: "no_encontrado" });
+    if (!oauthReady()) return res.status(503).json({ error: "google_oauth_no_configurado" });
+    // Es una navegación GET, así que no siempre trae Origin. Se rechaza la que viene de
+    // otro sitio salvo que el Referer sea el frontend (frontend y backend pueden estar
+    // en dominios distintos).
+    const origin = req.get("origin");
+    if (origin && origin !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
+    if (req.get("sec-fetch-site") === "cross-site") {
+      let refererOrigin = null;
+      try { refererOrigin = new URL(req.get("referer") || "").origin; } catch { /* sin Referer */ }
+      if (refererOrigin !== frontend.origin) return res.status(403).json({ error: "origen_no_permitido" });
+    }
+    try {
+      const session = await currentSession(req);
+      if (!session) return res.status(401).json({ error: "no_autenticado" });
+      const grant = await loadGrant(supabase, session);
+      if (!isUsableGrant(grant)) return res.status(409).json({ error: "classroom_requiere_autorizacion" });
+      const { verifier, challenge } = createPkcePair();
+      const state = crypto.randomBytes(24).toString("base64url");
+      const pending = encrypt({
+        state, verifier, from: "settings", mode: "tasks", exp: now() + STATE_TTL_MS,
+        userId: session.userId, googleId: session.googleId, sessionHash: sessionHash(session.sessionId),
+      }, secret, "google-state");
+      res.cookie(STATE_COOKIE, pending, { ...stateCookieOptions, maxAge: STATE_TTL_MS });
+      return res.redirect(generateAuthUrl({
+        clientId: oauth.clientId, redirectUri: oauth.redirectUri, state, challenge,
+        scopes: [CLASSROOM_WORK_SCOPE], includeGrantedScopes: true, loginHint: session.googleId,
+      }));
+    } catch (error) {
+      logger.warn("classroom_tareas_inicio_fallido", { error_code: error?.code ?? null });
+      return res.status(500).json({ error: "error_interno" });
+    }
+  });
+
+  // ITN-43c - Callback en modo tareas. No crea sesión ni cambia nada salvo que la cuenta
+  // devuelta sea la de la sesión y Google haya concedido el scope de tareas.
+  async function tasksCallback(req, res, pending) {
+    const done = (result, event, fields = {}) => {
+      if (event) logger.info(event, fields);
+      return res.redirect(returnTasksToFrontend(result));
+    };
+    try {
+      if (!tasksEnabled) return done("error");
+      const session = await currentSession(req);
+      if (!session || session.userId !== pending.userId || session.googleId !== pending.googleId ||
+          sessionHash(session.sessionId) !== pending.sessionHash) {
+        return done("error", "classroom_tareas_sesion_invalida");
+      }
+      if (req.query.error) return done("rechazada", "classroom_tareas_rechazadas", { user_id: session.userId });
+      if (typeof req.query.code !== "string") return done("error");
+      const tokens = await exchangeCodeForTokens({
+        code: req.query.code, clientId: oauth.clientId,
+        clientSecret: oauth.clientSecret, redirectUri: oauth.redirectUri,
+        verifier: pending.verifier, fetchImpl,
+      });
+      const identity = await verifyGoogleIdToken(tokens.id_token, {
+        clientId: oauth.clientId, nonce: pending.state, fetchImpl, now: now(),
+      });
+      // Los tokens de otra cuenta se descartan sin persistir nada.
+      if (identity.googleId !== session.googleId) {
+        return done("cuenta_distinta", "classroom_tareas_cuenta_distinta", { user_id: session.userId });
+      }
+      const granted = typeof tokens.scope === "string" ? tokens.scope.split(" ") : [];
+      if (!granted.includes(CLASSROOM_WORK_SCOPE)) {
+        return done("rechazada", "classroom_tareas_permiso_parcial", { user_id: session.userId });
+      }
+      await activateTasks({
+        supabase, identity: { userId: session.userId, googleId: session.googleId },
+        grantedScope: tokens.scope, refreshToken: tokens.refresh_token, secret,
+      });
+      return done("ok", "classroom_tareas_activadas", { user_id: session.userId });
+    } catch (error) {
+      logger.warn("classroom_tareas_autorizacion_fallida", { error_code: error?.code || "oauth_failed" });
+      return done("error");
+    }
+  }
 
   router.get("/callback", async (req, res) => {
     const pending = decrypt(cookieValue(req, STATE_COOKIE), secret, "google-state");
@@ -73,6 +171,7 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
     if (!pending || !pending.state || !Number.isFinite(pending.exp) || pending.exp <= now() || req.query.state !== pending.state) {
       return res.status(400).json({ error: "oauth_state_invalido" });
     }
+    if (pending.mode === "tasks") return tasksCallback(req, res, pending);
     if (req.query.error) return res.redirect(returnToFrontend("error", pending.from));
     if (typeof req.query.code !== "string") return res.status(400).json({ error: "oauth_code_invalido" });
 

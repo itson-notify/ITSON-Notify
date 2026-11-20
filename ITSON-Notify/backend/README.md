@@ -524,6 +524,7 @@ fuga de la base, no contra una fuga del worker o de esta llave.
 | `FRONTEND_URL`            | URL de retorno del frontend. Su origen autoriza CORS y los cambios de sesión      |
 | `GOOGLE_COOKIE_SAME_SITE` | `lax` o `none`. `none` exige HTTPS en backend y frontend                          |
 | `VITE_BACKEND_URL`        | Solo frontend. Origen del backend, sin `/auth/google`                             |
+| `CLASSROOM_TASKS_AUTH_ENABLED` | ITN-43c. `true`/`1` muestra en Ajustes la activación opcional del permiso de tareas. Default `false`. Ver `ITN-43c.md` |
 
 `GOOGLE_AUTH_SECRET` es distinta de `CREDENTIALS_ENCRYPTION_KEY` (ITN-36), y ambas van solo en el backend.
 

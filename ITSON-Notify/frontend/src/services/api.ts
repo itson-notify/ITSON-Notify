@@ -98,6 +98,31 @@ export async function unlinkIvirtual(): Promise<'unlinked' | 'already_unlinked'>
   }
 }
 
+// ITN-43c - Autorización opcional de tareas de Classroom. `enabled` sigue a la bandera
+// del backend: si es false (o la ruta no existe) la UI no muestra nada.
+export interface TasksAuthorization {
+  enabled: boolean
+  granted: boolean
+  needsRelink: boolean
+}
+
+export const TASKS_AUTH_OFF: TasksAuthorization = { enabled: false, granted: false, needsRelink: false }
+
+export async function getTasksAuthorization(): Promise<TasksAuthorization> {
+  if (mockMode) return TASKS_AUTH_OFF
+  try {
+    const body = await (await request('/classroom/tasks-authorization')).json()
+    return { enabled: body?.enabled === true, granted: body?.granted === true, needsRelink: body?.needsRelink === true }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return TASKS_AUTH_OFF
+    throw error
+  }
+}
+
+export async function disableTasksAuthorization(): Promise<void> {
+  await request('/classroom/tasks-authorization', 'DELETE')
+}
+
 // ITN-55 - Matrícula y carrera para la API REST de ITSON. GET nunca trae la matrícula
 // completa, solo matriculaHint. La matrícula solo viaja en el body del PUT: aquí no se
 // guarda ni se registra.

@@ -84,6 +84,8 @@ const TABLES = {
       matricula_auth_tag: esBytea(16),
     },
   },
+  // 016 (ITN-43): eventos de tareas nuevas de Classroom.
+  classroom_task_events: { uniques: [["coursework_id"]], notNull: ["user_id", "coursework_id"] },
   // 008
   google_authorizations: { uniques: [["google_id"]], notNull: ["user_id", "google_id", "email", "scope", "refresh_token"],
     defaults: { status: "active" }, checks: { status: value => ['active', 'needs_relink'].includes(value) } },
@@ -417,7 +419,16 @@ function createFakeSupabase() {
       return i === -1 ? null : db.failures.splice(i, 1)[0];
     },
   };
+  // ITN-43c - Funciones SQL simuladas: { nombre: (args, db) => ({ data, error }) }. Sin
+  // handler, responde PGRST202 como PostgREST cuando la función no existe.
+  db.rpcHandlers = {};
   db.client = {
+    async rpc(name, args) {
+      db.calls.push({ rpc: name });
+      const handler = db.rpcHandlers[name];
+      if (!handler) return pgError("PGRST202", `Could not find the function public.${name}`);
+      return handler(args, db);
+    },
     from(table) {
       if (!TABLES[table]) throw new Error(`Tabla desconocida en el fake: ${table}`);
       return new Query(db, table);
