@@ -10,9 +10,20 @@
 --     beginSend (revalidates task scope and event integrity right before I/O -> sending
 --     with send_deadline) + CAS ack by claim_token.
 --   - Expired 'sending' deadlines transition to 'unknown', never blindly re-claimed.
+--   - Exhausted 'retry_wait' rows (attempts >= max_attempts) transition to 'dead' in claim.
+--   - 'ack' with outcome 'sent' is only accepted from 'sending' or 'unknown', never from 'claimed'.
 --   - Deleting classroom_task_events (e.g. disable_classroom_tasks in 018) triggers
 --     atomic cancellation of pending/claimed/retry_wait/blocked rows and flags
 --     cancel_requested on sending/unknown rows without deleting ledger history.
+--
+-- Unified Lock Hierarchy (prevents 40P01 deadlocks against sync_classroom and
+-- activate/disable_classroom_tasks in 016/017/018):
+--   1. public.app_users (FOR UPDATE)
+--   2. public.google_authorizations (FOR UPDATE / FOR SHARE)
+--   3. public.classroom_task_events (FOR UPDATE / FOR SHARE)
+--   4. public.classroom_notification_deliveries (FOR UPDATE)
+-- materialize, begin_send and ack read user_id/event_id without a lock first and then
+-- acquire locks strictly in the order above; claim uses FOR UPDATE OF d SKIP LOCKED.
 set local lock_timeout = '5s';
 
 create table if not exists public.classroom_notification_deliveries (
@@ -97,7 +108,10 @@ revoke all on public.classroom_notification_deliveries from public, anon, authen
 grant select, insert, update, delete on public.classroom_notification_deliveries to service_role;
 
 -- Trigger on classroom_task_events deletion (e.g. disable_classroom_tasks in 018):
--- preserves all ledger rows while cancelling non-started deliveries and flagging
+-- Invoked while caller already holds app_users FOR UPDATE -> google_authorizations
+-- FOR UPDATE -> classroom_task_events DELETE lock, and then locks/updates
+-- classroom_notification_deliveries (step 4 of the lock hierarchy).
+-- Preserves all ledger rows while cancelling non-started deliveries and flagging
 -- cancel_requested on in-flight sending/unknown rows.
 create or replace function public.handle_classroom_task_event_delete()
 returns trigger
@@ -106,22 +120,27 @@ declare
   v_now timestamptz := clock_timestamp();
 begin
   update public.classroom_notification_deliveries
-    set state = 'cancelled',
+    set state = case
+          when state in ('pending', 'claimed', 'retry_wait', 'blocked') then 'cancelled'
+          else state
+        end,
         cancel_requested = true,
-        claim_token = null,
-        lease_until = null,
-        last_error_code = coalesce(last_error_code, 'event_deleted'),
+        claim_token = case
+          when state in ('pending', 'claimed', 'retry_wait', 'blocked') then null
+          else claim_token
+        end,
+        lease_until = case
+          when state in ('pending', 'claimed', 'retry_wait', 'blocked') then null
+          else lease_until
+        end,
+        last_error_code = case
+          when state in ('pending', 'claimed', 'retry_wait', 'blocked') then coalesce(last_error_code, 'event_deleted')
+          else last_error_code
+        end,
         updated_at = v_now
     where source = 'classroom'
       and event_id = old.id
-      and state in ('pending', 'claimed', 'retry_wait', 'blocked');
-
-  update public.classroom_notification_deliveries
-    set cancel_requested = true,
-        updated_at = v_now
-    where source = 'classroom'
-      and event_id = old.id
-      and state in ('sending', 'unknown');
+      and state in ('pending', 'claimed', 'retry_wait', 'blocked', 'sending', 'unknown');
 
   return old;
 end;
@@ -135,9 +154,11 @@ create trigger trg_classroom_task_event_delete
   for each row execute function public.handle_classroom_task_event_delete();
 
 -- 1) Materialize delivery plan for a classroom_task_events row.
--- Locks the event FOR UPDATE; verifies owner consistency (event/work/course),
--- PUBLISHED task state, non-null coursework_baseline_at with event.created_at > baseline,
--- and active Google authorization with task scope and event.created_at >= auth.created_at.
+-- Lock order: reads user_id unlocked -> app_users FOR UPDATE -> google_authorizations
+-- FOR SHARE -> classroom_task_events FOR UPDATE -> classroom_notification_deliveries.
+-- Verifies owner consistency (event/work/course), PUBLISHED task state, non-null
+-- coursework_baseline_at with event.created_at > baseline, and active Google
+-- authorization with task scope and event.created_at >= auth.created_at.
 -- If a plan already exists for the event, returns it without adding or removing channels.
 create or replace function public.materialize_classroom_deliveries(
   p_event_id uuid,
@@ -155,6 +176,8 @@ declare
   v_channels text[];
   v_policy text := coalesce(nullif(trim(p_policy_version), ''), 'v1');
   v_now timestamptz := clock_timestamp();
+  v_user_id uuid;
+  v_has_auth boolean := false;
   v_event record;
   v_work record;
   v_course record;
@@ -183,16 +206,41 @@ begin
     raise exception 'invalid_delivery_channels' using errcode = '22023';
   end if;
 
+  -- Step 0: read user_id without lock so we can lock app_users first.
+  select user_id into v_user_id
+    from public.classroom_task_events
+    where id = p_event_id;
+
+  if not found then
+    return jsonb_build_object('status', 'missing_event', 'deliveries', '[]'::jsonb);
+  end if;
+
+  -- Lock 1: app_users
+  perform 1 from public.app_users where id = v_user_id for update;
+  if not found then
+    raise exception 'classroom_authorization_required' using errcode = '42501';
+  end if;
+
+  -- Lock 2: google_authorizations
+  select user_id, google_id, email, scope, status, created_at
+    into v_auth
+    from public.google_authorizations
+    where user_id = v_user_id
+    for share;
+  v_has_auth := found;
+
+  -- Lock 3: classroom_task_events (evento)
   select id, user_id, coursework_id, event_type, created_at, delivered_at
     into v_event
     from public.classroom_task_events
-    where id = p_event_id
+    where id = p_event_id and user_id = v_user_id
     for update;
 
   if not found then
     return jsonb_build_object('status', 'missing_event', 'deliveries', '[]'::jsonb);
   end if;
 
+  -- Lock 4: classroom_notification_deliveries (entrega)
   select jsonb_agg(jsonb_build_object(
            'id', d.id, 'event_id', d.event_id, 'channel', d.channel,
            'state', d.state, 'required_channels', d.required_channels,
@@ -204,11 +252,6 @@ begin
 
   if v_existing is not null then
     return jsonb_build_object('status', 'existing', 'deliveries', v_existing);
-  end if;
-
-  perform 1 from public.app_users where id = v_event.user_id for update;
-  if not found then
-    raise exception 'classroom_authorization_required' using errcode = '42501';
   end if;
 
   select id, user_id, course_id, title, state, due_at, alternate_link
@@ -234,31 +277,23 @@ begin
         or v_event.created_at <= v_course.coursework_baseline_at then
     v_initial_state := 'cancelled';
     v_reason := 'event_not_eligible';
+  elsif not v_has_auth then
+    v_initial_state := 'cancelled';
+    v_reason := 'authorization_missing';
   else
-    select user_id, google_id, email, scope, status, created_at
-      into v_auth
-      from public.google_authorizations
-      where user_id = v_event.user_id
-      for share;
+    v_google_id := v_auth.google_id;
+    v_auth_created_at := v_auth.created_at;
+    v_scopes := string_to_array(coalesce(v_auth.scope, ''), ' ');
 
-    if not found then
+    if v_event.created_at < v_auth.created_at then
       v_initial_state := 'cancelled';
-      v_reason := 'authorization_missing';
-    else
-      v_google_id := v_auth.google_id;
-      v_auth_created_at := v_auth.created_at;
-      v_scopes := string_to_array(coalesce(v_auth.scope, ''), ' ');
-
-      if v_event.created_at < v_auth.created_at then
-        v_initial_state := 'cancelled';
-        v_reason := 'backlog_before_grant';
-      elsif not (courses_scope = any(v_scopes)) or not (v_scopes && work_scopes) then
-        v_initial_state := 'cancelled';
-        v_reason := 'tasks_scope_missing';
-      elsif v_auth.status is distinct from 'active' then
-        v_initial_state := 'blocked';
-        v_reason := 'needs_relink';
-      end if;
+      v_reason := 'backlog_before_grant';
+    elsif not (courses_scope = any(v_scopes)) or not (v_scopes && work_scopes) then
+      v_initial_state := 'cancelled';
+      v_reason := 'tasks_scope_missing';
+    elsif v_auth.status is distinct from 'active' then
+      v_initial_state := 'blocked';
+      v_reason := 'needs_relink';
     end if;
   end if;
 
@@ -295,8 +330,11 @@ revoke all on function public.materialize_classroom_deliveries(uuid, text[], tex
 grant execute on function public.materialize_classroom_deliveries(uuid, text[], text) to service_role;
 
 -- 2) Atomic claim of one eligible delivery using FOR UPDATE SKIP LOCKED and DB clock.
--- Expired 'sending' deadlines are moved to 'unknown' and never re-claimed.
--- Expired 'claimed' leases are reclaimed with a new claim_token without incrementing attempts.
+-- All row locks on classroom_notification_deliveries use FOR UPDATE OF d SKIP LOCKED,
+-- so claim never waits on locks held by concurrent transactions.
+--   - Expired 'sending' deadlines transition to 'unknown' (never re-claimed).
+--   - 'retry_wait' (or 'pending') rows with attempts >= max_attempts transition to 'dead'.
+--   - Expired 'claimed' leases are reclaimed with a new claim_token without incrementing attempts.
 create or replace function public.claim_classroom_delivery(
   p_lease_seconds integer default 60,
   p_max_attempts integer default 5
@@ -314,36 +352,73 @@ declare
   v_max integer := greatest(coalesce(p_max_attempts, 5), 1);
   v_claimed record;
 begin
-  -- Move expired 'sending' rows to 'unknown' (never re-claim sending automatically).
-  update public.classroom_notification_deliveries
+  -- (a) Move expired 'sending' rows to 'unknown' (never re-claim sending automatically).
+  with expired_sending as (
+    select d.id
+      from public.classroom_notification_deliveries d
+      where d.state = 'sending'
+        and d.send_deadline is not null
+        and d.send_deadline < v_now
+      order by d.id
+      for update of d skip locked
+  )
+  update public.classroom_notification_deliveries d
     set state = 'unknown',
         lease_until = null,
         send_deadline = null,
-        last_error_code = coalesce(last_error_code, 'send_deadline_expired'),
+        last_error_code = coalesce(d.last_error_code, 'send_deadline_expired'),
         updated_at = v_now
-    where state = 'sending'
-      and send_deadline is not null
-      and send_deadline < v_now;
+    from expired_sending x
+    where d.id = x.id;
 
-  -- Unblock 'blocked' rows if the same authorization recovered to active with task scopes.
+  -- (b) Move 'retry_wait' (or 'pending' / expired 'claimed') rows that reached max attempts to 'dead'.
+  with exhausted as (
+    select d.id
+      from public.classroom_notification_deliveries d
+      where d.attempts >= v_max
+        and (
+          d.state in ('retry_wait', 'pending')
+          or (d.state = 'claimed' and d.lease_until < v_now)
+        )
+      order by d.id
+      for update of d skip locked
+  )
+  update public.classroom_notification_deliveries d
+    set state = 'dead',
+        claim_token = null,
+        lease_until = null,
+        send_deadline = null,
+        last_error_code = coalesce(d.last_error_code, 'max_attempts_reached'),
+        updated_at = v_now
+    from exhausted x
+    where d.id = x.id;
+
+  -- (c) Unblock 'blocked' rows if the same authorization recovered to active with task scopes.
+  with unblocked as (
+    select d.id
+      from public.classroom_notification_deliveries d
+      join public.classroom_task_events e on e.id = d.event_id
+      join public.google_authorizations auth on auth.user_id = d.user_id
+      where d.state = 'blocked'
+        and d.cancel_requested = false
+        and d.last_error_code = 'needs_relink'
+        and auth.google_id is not distinct from d.authorization_google_id
+        and auth.created_at is not distinct from d.authorization_created_at
+        and auth.status = 'active'
+        and courses_scope = any(string_to_array(coalesce(auth.scope, ''), ' '))
+        and string_to_array(coalesce(auth.scope, ''), ' ') && work_scopes
+      order by d.id
+      for update of d skip locked
+  )
   update public.classroom_notification_deliveries d
     set state = 'pending',
         last_error_code = null,
         next_attempt_at = v_now,
         updated_at = v_now
-    from public.google_authorizations auth,
-         public.classroom_task_events e
-    where d.state = 'blocked'
-      and d.cancel_requested = false
-      and d.last_error_code = 'needs_relink'
-      and e.id = d.event_id
-      and auth.user_id = d.user_id
-      and auth.google_id is not distinct from d.authorization_google_id
-      and auth.created_at is not distinct from d.authorization_created_at
-      and auth.status = 'active'
-      and courses_scope = any(string_to_array(coalesce(auth.scope, ''), ' '))
-      and string_to_array(coalesce(auth.scope, ''), ' ') && work_scopes;
+    from unblocked x
+    where d.id = x.id;
 
+  -- (d) Claim one eligible delivery.
   with eligible as (
     select d.id
       from public.classroom_notification_deliveries d
@@ -392,6 +467,9 @@ revoke all on function public.claim_classroom_delivery(integer, integer) from pu
 grant execute on function public.claim_classroom_delivery(integer, integer) to service_role;
 
 -- 3) Begin send transaction right before external I/O.
+-- Lock order: reads (user_id, event_id) unlocked -> app_users FOR UPDATE ->
+-- google_authorizations FOR SHARE -> classroom_task_events FOR SHARE ->
+-- classroom_notification_deliveries FOR UPDATE.
 -- Verifies state='claimed', matching claim_token and unexpired lease_until;
 -- re-validates event/work/course ownership and active Google authorization with
 -- task scope and unchanged generation; freezes immutable payload, recipient_fingerprint,
@@ -415,6 +493,11 @@ declare
   v_now timestamptz := clock_timestamp();
   v_deadline interval := make_interval(secs => greatest(coalesce(p_send_deadline_seconds, 30), 5));
   v_max integer := greatest(coalesce(p_max_attempts, 5), 1);
+  v_user_id uuid;
+  v_event_id uuid;
+  v_has_user boolean := false;
+  v_has_auth boolean := false;
+  v_has_event boolean := false;
   v_d record;
   v_event record;
   v_work record;
@@ -426,30 +509,66 @@ declare
   v_fingerprint text;
   v_template text;
 begin
+  -- Step 0: read user_id and event_id without lock so we can lock in canonical hierarchy.
+  select user_id, event_id
+    into v_user_id, v_event_id
+    from public.classroom_notification_deliveries
+    where id = p_delivery_id;
+
+  if not found then
+    return jsonb_build_object('allowed', false, 'reason_code', 'invalid_or_expired_claim');
+  end if;
+
+  -- Lock 1: app_users
+  perform 1 from public.app_users where id = v_user_id for update;
+  v_has_user := found;
+
+  -- Lock 2: google_authorizations
+  select user_id, google_id, email, scope, status, created_at
+    into v_auth
+    from public.google_authorizations
+    where user_id = v_user_id
+    for share;
+  v_has_auth := found;
+
+  -- Lock 3: classroom_task_events (evento)
+  select id, user_id, coursework_id, event_type, created_at
+    into v_event
+    from public.classroom_task_events
+    where id = v_event_id and user_id = v_user_id
+    for share;
+  v_has_event := found;
+
+  -- Lock 4: classroom_notification_deliveries (entrega)
   select *
     into v_d
     from public.classroom_notification_deliveries
-    where id = p_delivery_id
+    where id = p_delivery_id and user_id = v_user_id
     for update;
 
-  if not found
-     or v_d.state is distinct from 'claimed'
+  if not found then
+    return jsonb_build_object('allowed', false, 'reason_code', 'invalid_or_expired_claim');
+  end if;
+
+  if v_d.cancel_requested then
+    if v_d.state in ('pending', 'claimed', 'retry_wait', 'blocked') then
+      update public.classroom_notification_deliveries
+        set state = 'cancelled',
+            claim_token = null,
+            lease_until = null,
+            last_error_code = coalesce(last_error_code, 'cancel_requested'),
+            updated_at = v_now
+        where id = v_d.id;
+    end if;
+    return jsonb_build_object('allowed', false, 'reason_code', 'cancel_requested', 'state', 'cancelled');
+  end if;
+
+  if v_d.state is distinct from 'claimed'
      or v_d.claim_token is null
      or v_d.claim_token is distinct from p_claim_token
      or v_d.lease_until is null
      or v_d.lease_until < v_now then
     return jsonb_build_object('allowed', false, 'reason_code', 'invalid_or_expired_claim');
-  end if;
-
-  if v_d.cancel_requested then
-    update public.classroom_notification_deliveries
-      set state = 'cancelled',
-          claim_token = null,
-          lease_until = null,
-          last_error_code = 'cancel_requested',
-          updated_at = v_now
-      where id = v_d.id;
-    return jsonb_build_object('allowed', false, 'reason_code', 'cancel_requested', 'state', 'cancelled');
   end if;
 
   if v_d.attempts >= v_max then
@@ -463,12 +582,7 @@ begin
     return jsonb_build_object('allowed', false, 'reason_code', 'max_attempts_reached', 'state', 'dead');
   end if;
 
-  select id, user_id, coursework_id, event_type, created_at
-    into v_event
-    from public.classroom_task_events
-    where id = v_d.event_id;
-
-  if found then
+  if v_has_event then
     select id, user_id, course_id, title, state, due_at, alternate_link
       into v_work
       from public.classroom_coursework
@@ -482,7 +596,8 @@ begin
       where id = v_work.course_id;
   end if;
 
-  if v_event.id is null
+  if not v_has_user
+     or not v_has_event
      or v_work.id is null
      or v_course.id is null
      or v_event.user_id is distinct from v_d.user_id
@@ -502,13 +617,7 @@ begin
     return jsonb_build_object('allowed', false, 'reason_code', 'event_no_longer_valid', 'state', 'cancelled');
   end if;
 
-  select user_id, google_id, email, scope, status, created_at
-    into v_auth
-    from public.google_authorizations
-    where user_id = v_d.user_id
-    for share;
-
-  if not found
+  if not v_has_auth
      or v_auth.google_id is distinct from v_d.authorization_google_id
      or v_auth.created_at is distinct from v_d.authorization_created_at
      or v_event.created_at < v_auth.created_at then
@@ -606,10 +715,15 @@ revoke all on function public.begin_classroom_delivery_send(uuid, uuid, integer,
 grant execute on function public.begin_classroom_delivery_send(uuid, uuid, integer, integer, text, text) to service_role;
 
 -- 4) CAS ACK of a delivery attempt by claim_token.
--- Repeated ACK of the same sent attempt is idempotent.
--- Late ACK with the current token can resolve 'unknown'.
--- Marks classroom_task_events.delivered_at if and only if all required_channels
--- exist and are in state = 'sent'.
+-- Lock order: reads (user_id, event_id) unlocked -> app_users FOR UPDATE ->
+-- google_authorizations FOR SHARE -> classroom_task_events FOR UPDATE ->
+-- classroom_notification_deliveries FOR UPDATE.
+--   - 'sent' (and 'unknown' / 'retry_wait') is only accepted from 'sending' or 'unknown',
+--     never from 'claimed'.
+--   - Repeated ACK of the same sent attempt is idempotent.
+--   - Late ACK with the current token can resolve 'unknown'.
+--   - Marks classroom_task_events.delivered_at if and only if all required_channels
+--     exist and are in state = 'sent'.
 create or replace function public.ack_classroom_delivery(
   p_delivery_id uuid,
   p_claim_token uuid,
@@ -625,6 +739,8 @@ declare
   v_now timestamptz := clock_timestamp();
   v_delay interval := make_interval(secs => greatest(coalesce(p_retry_delay_seconds, 60), 1));
   v_max integer := greatest(coalesce(p_max_attempts, 5), 1);
+  v_user_id uuid;
+  v_event_id uuid;
   v_d record;
   v_new_state text;
   v_error text := case
@@ -644,10 +760,30 @@ declare
   v_sent_rows integer;
   v_event_delivered boolean := false;
 begin
+  -- Step 0: read user_id and event_id without lock so we can lock in canonical hierarchy.
+  select user_id, event_id
+    into v_user_id, v_event_id
+    from public.classroom_notification_deliveries
+    where id = p_delivery_id;
+
+  if not found then
+    return jsonb_build_object('acknowledged', false, 'reason_code', 'token_mismatch');
+  end if;
+
+  -- Lock 1: app_users
+  perform 1 from public.app_users where id = v_user_id for update;
+
+  -- Lock 2: google_authorizations
+  perform 1 from public.google_authorizations where user_id = v_user_id for share;
+
+  -- Lock 3: classroom_task_events (evento)
+  perform 1 from public.classroom_task_events where id = v_event_id and user_id = v_user_id for update;
+
+  -- Lock 4: classroom_notification_deliveries (entrega)
   select *
     into v_d
     from public.classroom_notification_deliveries
-    where id = p_delivery_id
+    where id = p_delivery_id and user_id = v_user_id
     for update;
 
   if not found or v_d.claim_token is null or v_d.claim_token is distinct from p_claim_token then
@@ -659,6 +795,11 @@ begin
   end if;
 
   if v_d.state not in ('sending', 'unknown', 'claimed') then
+    return jsonb_build_object('acknowledged', false, 'reason_code', 'invalid_state_transition');
+  end if;
+
+  -- 'sent', 'unknown' and 'retry_wait' are only valid after begin_send ('sending' or 'unknown'), never from 'claimed'.
+  if p_outcome in ('sent', 'unknown', 'retry_wait') and v_d.state not in ('sending', 'unknown') then
     return jsonb_build_object('acknowledged', false, 'reason_code', 'invalid_state_transition');
   end if;
 

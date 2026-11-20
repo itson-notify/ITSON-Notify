@@ -78,19 +78,20 @@ on conflict (user_id) do update
 set role service_role;
 
 -- Create baseline course + tasks, then incremental tasks for student 1
-perform public.sync_classroom(
+select public.sync_classroom(
   '00000000-0000-4000-8000-000000000011',
   'g-ledger-1',
   '[{"id":"c-ledger-1","name":"Arquitectura de Software","coursework":[{"id":"w-base","title":"Tarea base","state":"PUBLISHED"}]}]'::jsonb
 );
-perform public.sync_classroom(
+select public.sync_classroom(
   '00000000-0000-4000-8000-000000000011',
   'g-ledger-1',
   '[{"id":"c-ledger-1","name":"Arquitectura de Software","coursework":[
     {"id":"w-base","title":"Tarea base","state":"PUBLISHED"},
     {"id":"w-new-1","title":"Proyecto Unidad 1","state":"PUBLISHED","due_at":"2026-11-25T06:59:00Z","alternate_link":"https://classroom.google.com/c/1/a/2/details"},
     {"id":"w-new-2","title":"Proyecto Unidad 2","state":"PUBLISHED"},
-    {"id":"w-new-3","title":"Proyecto Unidad 3","state":"PUBLISHED"}
+    {"id":"w-new-3","title":"Proyecto Unidad 3","state":"PUBLISHED"},
+    {"id":"w-new-4","title":"Proyecto Unidad 4","state":"PUBLISHED"}
   ]}]'::jsonb
 );
 
@@ -117,11 +118,12 @@ begin
 end;
 $$;
 
--- 3) Expired 'claimed' lease recovery vs expired 'sending' -> 'unknown'
+-- 3) Expired 'claimed' lease recovery, ack 'sent' rejected from 'claimed', expired 'sending' -> 'unknown'
 do $$
 declare
   v_ev1 uuid;
   v_claim1 jsonb;
+  v_premature_ack jsonb;
   v_claim1_reclaimed jsonb;
   v_old_begin jsonb;
   v_new_begin jsonb;
@@ -140,6 +142,18 @@ begin
   v_claim1 := public.claim_classroom_delivery(60, 5);
   perform public.test_assert(v_claim1 is not null and v_claim1->>'channel' = 'email', 'claimed email delivery');
   perform public.test_assert((v_claim1->>'attempts')::int = 0, 'claim does not increment attempts');
+
+  -- ACK with 'sent' directly from 'claimed' (before beginSend) MUST be rejected
+  v_premature_ack := public.ack_classroom_delivery(
+    (v_claim1->>'id')::uuid,
+    (v_claim1->>'claim_token')::uuid,
+    'sent', 'premature-ref', null, 60, 5
+  );
+  perform public.test_assert(
+    (v_premature_ack->>'acknowledged')::boolean = false
+    and v_premature_ack->>'reason_code' = 'invalid_state_transition',
+    'ack sent from claimed is rejected'
+  );
 
   -- Force lease expiration before beginSend
   update public.classroom_notification_deliveries
@@ -225,14 +239,42 @@ begin
 end;
 $$;
 
--- 4) Task scope removal / needs_relink before beginSend and event deletion trigger (018 compatibility)
+-- 4) Exhausted retry_wait transitions to 'dead' in claim_classroom_delivery
+do $$
+declare
+  v_ev4 uuid;
+  v_claim4 jsonb;
+begin
+  select e.id into v_ev4
+    from public.classroom_task_events e
+    join public.classroom_coursework w on w.id = e.coursework_id
+    where w.external_coursework_id = 'w-new-4';
+
+  perform public.materialize_classroom_deliveries(v_ev4, array['email'], 'v1');
+  update public.classroom_notification_deliveries
+    set state = 'retry_wait',
+        attempts = 5,
+        next_attempt_at = clock_timestamp() - interval '1 second'
+    where event_id = v_ev4;
+
+  v_claim4 := public.claim_classroom_delivery(60, 5);
+  perform public.test_assert(v_claim4 is null, 'exhausted retry_wait is not claimed');
+  perform public.test_assert(
+    (select state = 'dead' and last_error_code = 'max_attempts_reached'
+       from public.classroom_notification_deliveries
+       where event_id = v_ev4),
+    'exhausted retry_wait transitioned to dead in claim'
+  );
+end;
+$$;
+
+-- 5) Task scope removal / needs_relink before beginSend and event deletion trigger (018 compatibility)
 do $$
 declare
   v_ev2 uuid;
   v_ev3 uuid;
   v_claim2 jsonb;
   v_begin2 jsonb;
-  v_claim3 jsonb;
 begin
   select e.id into v_ev2
     from public.classroom_task_events e

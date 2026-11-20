@@ -47,6 +47,11 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
 
   let nextRpcError = null;
   const activeClaims = new Set();
+  const lockTraces = [];
+
+  function recordLockTrace(op, locks) {
+    lockTraces.push({ op, locks });
+  }
 
   function hasWorkScope(scopeStr) {
     const tokens = String(scopeStr ?? "").split(" ").filter(Boolean);
@@ -76,11 +81,46 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
     return true;
   }
 
+  // Simula disable_classroom_tasks(p_user_id) de 018_classroom_tasks_opt_in.sql
+  // Orden de candados: app_users -> google_authorizations -> classroom_task_events -> classroom_notification_deliveries
+  function disableClassroomTasks(userId) {
+    const user = tables.app_users.find((u) => u.id === userId);
+    if (!user) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
+    const auth = tables.google_authorizations.find((a) => a.user_id === userId);
+    if (!auth) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
+
+    recordLockTrace("disable_classroom_tasks", [
+      "app_users",
+      "google_authorizations",
+      "classroom_task_events",
+      "classroom_notification_deliveries",
+    ]);
+
+    const keepTokens = String(auth.scope ?? "")
+      .split(" ")
+      .filter((tok) => Boolean(tok) && tok !== WORK_SCOPE_A && tok !== WORK_SCOPE_B);
+    auth.scope = keepTokens.join(" ");
+
+    const userEventIds = tables.classroom_task_events.filter((e) => e.user_id === userId).map((e) => e.id);
+    for (const evId of userEventIds) {
+      deleteTaskEvent(evId);
+    }
+    tables.classroom_coursework = tables.classroom_coursework.filter((w) => w.user_id !== userId);
+    for (const c of tables.classroom_courses) {
+      if (c.user_id === userId) c.coursework_baseline_at = null;
+    }
+    return { data: { tasks_enabled: false, scope: auth.scope }, error: null };
+  }
+
   function rpc(name, args) {
     if (nextRpcError) {
       const err = nextRpcError;
       nextRpcError = null;
       return { data: null, error: err };
+    }
+
+    if (name === "disable_classroom_tasks") {
+      return disableClassroomTasks(args?.p_user_id);
     }
 
     if (name === "materialize_classroom_deliveries") {
@@ -90,8 +130,23 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         return { data: null, error: { code: "22023", message: "invalid_delivery_channels" } };
       }
       const channels = ["email", "web_push"].filter((c) => p_channels.includes(c));
-      const event = tables.classroom_task_events.find((e) => e.id === p_event_id);
+      // 1) Lectura de user_id sin candado para respetar orden app_users -> google_authorizations -> evento -> entrega
+      const unlockedEvent = tables.classroom_task_events.find((e) => e.id === p_event_id);
+      if (!unlockedEvent) return { data: { status: "missing_event", deliveries: [] }, error: null };
+
+      const user = tables.app_users.find((u) => u.id === unlockedEvent.user_id);
+      if (!user) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
+
+      const auth = tables.google_authorizations.find((a) => a.user_id === unlockedEvent.user_id);
+      const event = tables.classroom_task_events.find((e) => e.id === p_event_id && e.user_id === unlockedEvent.user_id);
       if (!event) return { data: { status: "missing_event", deliveries: [] }, error: null };
+
+      recordLockTrace("materialize_classroom_deliveries", [
+        "app_users",
+        "google_authorizations",
+        "classroom_task_events",
+        "classroom_notification_deliveries",
+      ]);
 
       const existing = tables.classroom_notification_deliveries
         .filter((d) => d.source === "classroom" && d.event_id === p_event_id)
@@ -100,12 +155,8 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         return { data: { status: "existing", deliveries: existing.map((d) => ({ ...d })) }, error: null };
       }
 
-      const user = tables.app_users.find((u) => u.id === event.user_id);
-      if (!user) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
-
       const work = tables.classroom_coursework.find((w) => w.id === event.coursework_id);
       const course = work ? tables.classroom_courses.find((c) => c.id === work.course_id) : null;
-      const auth = tables.google_authorizations.find((a) => a.user_id === event.user_id);
 
       let initialState = "pending";
       let reason = null;
@@ -195,7 +246,7 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
 
       // 1) Expire sending -> unknown (never re-claim sending)
       for (const d of tables.classroom_notification_deliveries) {
-        if (d.state === "sending" && d.send_deadline && Date.parse(d.send_deadline) < clock) {
+        if (!activeClaims.has(d.id) && d.state === "sending" && d.send_deadline && Date.parse(d.send_deadline) < clock) {
           d.state = "unknown";
           d.lease_until = null;
           d.send_deadline = null;
@@ -204,9 +255,26 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         }
       }
 
-      // 2) Unblock blocked rows if same authorization recovered to active with task scopes
+      // 2) Transition exhausted rows (retry_wait / pending / expired claimed with attempts >= maxAttempts) -> dead
       for (const d of tables.classroom_notification_deliveries) {
-        if (d.state === "blocked" && !d.cancel_requested && d.last_error_code === "needs_relink") {
+        if (
+          !activeClaims.has(d.id) &&
+          d.attempts >= maxAttempts &&
+          (["retry_wait", "pending"].includes(d.state) ||
+            (d.state === "claimed" && (!d.lease_until || Date.parse(d.lease_until) < clock)))
+        ) {
+          d.state = "dead";
+          d.claim_token = null;
+          d.lease_until = null;
+          d.send_deadline = null;
+          d.last_error_code = "max_attempts_reached";
+          d.updated_at = nowIso();
+        }
+      }
+
+      // 3) Unblock blocked rows if same authorization recovered to active with task scopes
+      for (const d of tables.classroom_notification_deliveries) {
+        if (!activeClaims.has(d.id) && d.state === "blocked" && !d.cancel_requested && d.last_error_code === "needs_relink") {
           const auth = tables.google_authorizations.find((a) => a.user_id === d.user_id);
           const ev = tables.classroom_task_events.find((e) => e.id === d.event_id);
           if (
@@ -225,7 +293,7 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         }
       }
 
-      // 3) FOR UPDATE SKIP LOCKED selection
+      // 4) FOR UPDATE SKIP LOCKED selection
       const candidates = tables.classroom_notification_deliveries
         .filter((d) => {
           if (activeClaims.has(d.id)) return false;
@@ -256,7 +324,27 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         p_template_version = "v1",
       } = args;
 
+      // 1) Lectura de (user_id, event_id) sin candado para adquirir candados en orden:
+      // app_users -> google_authorizations -> classroom_task_events -> classroom_notification_deliveries
+      const unlockedD = tables.classroom_notification_deliveries.find((r) => r.id === p_delivery_id);
+      if (!unlockedD) {
+        return { data: { allowed: false, reason_code: "invalid_or_expired_claim" }, error: null };
+      }
+
+      const user = tables.app_users.find((u) => u.id === unlockedD.user_id);
+      if (!user) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
+
+      const auth = tables.google_authorizations.find((a) => a.user_id === unlockedD.user_id);
+      const event = tables.classroom_task_events.find((e) => e.id === unlockedD.event_id);
       const d = tables.classroom_notification_deliveries.find((r) => r.id === p_delivery_id);
+
+      recordLockTrace("begin_classroom_delivery_send", [
+        "app_users",
+        "google_authorizations",
+        "classroom_task_events",
+        "classroom_notification_deliveries",
+      ]);
+
       if (
         !d ||
         d.state !== "claimed" ||
@@ -286,7 +374,6 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         return { data: { allowed: false, reason_code: "max_attempts_reached", state: "dead" }, error: null };
       }
 
-      const event = tables.classroom_task_events.find((e) => e.id === d.event_id);
       const work = event ? tables.classroom_coursework.find((w) => w.id === event.coursework_id) : null;
       const course = work ? tables.classroom_courses.find((c) => c.id === work.course_id) : null;
 
@@ -310,7 +397,6 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         return { data: { allowed: false, reason_code: "event_no_longer_valid", state: "cancelled" }, error: null };
       }
 
-      const auth = tables.google_authorizations.find((a) => a.user_id === d.user_id);
       if (
         !auth ||
         auth.google_id !== d.authorization_google_id ||
@@ -398,7 +484,27 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         p_max_attempts = 5,
       } = args;
 
+      // 1) Lectura sin candado de (user_id, event_id) y bloqueo en orden canónico:
+      // app_users -> google_authorizations -> classroom_task_events -> classroom_notification_deliveries
+      const unlockedD = tables.classroom_notification_deliveries.find((r) => r.id === p_delivery_id);
+      if (!unlockedD) {
+        return { data: { acknowledged: false, reason_code: "token_mismatch" }, error: null };
+      }
+
+      const user = tables.app_users.find((u) => u.id === unlockedD.user_id);
+      if (!user) return { data: null, error: { code: "42501", message: "classroom_authorization_required" } };
+
+      tables.google_authorizations.find((a) => a.user_id === unlockedD.user_id);
+      const ev = tables.classroom_task_events.find((e) => e.id === unlockedD.event_id);
       const d = tables.classroom_notification_deliveries.find((r) => r.id === p_delivery_id);
+
+      recordLockTrace("ack_classroom_delivery", [
+        "app_users",
+        "google_authorizations",
+        "classroom_task_events",
+        "classroom_notification_deliveries",
+      ]);
+
       if (!d || !d.claim_token || d.claim_token !== p_claim_token) {
         return { data: { acknowledged: false, reason_code: "token_mismatch" }, error: null };
       }
@@ -406,6 +512,10 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
         return { data: { acknowledged: true, state: "sent", idempotent: true, event_delivered: false }, error: null };
       }
       if (!["sending", "unknown", "claimed"].includes(d.state)) {
+        return { data: { acknowledged: false, reason_code: "invalid_state_transition" }, error: null };
+      }
+      // ack con 'sent', 'unknown' o 'retry_wait' solo se permite desde 'sending' o 'unknown' (no desde 'claimed')
+      if (["sent", "unknown", "retry_wait"].includes(p_outcome) && !["sending", "unknown"].includes(d.state)) {
         return { data: { acknowledged: false, reason_code: "invalid_state_transition" }, error: null };
       }
 
@@ -465,7 +575,6 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
           (r) => r.source === d.source && r.event_id === d.event_id && req.includes(r.channel),
         );
         if (req.length > 0 && rows.length === req.length && rows.every((r) => r.state === "sent")) {
-          const ev = tables.classroom_task_events.find((e) => e.id === d.event_id);
           if (ev) {
             ev.delivered_at = ev.delivered_at ?? nowIso();
             eventDelivered = true;
@@ -569,6 +678,8 @@ function createLedgerTestHarness({ nowMs = T0 } = {}) {
     supabase,
     pushRepo,
     repo: createClassroomDeliveryRepository(supabase, { pushRepo }),
+    lockTraces,
+    disableClassroomTasks,
     advanceClock(ms) {
       clock += ms;
     },
@@ -1081,5 +1192,139 @@ describe("ITN-50 / ITN-44 - Revocación, desactivación (018), cambio de destina
       () => h.repo.claimNextDelivery(),
       (err) => err instanceof ClassroomLedgerError && err.status === 503 && err.code === "classroom_migracion_requerida",
     );
+  });
+
+  test("13. ack con 'sent' se rechaza desde 'claimed' (solo válido desde 'sending' o 'unknown') y retry_wait con attempts al máximo pasa a 'dead' en claim", async () => {
+    const h = createLedgerTestHarness();
+    const { eventId } = seedStudentWithEvent(h);
+    await h.repo.materializeEvent({ eventId, channels: ["email"] });
+
+    const claimed = await h.repo.claimNextDelivery({ leaseSeconds: 60 });
+    assert.ok(claimed);
+    assert.equal(claimed.state, "claimed");
+
+    // (a) Intentar ack con 'sent' directo desde 'claimed' (sin pasar por beginSend) se rechaza
+    const badAck = await h.repo.ackDelivery({
+      deliveryId: claimed.id,
+      claimToken: claimed.claim_token,
+      outcome: "sent",
+      providerReference: "resend-skip-begin",
+    });
+    assert.equal(badAck.acknowledged, false);
+    assert.equal(badAck.reason_code, "invalid_state_transition");
+    assert.equal(
+      h.tables.classroom_notification_deliveries[0].state,
+      "claimed",
+      "la entrega permanece en claimed",
+    );
+
+    // (b) Si una fila quedó en retry_wait con attempts >= maxAttempts, claim_classroom_delivery la pasa a 'dead'
+    const row = h.tables.classroom_notification_deliveries[0];
+    row.state = "retry_wait";
+    row.attempts = 5;
+    row.claim_token = null;
+    row.lease_until = null;
+    row.next_attempt_at = new Date(h.now() - 1000).toISOString();
+
+    const nextClaim = await h.repo.claimNextDelivery({ leaseSeconds: 60, maxAttempts: 5 });
+    assert.equal(nextClaim, null, "no reclama una entrega con attempts al máximo");
+    assert.equal(row.state, "dead");
+    assert.equal(row.last_error_code, "max_attempts_reached");
+  });
+
+  test("14. Orden canónico de candados (app_users -> google_authorizations -> classroom_task_events -> classroom_notification_deliveries) evita deadlocks con disable_classroom_tasks", async () => {
+    const CANONICAL_LOCK_ORDER = [
+      "app_users",
+      "google_authorizations",
+      "classroom_task_events",
+      "classroom_notification_deliveries",
+    ];
+
+    // Escenario A: materialize vs disable_classroom_tasks
+    {
+      const h = createLedgerTestHarness();
+      const { userId, eventId } = seedStudentWithEvent(h);
+      await h.repo.materializeEvent({ eventId, channels: ["email"] });
+      h.disableClassroomTasks(userId);
+
+      assert.deepEqual(
+        h.lockTraces.map((t) => t.locks),
+        [CANONICAL_LOCK_ORDER, CANONICAL_LOCK_ORDER],
+      );
+      assert.equal(h.tables.classroom_task_events.length, 0);
+      assert.equal(h.tables.classroom_notification_deliveries[0].state, "cancelled");
+      assert.equal(h.tables.classroom_notification_deliveries[0].cancel_requested, true);
+    }
+
+    // Escenario A inverso: disable_classroom_tasks antes de materialize
+    {
+      const h = createLedgerTestHarness();
+      const { userId, eventId } = seedStudentWithEvent(h);
+      h.disableClassroomTasks(userId);
+      const plan = await h.repo.materializeEvent({ eventId, channels: ["email"] });
+      assert.equal(plan.status, "missing_event");
+      assert.equal(h.tables.classroom_notification_deliveries.length, 0);
+    }
+
+    // Escenario B: disable_classroom_tasks vs beginSend (en ambos órdenes)
+    {
+      const h = createLedgerTestHarness();
+      const { userId, eventId } = seedStudentWithEvent(h);
+      await h.repo.materializeEvent({ eventId, channels: ["email"] });
+      const claimed = await h.repo.claimNextDelivery({ leaseSeconds: 60 });
+
+      h.lockTraces.length = 0;
+      h.disableClassroomTasks(userId);
+      const Gate = await h.repo.beginSend({
+        deliveryId: claimed.id,
+        claimToken: claimed.claim_token,
+      });
+      assert.equal(Gate.allowed, false);
+      assert.equal(h.tables.classroom_notification_deliveries[0].state, "cancelled");
+      assert.deepEqual(
+        h.lockTraces.map((t) => t.locks),
+        [CANONICAL_LOCK_ORDER, CANONICAL_LOCK_ORDER],
+      );
+    }
+
+    // Escenario C: disable_classroom_tasks mientras la entrega está en 'sending' y luego llega ack('sent') o ack('retry_wait')
+    {
+      const h = createLedgerTestHarness();
+      const { userId, eventId } = seedStudentWithEvent(h);
+      await h.repo.materializeEvent({ eventId, channels: ["email", "web_push"] });
+
+      const cEmail = await h.repo.claimNextDelivery({ leaseSeconds: 60 });
+      const cPush = await h.repo.claimNextDelivery({ leaseSeconds: 60 });
+      await h.repo.beginSend({ deliveryId: cEmail.id, claimToken: cEmail.claim_token });
+      await h.repo.beginSend({ deliveryId: cPush.id, claimToken: cPush.claim_token });
+
+      h.lockTraces.length = 0;
+      // El usuario desactiva tareas mientras ambos canales están en vuelo ('sending')
+      h.disableClassroomTasks(userId);
+
+      // Email ya salió al proveedor y confirma 'sent': se registra 'sent' para auditoría
+      const ackEmail = await h.repo.ackDelivery({
+        deliveryId: cEmail.id,
+        claimToken: cEmail.claim_token,
+        outcome: "sent",
+        providerReference: "re_inflight_ok",
+      });
+      assert.equal(ackEmail.acknowledged, true);
+      assert.equal(ackEmail.state, "sent");
+
+      // Web push tuvo fallo transitorio y pide 'retry_wait': al tener cancel_requested=true pasa a 'cancelled' (no reintenta)
+      const ackPush = await h.repo.ackDelivery({
+        deliveryId: cPush.id,
+        claimToken: cPush.claim_token,
+        outcome: "retry_wait",
+        errorCode: "push_503",
+      });
+      assert.equal(ackPush.acknowledged, true);
+      assert.equal(ackPush.state, "cancelled");
+
+      for (const trace of h.lockTraces) {
+        assert.deepEqual(trace.locks, CANONICAL_LOCK_ORDER);
+      }
+    }
   });
 });

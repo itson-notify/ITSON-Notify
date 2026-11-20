@@ -71,3 +71,34 @@ en `018`) sin acoplar eventos de Classroom a `grade_changes` ni a `notifications
   `classroom_task_events.delivered_at` en la misma transacción cuando existen todas
   las filas de `required_channels` para el evento y todas están en `state = 'sent'`.
   Los estados `blocked`, `unknown`, `dead` y `cancelled` nunca marcan `delivered_at`.
+  Además, `ack_classroom_delivery` solo acepta `p_outcome in ('sent', 'unknown', 'retry_wait')`
+  cuando la entrega está en `sending` o `unknown` (nunca desde `claimed`), y
+  `claim_classroom_delivery` transiciona a `dead` (`last_error_code = 'max_attempts_reached'`)
+  cualquier fila en `retry_wait`, `pending` o `claimed` vencida que haya alcanzado `attempts >= p_max_attempts`.
+
+## 3. Orden canónico de bloqueos (prevención de deadlocks `40P01`)
+
+Para evitar interbloqueos (`40P01`) cuando `disable_classroom_tasks` (`018`) se ejecuta en paralelo con el
+consumidor de entregas (`019`), las 4 funciones RPC y el trigger siguen el mismo orden global de adquisición de
+candados por alumno:
+
+1. `public.app_users` (`FOR UPDATE` sobre `id = v_user_id`)
+2. `public.google_authorizations` (`FOR UPDATE` en `018` / `FOR SHARE` en `016`, `017` y `019`)
+3. `public.classroom_task_events` (`FOR UPDATE` / `FOR SHARE` / `DELETE` en `018`)
+4. `public.classroom_notification_deliveries` (`FOR UPDATE` en las RPCs de `019` y en `trg_classroom_task_event_delete`)
+
+* **`materialize_classroom_deliveries`:** lee `user_id` del evento sin candado, bloquea `app_users` (`FOR UPDATE`),
+  bloquea `google_authorizations` (`FOR SHARE`), relee y bloquea `classroom_task_events` (`FOR SHARE`) y luego
+  inserta/lee `classroom_notification_deliveries`.
+* **`begin_classroom_delivery_send`:** lee `(user_id, event_id)` de la entrega sin candado, bloquea `app_users`
+  (`FOR UPDATE`), `google_authorizations` (`FOR SHARE`), `classroom_task_events` (`FOR SHARE`) y por último
+  `classroom_notification_deliveries` (`FOR UPDATE`).
+* **`ack_classroom_delivery`:** lee `(user_id, event_id)` de la entrega sin candado, bloquea `app_users`
+  (`FOR UPDATE`), `google_authorizations` (`FOR SHARE`), `classroom_task_events` (`FOR UPDATE`) y por último
+  `classroom_notification_deliveries` (`FOR UPDATE`).
+* **`claim_classroom_delivery`:** solo toca `classroom_notification_deliveries` usando `FOR UPDATE OF d SKIP LOCKED`
+  (ordenado por `d.id`) tanto en los CTEs de mantenimiento (`expired_sending`, `exhausted`, `unblocked`) como en la
+  selección de la entrega elegible, sin esperar candados de otras transacciones.
+* **`handle_classroom_task_event_delete` (trigger `BEFORE DELETE ON classroom_task_events`):** se ejecuta cuando
+  `disable_classroom_tasks` ya posee `app_users` (`FOR UPDATE`), `google_authorizations` (`FOR UPDATE`) y el candado
+  de borrado sobre `classroom_task_events`, actualizando `classroom_notification_deliveries` en cuarto lugar.
