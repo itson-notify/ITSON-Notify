@@ -14,8 +14,13 @@
 
 const SIMILARITY_THRESHOLD = 0.8;
 
-// Palabras de relleno que no distinguen una materia de otra.
-const STOPWORDS = new Set(["de", "del", "la", "las", "el", "los", "y", "e", "en", "a", "al"]);
+// Palabras vacías (español e inglés) que no distinguen una materia de otra. Solo se
+// quitan del conjunto de palabras que compara Jaccard; el nombre que se muestra no
+// cambia. Si un nombre se queda sin palabras, courseSimilarity da 0 y no se une.
+const STOPWORDS = new Set([
+  "de", "del", "la", "las", "el", "los", "y", "e", "en", "a", "al", "para", "con",
+  "and", "of", "the", "to", "for",
+]);
 
 // Palabras que introducen un sufijo de grupo, sección o periodo; se quitan junto con
 // el token que las sigue ("grupo 02", "sec a", "periodo 2026").
