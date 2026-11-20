@@ -108,8 +108,30 @@ export interface TasksAuthorization {
 
 export const TASKS_AUTH_OFF: TasksAuthorization = { enabled: false, granted: false, needsRelink: false }
 
+// Modo demo (solo VITE_USE_MOCK=true): ?tareasDemo= elige el estado de la tarjeta.
+// Sin el parámetro (o con un valor desconocido) la tarjeta no aparece, como antes.
+export const TASKS_DEMO_STATES: Record<string, TasksAuthorization> = {
+  no_activadas: { enabled: true, granted: false, needsRelink: false },
+  activadas: { enabled: true, granted: true, needsRelink: false },
+  revincular: { enabled: true, granted: false, needsRelink: true },
+  apagada: TASKS_AUTH_OFF,
+}
+export function tasksDemoState(search: string): string | null {
+  const value = new URLSearchParams(search).get('tareasDemo')
+  return value && Object.prototype.hasOwnProperty.call(TASKS_DEMO_STATES, value) ? value : null
+}
+// Estado en memoria del demo: Activar/Desactivar/Volver a autorizar lo cambian.
+let mockTasksAuth: TasksAuthorization | null = null
+export function setMockTasksAuthorization(value: TasksAuthorization) {
+  if (mockMode) mockTasksAuth = value
+}
+
 export async function getTasksAuthorization(): Promise<TasksAuthorization> {
-  if (mockMode) return TASKS_AUTH_OFF
+  if (mockMode) {
+    if (mockTasksAuth) return mockTasksAuth
+    const demo = typeof window === 'undefined' ? null : tasksDemoState(window.location.search)
+    return demo ? TASKS_DEMO_STATES[demo] : TASKS_AUTH_OFF
+  }
   try {
     const body = await (await request('/classroom/tasks-authorization')).json()
     return { enabled: body?.enabled === true, granted: body?.granted === true, needsRelink: body?.needsRelink === true }
@@ -120,6 +142,10 @@ export async function getTasksAuthorization(): Promise<TasksAuthorization> {
 }
 
 export async function disableTasksAuthorization(): Promise<void> {
+  if (mockMode) {
+    mockTasksAuth = { ...(await getTasksAuthorization()), granted: false }
+    return
+  }
   await request('/classroom/tasks-authorization', 'DELETE')
 }
 

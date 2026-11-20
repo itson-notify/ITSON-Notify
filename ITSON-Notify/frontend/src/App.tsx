@@ -16,6 +16,7 @@ import {
   ApiError, EMPTY_ITSON_PROFILE, deleteItsonProfile, getCalendar, getCourseItems, getCourses, getItsonProfile, getIvirtualLink, getMe, getNotifications, markAllRead,
   markRead, unlinkIvirtual, type Course, type ItsonProfile, type IvirtualLink,
   TASKS_AUTH_OFF, getTasksAuthorization, disableTasksAuthorization, type TasksAuthorization,
+  tasksDemoState, setMockTasksAuthorization,
 } from '@/services/api'
 import { mockMode } from '@/services/backend'
 import { activateClassroomTasks, connectGoogle, googleSession, logoutGoogle, tasksResultMessage } from '@/services/googleAuth'
@@ -289,6 +290,25 @@ export default function App() {
       })
   }, [])
 
+  // ITN-43c - Solo modo demo (VITE_USE_MOCK=true): ?tareasDemo=no_activadas|activadas|
+  // revincular|apagada abre Ajustes con Classroom conectado y la tarjeta en ese estado.
+  useEffect(() => {
+    if (!mockMode || !tasksDemoState(window.location.search)) return
+    setOnboarded(true)
+    setPage('configuracion')
+    setSettings(s => ({ ...s, classroomConnected: true }))
+    getTasksAuthorization().then(setTasksAuth).catch(() => setTasksAuth(TASKS_AUTH_OFF))
+  }, [])
+  // En el demo no hay Google: Activar y Volver a autorizar simulan el regreso.
+  const updateDemoTasks = (next: TasksAuthorization, text: string) => {
+    setMockTasksAuthorization(next)
+    setTasksAuth(next)
+    notify(text)
+  }
+  const activateDemoTasks = () => updateDemoTasks({ ...tasksAuth, granted: true, needsRelink: false }, tasksResultMessage('ok'))
+  // Tras volver a autorizar lo normal es que Google ya no conserve el permiso de tareas.
+  const reconnectDemo = () => updateDemoTasks({ ...tasksAuth, granted: false, needsRelink: false }, 'Google Classroom conectado con éxito')
+
   const visible = notifs.filter(n => settings.categories[n.type] && (n.type !== 'tareas' || settings.classroomConnected))
   const unread = visible.filter(n => n.unread).length
 
@@ -442,8 +462,9 @@ export default function App() {
             ivirtualLink={mockMode ? undefined : ivirtualLink} onUnlinkItson={unlinkItson}
             itsonProfile={itsonProfile} onEditItsonProfile={() => setProfileOpen(true)} onRemoveItsonProfile={removeItsonProfile}
             onDisconnected={mockMode ? undefined : endSession}
-            tasksAuth={tasksAuth} onActivateTasks={activateClassroomTasks} onDisableTasks={disableTasks}
-            onReconnectClassroom={() => connectGoogle('settings')} />
+            tasksAuth={tasksAuth} onActivateTasks={mockMode ? activateDemoTasks : activateClassroomTasks}
+            onDisableTasks={disableTasks}
+            onReconnectClassroom={mockMode ? reconnectDemo : () => connectGoogle('settings')} />
         )}
         {page === 'perfil' && <ProfilePage student={student} settings={settings} matriculaHint={itsonProfile?.matriculaHint ?? null} onGo={go} onLogout={logout} onHelp={setHelpQuery} />}
       </AppLayout>

@@ -60,6 +60,40 @@ test('en modo mock no hay tarjeta de tareas ni llamadas', async () => {
   });
 });
 
+test('modo demo: ?tareasDemo= elige el estado de la tarjeta sin llamar al backend', async () => {
+  const originalWindow = global.window;
+  try {
+    await withFetch(async () => { throw new Error('no debería llamar'); }, async () => {
+      for (const [param, expected] of [
+        ['no_activadas', { enabled: true, granted: false, needsRelink: false }],
+        ['activadas', { enabled: true, granted: true, needsRelink: false }],
+        ['revincular', { enabled: true, granted: false, needsRelink: true }],
+        ['apagada', { enabled: false, granted: false, needsRelink: false }],
+        ['otra-cosa', { enabled: false, granted: false, needsRelink: false }],
+      ]) {
+        global.window = { location: { search: `?tareasDemo=${param}` } };
+        const { api } = clients({ ...ENV, VITE_USE_MOCK: 'true' });
+        assert.deepEqual(await api.getTasksAuthorization(), expected, param);
+      }
+      // Desactivar en el demo cambia el estado en memoria, sin red.
+      global.window = { location: { search: '?tareasDemo=activadas' } };
+      const { api } = clients({ ...ENV, VITE_USE_MOCK: 'true' });
+      await api.disableTasksAuthorization();
+      assert.deepEqual(await api.getTasksAuthorization(), { enabled: true, granted: false, needsRelink: false });
+    });
+    // Sin mock el parámetro no cambia nada: el estado sale del backend.
+    global.window = { location: { search: '?tareasDemo=activadas' } };
+    const { api } = clients();
+    await withFetch(async () => json({ enabled: false, granted: false, needsRelink: false }), async () => {
+      assert.deepEqual(await api.getTasksAuthorization(), api.TASKS_AUTH_OFF);
+      api.setMockTasksAuthorization({ enabled: true, granted: true, needsRelink: false });
+      assert.deepEqual(await api.getTasksAuthorization(), api.TASKS_AUTH_OFF);
+    });
+  } finally {
+    global.window = originalWindow;
+  }
+});
+
 test('mensajes claros para cada resultado de ?tareas=', () => {
   const { auth } = clients();
   assert.equal(auth.tasksResultMessage('ok'), 'Tareas de Classroom activadas');
