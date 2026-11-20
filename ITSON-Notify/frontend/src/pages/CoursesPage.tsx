@@ -1,9 +1,10 @@
-import type { ReactElement, ReactNode } from 'react'
+import { useState, type ReactElement, type ReactNode } from 'react'
 import { I } from '@/components/icons'
 import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
-  classifyItem, courseSources, formatDue, formatGrade, groupItems, periodLabel, sourceSections, SOURCE_LABEL, SOURCE_ORDER, type ItemStatus,
+  classifyItem, courseSources, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
+  SOURCE_LABEL, SOURCE_ORDER, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
 import type { CourseItemsEntry, CoursesState, Page } from '@/types'
@@ -11,7 +12,11 @@ import type { CourseItemsEntry, CoursesState, Page } from '@/types'
 /* ITN-58 - "Mis materias y tareas". Mismo esquema que Notificaciones: en móvil lista o
    detalle; en lg: lado a lado. Los datos y las peticiones viven en App.
    ITN-58b - Una materia que está en varias fuentes es una sola tarjeta con sus fuentes
-   como indicadores; su detalle tiene una sección por fuente con datos. */
+   como indicadores; su detalle tiene una sección por fuente con datos.
+   ITN-58c - Las secciones por plataforma son plegables y empiezan cerradas. La de la
+   API de ITSON es el historial de calificaciones: una subsección plegable por
+   semestre con todas las materias que tienen fuente itson_api (también las
+   unificadas, que en iVirtual o Classroom siguen saliendo con sus indicadores). */
 
 const SOURCE_STYLE: Record<CourseSource, { icon: (s?: number) => ReactElement; color: string; bg: string }> = {
   ivirtual: { icon: I.chart, color: '#16A34A', bg: '#F0FDF4' },
@@ -68,12 +73,54 @@ function CourseRow({ c, selected, onClick }: { c: Course; selected: boolean; onC
           ? <SourceBadges course={c} />
           : <p className="text-[13px] text-[#64748B] truncate mt-0.5">{courseMeta(c)}</p>}
       </div>
-      {c.finalGrade && (
+      {hasFinalGrade(c.finalGrade) && (
         <span className="flex-shrink-0 text-right">
           <span className="block text-[16px] font-semibold text-[#111827] leading-none">{c.finalGrade}</span>
           <span className="block text-[11px] text-[#94A3B8] mt-1">Final</span>
         </span>
       )}
+      <span className={`flex-shrink-0 transition-colors ${selected ? 'text-[#2563EB]' : 'text-[#CBD5E1] group-hover:text-[#2563EB]'}`}>{I.chevron()}</span>
+    </button>
+  )
+}
+
+// ITN-58c - Encabezado plegable: botón con aria-expanded y aria-controls (Enter y
+// Espacio funcionan por ser <button>). Cerrado solo se ve el encabezado.
+function Collapsible({ id, open, onToggle, title, count, nested = false, children }: {
+  id: string; open: boolean; onToggle: (id: string) => void; title: ReactNode; count: string; nested?: boolean; children: ReactNode
+}) {
+  const regionId = `${id}-contenido`
+  return (
+    <section data-collapsible={id} aria-labelledby={`${id}-titulo`}>
+      <h2 className={nested ? 'text-[14px]' : 'text-[13px]'}>
+        <button type="button" id={`${id}-titulo`} aria-expanded={open} aria-controls={regionId} onClick={() => onToggle(id)}
+          className={`w-full flex items-center gap-2 min-h-11 text-left cursor-pointer ${focusRing} ${nested
+            ? 'px-4 md:px-6 py-2 font-medium text-[#334155] hover:bg-[#F8FAFC]'
+            : 'px-4 md:px-0 lg:px-6 font-semibold text-[#64748B] uppercase tracking-[0.04em] hover:text-[#111827]'}`}>
+          <span className="flex-1 min-w-0 truncate">
+            {title} <span className={`font-normal text-[#94A3B8] ${nested ? '' : 'normal-case tracking-normal'}`}>{count}</span>
+          </span>
+          <span aria-hidden="true" className={`flex-shrink-0 text-[#94A3B8] transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>{I.chevron()}</span>
+        </button>
+      </h2>
+      <div id={regionId} hidden={!open}>
+        {open && children}
+      </div>
+    </section>
+  )
+}
+
+const materias = (n: number) => `${n} ${n === 1 ? 'materia' : 'materias'}`
+
+// ITN-58c - Renglón del historial de ITSON: nombre y calificación final del semestre.
+function SemesterCourseRow({ item, selected, onClick }: { item: SemesterCourse; selected: boolean; onClick: () => void }) {
+  const grade = finalGradeLabel(item.entry.finalGrade)
+  const sin = !hasFinalGrade(item.entry.finalGrade)
+  return (
+    <button onClick={onClick} aria-current={selected ? 'true' : undefined}
+      className={`w-full text-left flex items-center gap-3 px-4 py-3 md:px-6 transition-colors cursor-pointer group outline-none focus-visible:bg-[#EFF6FF] ${selected ? 'bg-[#EFF6FF]' : 'hover:bg-[#F8FAFC]'}`}>
+      <p className="flex-1 min-w-0 text-[15px] text-[#111827] truncate">{item.course.name}</p>
+      <span className={`flex-shrink-0 text-right ${sin ? 'text-[13px] text-[#94A3B8]' : 'text-[16px] font-semibold text-[#111827]'}`}>{grade}</span>
       <span className={`flex-shrink-0 transition-colors ${selected ? 'text-[#2563EB]' : 'text-[#CBD5E1] group-hover:text-[#2563EB]'}`}>{I.chevron()}</span>
     </button>
   )
@@ -124,9 +171,10 @@ function EmptyCourses({ ivirtualLink, classroomConnected, onGo, onRetry }: {
   )
 }
 
-function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroomConnected, onGo }: {
+function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroomConnected, onGo, open, onToggle }: {
   state: CoursesState; selectedId: string | null; onOpen: (id: string) => void; onRetry: () => void
   ivirtualLink: IvirtualLink | null; classroomConnected: boolean; onGo: (p: Page) => void
+  open: Record<string, boolean>; onToggle: (id: string) => void
 }) {
   const { status, courses } = state
   if ((status === 'loading' || status === 'idle') && courses.length === 0) {
@@ -146,7 +194,7 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
   }
   const pendingFirstRun = ivirtualLink?.linked && !courses.some(c => c.source === 'ivirtual')
   return (
-    <div className="space-y-5 lg:space-y-0">
+    <div className="space-y-2 lg:space-y-0">
       {status === 'error' && (
         <div className="px-4 md:px-0 lg:px-6 lg:pb-4">
           <Notice tone="red" title="No pudimos actualizar tus materias" action={<Button variant="secondary" onClick={onRetry}>{I.refresh()}Reintentar</Button>}>
@@ -162,19 +210,43 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
         </div>
       )}
       {SOURCE_ORDER.map(source => {
+        const id = `fuente-${source}`
+        if (source === 'itson_api') {
+          const semestres = itsonSemesters(courses)
+          if (semestres.length === 0) return null
+          const total = semestres.reduce((n, s) => n + s.courses.length, 0)
+          return (
+            <Collapsible key={source} id={id} open={Boolean(open[id])} onToggle={onToggle} title={SOURCE_LABEL[source]} count={String(total)}>
+              <div className="mt-1 bg-white border-y md:border md:rounded-lg lg:border-x-0 lg:rounded-none border-[#E5E7EB] divide-y divide-[#F1F5F9]">
+                {semestres.map(sem => {
+                  const semId = `semestre-${sem.period ?? 'sin'}`
+                  return (
+                    <Collapsible key={semId} id={semId} nested open={Boolean(open[semId])} onToggle={onToggle}
+                      title={sem.label} count={`· ${materias(sem.courses.length)}`}>
+                      <ul className="divide-y divide-[#F1F5F9] border-t border-[#F1F5F9] bg-[#FCFDFE]">
+                        {sem.courses.map(item => (
+                          <li key={`${item.entry.id}-${item.course.id}`}>
+                            <SemesterCourseRow item={item} selected={selectedId === item.course.id} onClick={() => onOpen(item.course.id)} />
+                          </li>
+                        ))}
+                      </ul>
+                    </Collapsible>
+                  )
+                })}
+              </div>
+            </Collapsible>
+          )
+        }
         const group = courses.filter(c => c.source === source)
         if (group.length === 0) return null
         return (
-          <section key={source} aria-labelledby={`fuente-${source}`}>
-            <h2 id={`fuente-${source}`} className="px-4 md:px-0 lg:px-6 mb-2 lg:mt-4 text-[13px] font-semibold text-[#64748B] uppercase tracking-[0.04em]">
-              {SOURCE_LABEL[source]} <span className="font-normal normal-case tracking-normal text-[#94A3B8]">{group.length}</span>
-            </h2>
-            <ul className="bg-white border-y md:border md:rounded-lg lg:border-x-0 lg:rounded-none border-[#E5E7EB] divide-y divide-[#F1F5F9]">
+          <Collapsible key={source} id={id} open={Boolean(open[id])} onToggle={onToggle} title={SOURCE_LABEL[source]} count={String(group.length)}>
+            <ul className="mt-1 bg-white border-y md:border md:rounded-lg lg:border-x-0 lg:rounded-none border-[#E5E7EB] divide-y divide-[#F1F5F9]">
               {group.map(c => (
                 <li key={`${c.source}-${c.id}`}><CourseRow c={c} selected={selectedId === c.id} onClick={() => onOpen(c.id)} /></li>
               ))}
             </ul>
-          </section>
+          </Collapsible>
         )
       })}
     </div>
@@ -230,7 +302,8 @@ function ClassroomNote() {
   )
 }
 
-function FinalGrade({ value }: { value: string | null }) {
+function FinalGrade({ value: raw }: { value: string | null }) {
+  const value = hasFinalGrade(raw) ? raw.trim() : null
   return (
     <dl className="bg-white border border-[#E5E7EB] rounded-lg">
       <div className="flex justify-between items-center gap-4 px-4 py-3">
@@ -364,6 +437,9 @@ export function CoursesPage({ state, itemsById, selectedId, onOpen, onClose, onR
   ivirtualLink: IvirtualLink | null; classroomConnected: boolean; now?: number
 }) {
   const selected = state.courses.find(c => c.id === selectedId) ?? null
+  // ITN-58c - Secciones y semestres abiertos; todo empieza cerrado.
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const toggle = (id: string) => setOpen(o => ({ ...o, [id]: !o[id] }))
   const refreshing = state.status === 'loading' && state.courses.length > 0
 
   return (
@@ -385,7 +461,7 @@ export function CoursesPage({ state, itemsById, selectedId, onOpen, onClose, onR
         </div>
         <div className="pb-6 md:px-8 lg:px-0 lg:flex-1 lg:overflow-y-auto">
           <CourseList state={state} selectedId={selectedId} onOpen={onOpen} onRetry={onRetry}
-            ivirtualLink={ivirtualLink} classroomConnected={classroomConnected} onGo={onGo} />
+            ivirtualLink={ivirtualLink} classroomConnected={classroomConnected} onGo={onGo} open={open} onToggle={toggle} />
         </div>
       </section>
 

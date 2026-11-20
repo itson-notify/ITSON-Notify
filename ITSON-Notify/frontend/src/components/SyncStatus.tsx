@@ -12,7 +12,7 @@ export function SyncStatus({ status, syncing, firstRun, loading, onSync, onFix, 
         <span className="text-[#EA580C] mt-0.5 flex-shrink-0">{I.alert(18)}</span>
         <div className="min-w-0">
           <p className="text-[14px] font-semibold text-[#9A3412]">No pudimos revisar tu portal ITSON</p>
-          <p className="text-[13px] leading-relaxed text-[#9A3412]/85 mt-0.5">Tal vez cambiaste tu contraseña. Mientras tanto no recibirás calificaciones, cupos ni trámites.</p>
+          <p className="text-[13px] leading-relaxed text-[#9A3412]/85 mt-0.5">Tal vez cambiaste tu contraseña. Mientras tanto no recibirás calificaciones ni trámites.</p>
           <div className="mt-1.5 flex flex-wrap gap-x-4">
             <button onClick={onFix} className={`${linkCls} text-[#C2410C]`}>Actualizar contraseña</button>
             <button onClick={() => onHelp('cambio mi contraseña')} className={`${linkCls} font-medium text-[#9A3412]/80`}>¿Por qué pasa esto?</button>

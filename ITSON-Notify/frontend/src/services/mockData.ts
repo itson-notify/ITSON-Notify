@@ -12,8 +12,7 @@ export const DEFAULT_SETTINGS: Settings = {
   itsonStatus: 'ok',
   classroomConnected: false,
   classroomEmail: 'alumno@ejemplo.com',
-  categories: { calificaciones: true, tareas: true, cupos: true, tramites: true },
-  cupoWatch: [],
+  categories: { calificaciones: true, tareas: true, tramites: true },
   pushOn: false,
   pushPermission: 'default',
   emailOn: true,
@@ -34,9 +33,6 @@ export const INITIAL_NOTIFS: Notif[] = [
   { id: '2', type: 'tareas', title: 'Nueva tarea en Classroom', subject: 'Bases de Datos', time: 'Hace 5 h', unread: true,
     body: 'Se publicó la tarea "Normalización hasta 3FN" en Google Classroom.',
     rows: [{ label: 'Clase', value: 'Bases de Datos' }, { label: 'Entrega', value: '28 sep, 23:59' }, { label: 'Estado', value: 'Sin entregar' }] },
-  { id: '3', type: 'cupos', title: 'Se liberó un cupo', subject: 'Redes de Computadoras', time: 'Hace 1 día', unread: true,
-    body: 'Hay 1 lugar libre en el grupo 01 de Redes de Computadoras. Los cupos suelen ocuparse rápido.',
-    rows: [{ label: 'Materia', value: 'Redes de Computadoras' }, { label: 'Grupo', value: '01' }, { label: 'Lugares libres', value: '1' }] },
   { id: '4', type: 'tramites', title: 'Trámite aprobado', subject: 'Inscripción', time: 'Hace 2 días', unread: false,
     body: 'Tu trámite de inscripción para el periodo Agosto – Diciembre 2026 fue aprobado.',
     rows: [{ label: 'Trámite', value: 'Inscripción' }, { label: 'Periodo', value: PERIODO }, { label: 'Estado', value: 'Aprobado' }] },
@@ -62,12 +58,17 @@ export const MOCK_COURSES: Course[] = [
   { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2), sources: [
     { source: 'ivirtual', id: 'mock-ivirtual-2', name: 'Bases de Datos', period: null, finalGrade: null, updatedAt: enHoras(-2) },
     { source: 'classroom', id: 'mock-classroom-3', name: 'Bases de Datos - Grupo 01', period: 'Grupo 01', finalGrade: null, updatedAt: enHoras(-5) },
-    { source: 'itson_api', id: 'mock-itson-3', name: 'BASES DE DATOS', period: '05', finalGrade: '9', updatedAt: enHoras(-30) },
+    { source: 'itson_api', id: 'mock-itson-3', name: 'BASES DE DATOS', period: '06', finalGrade: '9', updatedAt: enHoras(-30) },
   ] },
   { id: 'mock-classroom-1', name: 'Inteligencia Artificial', source: 'classroom', period: 'Grupo 02', finalGrade: null, updatedAt: enHoras(-5) },
   { id: 'mock-classroom-2', name: 'Taller de Tesis', source: 'classroom', period: null, finalGrade: null, updatedAt: enHoras(-5) },
-  { id: 'mock-itson-1', name: 'Cálculo Diferencial', source: 'itson_api', period: '03', finalGrade: '9', updatedAt: enHoras(-30) },
-  { id: 'mock-itson-2', name: 'Ética Profesional', source: 'itson_api', period: '03', finalGrade: 'A', updatedAt: enHoras(-30) },
+  // ITN-58c - Historial de la API de ITSON en dos semestres (06 y 05), con materias
+  // aún sin calificación final (null y '-').
+  { id: 'mock-itson-4', name: 'Redes de Computadoras', source: 'itson_api', period: '06', finalGrade: null, updatedAt: enHoras(-30) },
+  { id: 'mock-itson-5', name: 'Ingeniería de Requisitos', source: 'itson_api', period: '06', finalGrade: '-', updatedAt: enHoras(-30) },
+  { id: 'mock-itson-1', name: 'Cálculo Diferencial', source: 'itson_api', period: '05', finalGrade: '9', updatedAt: enHoras(-30) },
+  { id: 'mock-itson-2', name: 'Ética Profesional', source: 'itson_api', period: '05', finalGrade: 'A', updatedAt: enHoras(-30) },
+  { id: 'mock-itson-6', name: 'Sistemas Operativos', source: 'itson_api', period: '05', finalGrade: '10', updatedAt: enHoras(-30) },
 ]
 
 export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
@@ -91,6 +92,9 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
   'mock-classroom-2': [],
   'mock-itson-1': [],
   'mock-itson-2': [],
+  'mock-itson-4': [],
+  'mock-itson-5': [],
+  'mock-itson-6': [],
 }
 
 // ITN-61 - Calendario académico simulado (eventos inventados). Las fechas se calculan
@@ -131,7 +135,6 @@ export const FAQ: { q: string; a: string }[] = [
   { q: '¿Qué pasa si cambio mi contraseña de ITSON?', a: 'Dejamos de poder revisar tu portal y te mostramos un aviso naranja. Toca “Actualizar contraseña” y escribe la nueva. No pierdes tu historial.' },
   { q: '¿Es seguro darles mi contraseña?', a: 'Se guarda cifrada y solo se usa para consultar tu información. Nunca hacemos trámites ni cambios por ti. Puedes desconectar tu cuenta cuando quieras.' },
   { q: '¿Cada cuánto revisan mis portales?', a: 'Varias veces al día. Si quieres ver novedades en este momento, toca “Revisar ahora” en Inicio o en Notificaciones.' },
-  { q: '¿Cómo elijo qué materias vigilar para cupos?', a: 'En Configuración, sección “Materias para vigilar cupos”, escribe el nombre o la clave de la materia, o toca una de las sugeridas.' },
   { q: 'Uso iPhone y no me llegan notificaciones', a: 'En Safari toca Compartir y luego “Agregar a inicio”. Abre ITSON Notify desde ese ícono y activa las notificaciones en Configuración.' },
   { q: '¿Cómo dejo de usar ITSON Notify?', a: 'En Configuración desconecta tu cuenta ITSON y Google Classroom. Si además quieres que borremos tu historial, escríbenos desde “Escribir a soporte”.' },
 ]

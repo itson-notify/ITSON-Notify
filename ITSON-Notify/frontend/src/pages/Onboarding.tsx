@@ -4,7 +4,6 @@ import { Button, PasswordField, Spinner, SuccessCard, TextField, TypeIcon } from
 import { CategoryRows } from '@/components/CategoryRows'
 import { ItsonProfileForm } from '@/components/ItsonProfileForm'
 import type { ItsonProfile } from '@/services/api'
-import { WatchEditor } from '@/components/WatchEditor'
 import { ITSON_RECOVERY_URL } from '@/services/mockData'
 import type { StudentView } from '@/utils/student'
 import { connectGoogle as startGoogleAuth } from '@/services/googleAuth'
@@ -208,17 +207,6 @@ export function Onboarding({
         <div className="mt-5 border-y border-[#E5E7EB] divide-y divide-[#F1F5F9]">
           <CategoryRows settings={settings} setSettings={setSettings} />
         </div>
-        {settings.categories.cupos && (
-          <div className="mt-6">
-            <div className="px-4 md:px-6">
-              <h2 className="text-[15px] font-semibold text-[#111827]">Materias para vigilar cupos</h2>
-              <p className="text-[13px] text-[#64748B] mt-0.5">Te avisamos solo cuando se libere un lugar en estas materias.</p>
-            </div>
-            <div className="md:px-2">
-              <WatchEditor list={settings.cupoWatch} onChange={fn => setSettings(s => ({ ...s, cupoWatch: fn(s.cupoWatch) }))} />
-            </div>
-          </div>
-        )}
       </div>
     )
     footer = <Button full onClick={next}>Continuar</Button>
@@ -235,8 +223,8 @@ export function Onboarding({
             <span className="w-9 h-9 rounded-lg bg-[#2563EB] text-white flex items-center justify-center flex-shrink-0">{I.bell(16)}</span>
             <div className="min-w-0 flex-1">
               <div className="flex justify-between text-[12px] text-[#64748B]"><span className="font-medium">ITSON Notify</span><span>ahora</span></div>
-              <p className="text-[14px] font-semibold text-[#111827] mt-0.5">Se liberó un cupo</p>
-              <p className="text-[13px] text-[#475569]">Redes de Computadoras, grupo 01</p>
+              <p className="text-[14px] font-semibold text-[#111827] mt-0.5">Nueva calificación disponible</p>
+              <p className="text-[13px] text-[#475569]">Programación Avanzada</p>
             </div>
           </div>
         </div>
@@ -258,11 +246,9 @@ export function Onboarding({
   }
 
   if (step === 5) {
-    const watched = settings.cupoWatch.length
     const summary = [
       { ok: true, text: `Cuenta ITSON conectada (ID ${settings.itsonId})` },
       { ok: settings.classroomConnected, text: settings.classroomConnected ? 'Google Classroom conectado' : 'Google Classroom sin conectar (puedes hacerlo después)' },
-      { ok: !settings.categories.cupos || watched > 0, text: settings.categories.cupos ? `Vigilando cupos en ${watched} ${watched === 1 ? 'materia' : 'materias'}` : 'Cupos desactivados' },
       { ok: true, text: settings.pushOn ? `Avisos en este dispositivo y en ${settings.email}` : `Avisos por correo a ${settings.email}` },
     ]
     body = (
