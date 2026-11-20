@@ -138,6 +138,11 @@ begin
     join public.classroom_coursework w on w.id = e.coursework_id
     where w.external_coursework_id = 'w-new-1';
 
+  -- Defer web_push so we deterministically claim email first
+  update public.classroom_notification_deliveries
+    set state = 'retry_wait', next_attempt_at = clock_timestamp() + interval '10 minutes'
+    where event_id = v_ev1 and channel = 'web_push';
+
   -- Claim first delivery (email)
   v_claim1 := public.claim_classroom_delivery(60, 5);
   perform public.test_assert(v_claim1 is not null and v_claim1->>'channel' = 'email', 'claimed email delivery');
@@ -159,11 +164,6 @@ begin
   update public.classroom_notification_deliveries
     set lease_until = clock_timestamp() - interval '10 seconds'
     where id = (v_claim1->>'id')::uuid;
-
-  -- Put the other delivery in future retry_wait so we deterministic-reclaim the expired claimed row
-  update public.classroom_notification_deliveries
-    set state = 'retry_wait', next_attempt_at = clock_timestamp() + interval '10 minutes'
-    where event_id = v_ev1 and channel = 'web_push';
 
   v_claim1_reclaimed := public.claim_classroom_delivery(60, 5);
   perform public.test_assert(v_claim1_reclaimed->>'id' = v_claim1->>'id', 'expired claimed row is reclaimed');

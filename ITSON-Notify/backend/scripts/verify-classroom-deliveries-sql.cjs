@@ -271,12 +271,13 @@ async function main() {
     ]);
     assert.equal(claimResults.filter((out) => /claimed/.test(out)).length, 1);
     assert.equal(claimResults.filter((out) => /EMPTY/.test(out)).length, 1);
+    console.log("[CONCURRENCY A] claim_classroom_delivery vs claim_classroom_delivery (SKIP LOCKED): 1 claimed, 1 EMPTY (PASS)");
 
     // (B) Two-session concurrency: disable_classroom_tasks vs materialize_classroom_deliveries (both orders, no 40P01 deadlock)
     for (const disableFirst of [true, false]) {
       const evMat = seedOneNewEvent(disableFirst ? "w-mat-1" : "w-mat-2");
       const disableSql = `set role service_role; select public.disable_classroom_tasks('00000000-0000-4000-8000-000000000011'::uuid, 'g-ledger-1');`;
-      const matSql = `set role service_role; select public.materialize_classroom_deliveries('${evMat}'::uuid, array['email'], 'v1');`;
+      const matSql = `set role service_role; select public.materialize_classroom_deliveries('${evMat}'::uuid, array['email'], 'v1') - 'deliveries';`;
       const [first, second] = disableFirst
         ? [`begin; ${disableSql} select pg_sleep(0.2); commit;`, `select pg_sleep(0.05); begin; ${matSql} commit;`]
         : [`begin; ${matSql} select pg_sleep(0.2); commit;`, `select pg_sleep(0.05); begin; ${disableSql} commit;`];
@@ -285,7 +286,7 @@ async function main() {
       assert.doesNotMatch(res.join("\n"), /40P01|deadlock/i);
 
       // Final state: zero events left, and zero pending/claimed/retry_wait deliveries
-      sql(`
+      const finalMat = sql(`
         set role service_role;
         select public.test_assert(
           (select count(*) = 0 from public.classroom_task_events where user_id = '00000000-0000-4000-8000-000000000011'),
@@ -296,8 +297,16 @@ async function main() {
              where event_id = '${evMat}'::uuid and state not in ('cancelled')),
           'disable vs materialize leaves no active deliveries'
         );
+        select 'FINAL_JSON=' || jsonb_build_object(
+          'events_left', (select count(*) from public.classroom_task_events where user_id = '00000000-0000-4000-8000-000000000011'),
+          'deliveries', coalesce((select jsonb_agg(jsonb_build_object('state', state, 'cancel_requested', cancel_requested, 'last_error_code', last_error_code)) from public.classroom_notification_deliveries where event_id = '${evMat}'::uuid), '[]'::jsonb)
+        )::text;
         reset role;
       `);
+      const stateMatch = /FINAL_JSON=(\{.*\})/.exec(finalMat);
+      console.log(
+        `[CONCURRENCY B] disable_classroom_tasks vs materialize_classroom_deliveries (disableFirst=${disableFirst}): no 40P01 deadlock, final=${stateMatch ? stateMatch[1].trim() : "OK"} (PASS)`,
+      );
     }
 
     // (C) Two-session concurrency: disable_classroom_tasks vs begin_classroom_delivery_send (both orders, no 40P01 deadlock)
@@ -342,6 +351,18 @@ async function main() {
           reset role;
         `);
       }
+      const finalBegin = sql(`
+        set role service_role;
+        select 'FINAL_JSON=' || jsonb_build_object(
+          'events_left', (select count(*) from public.classroom_task_events where id = '${evBegin}'::uuid),
+          'delivery', (select jsonb_build_object('state', state, 'cancel_requested', cancel_requested, 'last_error_code', last_error_code) from public.classroom_notification_deliveries where id = '${delivId}'::uuid)
+        )::text;
+        reset role;
+      `);
+      const stateMatch = /FINAL_JSON=(\{.*\})/.exec(finalBegin);
+      console.log(
+        `[CONCURRENCY C] disable_classroom_tasks vs begin_classroom_delivery_send (disableFirst=${disableFirst}): no 40P01 deadlock, final=${stateMatch ? stateMatch[1].trim() : "OK"} (PASS)`,
+      );
     }
 
     // (D) Two-session concurrency: disable_classroom_tasks vs ack_classroom_delivery (both orders, no 40P01 deadlock)
@@ -372,7 +393,7 @@ async function main() {
 
       // In both orders, the already-completed external send is recorded as 'sent' and preserved in the ledger,
       // while the event row is deleted by disable_classroom_tasks.
-      sql(`
+      const finalAck = sql(`
         set role service_role;
         select public.test_assert(
           (select count(*) = 0 from public.classroom_task_events where id = '${evAck}'::uuid),
@@ -382,8 +403,16 @@ async function main() {
           (select state = 'sent' from public.classroom_notification_deliveries where id = '${delivId}'::uuid),
           'disable vs ack preserves sent delivery fact in ledger'
         );
+        select 'FINAL_JSON=' || jsonb_build_object(
+          'events_left', (select count(*) from public.classroom_task_events where id = '${evAck}'::uuid),
+          'delivery', (select jsonb_build_object('state', state, 'cancel_requested', cancel_requested, 'provider_reference', provider_reference) from public.classroom_notification_deliveries where id = '${delivId}'::uuid)
+        )::text;
         reset role;
       `);
+      const stateMatch = /FINAL_JSON=(\{.*\})/.exec(finalAck);
+      console.log(
+        `[CONCURRENCY D] disable_classroom_tasks vs ack_classroom_delivery (disableFirst=${disableFirst}): no 40P01 deadlock, final=${stateMatch ? stateMatch[1].trim() : "OK"} (PASS)`,
+      );
     }
 
     console.log(
