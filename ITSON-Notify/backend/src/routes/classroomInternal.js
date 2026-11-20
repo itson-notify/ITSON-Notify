@@ -43,6 +43,10 @@ function classroomInternalRouter({
     if (dispatchCfg.classroomDispatchEnabled !== true) {
       return res.status(404).json({ error: 'no_encontrado' });
     }
+    if (!Array.isArray(dispatchCfg.classroomDispatchAllowedUsers) || dispatchCfg.classroomDispatchAllowedUsers.length === 0) {
+      logger?.warn?.('despacho_classroom_sin_usuarios_permitidos', { count: 0 });
+      return res.json({ procesados: 0, enviados: 0, fallidos: 0 });
+    }
     if (despachando) {
       return res.status(409).json({ error: 'despacho_en_curso' });
     }
@@ -55,10 +59,16 @@ function classroomInternalRouter({
         channels,
         transports: classroomTransports,
       });
+      if (!transports.email && !transports.web_push) {
+        logger?.warn?.('despacho_classroom_fallido', { step: 'transports', error_code: 'channel_unconfigured' });
+        return res.status(503).json({ error: 'classroom_canales_no_configurados' });
+      }
+      const rawSecret = config.googleAuthSecret || config.credentialsEncryptionKey;
+      const secret = Buffer.isBuffer(rawSecret) ? rawSecret.toString('base64') : rawSecret;
       const r = await processClassroomDeliveries({
         repo: deliveryRepo,
         transports,
-        secret: config.googleAuthSecret || config.credentialsEncryptionKey,
+        secret,
         allowedUsers: dispatchCfg.classroomDispatchAllowedUsers,
         logger,
         now,

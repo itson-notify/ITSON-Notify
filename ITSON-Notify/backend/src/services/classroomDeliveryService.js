@@ -52,12 +52,10 @@ const SIN_MATERIA = "Materia no disponible";
 // Lista cerrada de banderas booleanas (igual que GOOGLE_OAUTH_ENABLED).
 const ALLOWED_DISPATCH_FLAG_VALUES = Object.freeze(["true", "false", "1", "0"]);
 
-// Usuario piloto permitido por defecto (Pedro) para que no salga ningún aviso
-// a otros estudiantes mientras se valida el despacho de Classroom.
-const DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS = Object.freeze([
-  "pedro.izquierdo252587@potros.itson.edu.mx",
-  "pedro.izquierdo3005@gmail.com",
-]);
+// Lista permitida vacía por defecto (falla cerrado): ningún estudiante recibe
+// avisos hasta que se configure explícitamente CLASSROOM_DISPATCH_ALLOWED_USERS
+// en el entorno (sin correos reales en el repositorio).
+const DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS = Object.freeze([]);
 
 function parseClassroomDispatchFlag(raw) {
   if (typeof raw === "boolean") return { valid: true, enabled: raw };
@@ -566,10 +564,6 @@ function buildClassroomTransports({
     const pushCh = channels.find((c) => c?.name === "web_push" && typeof c.send === "function");
     if (!built.email && emailCh) built.email = wrapLegacyChannelAsTransport(emailCh);
     if (!built.web_push && pushCh) built.web_push = wrapLegacyChannelAsTransport(pushCh);
-    if (!built.email && !built.web_push) {
-      const logCh = channels.find((c) => c?.name === "log" && typeof c.send === "function");
-      if (logCh) built.email = wrapLegacyChannelAsTransport(logCh);
-    }
   }
 
   return built;

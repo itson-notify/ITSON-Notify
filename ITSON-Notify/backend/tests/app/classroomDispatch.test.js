@@ -1,7 +1,7 @@
 // ITN-50 / ITN-44 - Pruebas de integración de POST /internal/classroom/dispatch
 // sobre processClassroomDeliveries (ledger 019), bandera CLASSROOM_DISPATCH_ENABLED
-// apagada por defecto, lista permitida de usuarios (solo Pedro por defecto) y
-// bandeja GET /api/notifications. Sin tocar fakeSupabase.js, env.js ni logger.js.
+// apagada por defecto, lista permitida de usuarios (vacía/fail-closed por defecto)
+// y bandeja GET /api/notifications. Sin tocar fakeSupabase.js, env.js ni logger.js.
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -30,8 +30,8 @@ const WORK_SCOPE = "https://www.googleapis.com/auth/classroom.coursework.me.read
 const T0 = Date.parse("2026-11-20T15:00:00.000Z");
 const iso = (offsetMs = 0) => new Date(T0 + offsetMs).toISOString();
 
-const PEDRO_EMAIL = "pedro.izquierdo252587@potros.itson.edu.mx";
-const OTRO_EMAIL = "otro.estudiante999999@potros.itson.edu.mx";
+const PILOTO_EMAIL = "piloto.classroom@example.test";
+const OTRO_EMAIL = "otro.estudiante@example.test";
 const TITULO_SECRETO = "PRIVADO Tarea Calculo Integral 7";
 const MATERIA_SECRETA = "PRIVADO Calculo Integral";
 
@@ -467,7 +467,7 @@ function seedStudentAndEvent(
   {
     userId = crypto.randomUUID(),
     googleId = `g-${userId.slice(0, 8)}`,
-    email = PEDRO_EMAIL,
+    email = PILOTO_EMAIL,
     scope = `${COURSES_SCOPE} ${WORK_SCOPE}`,
     status = "active",
     authCreatedAt = iso(-3600_000),
@@ -539,9 +539,11 @@ function seedStudentAndEvent(
 
 function createTestSetup({
   classroomDispatchEnabled = true,
-  classroomDispatchAllowedUsers = undefined,
+  classroomDispatchAllowedUsers = [PILOTO_EMAIL],
+  omitAllowedUsers = false,
   emailImpl,
   pushImpl,
+  withoutTransports = false,
 } = {}) {
   const h = createDispatchSupabaseHarness();
   const logs = [];
@@ -549,17 +551,19 @@ function createTestSetup({
   const sentEmails = [];
   const sentPushes = [];
 
-  const classroomTransports = {
-    email: {
-      name: "email",
-      async send(message, permission, options) {
-        if (emailImpl) return emailImpl({ message, permission, options });
-        sentEmails.push({ message, permission });
-        return { status: "accepted", providerReference: "re_test_1" };
-      },
-    },
-  };
-  if (pushImpl) {
+  const classroomTransports = withoutTransports
+    ? {}
+    : {
+        email: {
+          name: "email",
+          async send(message, permission, options) {
+            if (emailImpl) return emailImpl({ message, permission, options });
+            sentEmails.push({ message, permission });
+            return { status: "accepted", providerReference: "re_test_1" };
+          },
+        },
+      };
+  if (pushImpl && !withoutTransports) {
     classroomTransports.web_push = {
       name: "web_push",
       async send(message, permission, options) {
@@ -575,7 +579,7 @@ function createTestSetup({
     googleAuthSecret: SECRET,
     frontendUrl: "http://localhost:5173",
     classroomDispatchEnabled,
-    ...(classroomDispatchAllowedUsers !== undefined ? { classroomDispatchAllowedUsers } : {}),
+    ...(!omitAllowedUsers ? { classroomDispatchAllowedUsers } : {}),
   };
 
   const app = createApp({
@@ -583,7 +587,7 @@ function createTestSetup({
     supabase: h.supabase,
     logger,
     now: h.now,
-    classroomTransports,
+    classroomTransports: withoutTransports ? undefined : classroomTransports,
     classroomDeliveryRepo: h.repo,
   });
 
@@ -605,7 +609,7 @@ describe("POST /internal/classroom/dispatch - Autenticación, bandera y lista pe
 
   test("404 con CLASSROOM_DISPATCH_ENABLED apagada por defecto y sin tocar la base", async () => {
     const s = createTestSetup({ classroomDispatchEnabled: false });
-    seedStudentAndEvent(s.h, { email: PEDRO_EMAIL });
+    seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
     const callsBefore = s.h.getDbCalls();
 
     const res = await s.despachar();
@@ -615,24 +619,32 @@ describe("POST /internal/classroom/dispatch - Autenticación, bandera y lista pe
     assert.equal(s.sentEmails.length, 0);
   });
 
-  test("lista permitida por defecto contiene únicamente el usuario de Pedro y nunca envía a otros estudiantes", async () => {
-    assert.deepEqual(DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS, [
-      "pedro.izquierdo252587@potros.itson.edu.mx",
-      "pedro.izquierdo3005@gmail.com",
-    ]);
+  test("sin CLASSROOM_DISPATCH_ALLOWED_USERS falla cerrado (vacía por defecto, cero envíos y sin tocar la base)", async () => {
+    assert.deepEqual(DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS, []);
+    const s = createTestSetup({ omitAllowedUsers: true });
+    seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
+    const callsBefore = s.h.getDbCalls();
 
-    const s = createTestSetup(); // Usa la lista permitida por defecto (solo Pedro)
-    const pedro = seedStudentAndEvent(s.h, { email: PEDRO_EMAIL });
+    const res = await s.despachar();
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body, { procesados: 0, enviados: 0, fallidos: 0 });
+    assert.equal(s.h.getDbCalls(), callsBefore, "no consulta la base cuando la lista permitida está vacía");
+    assert.equal(s.sentEmails.length, 0);
+  });
+
+  test("lista permitida envía únicamente al usuario piloto configurado y nunca a otros estudiantes", async () => {
+    const s = createTestSetup({ classroomDispatchAllowedUsers: [PILOTO_EMAIL] });
+    const piloto = seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
     const otro = seedStudentAndEvent(s.h, { email: OTRO_EMAIL });
 
     const res = await s.despachar();
     assert.equal(res.status, 200);
     assert.deepEqual(res.body, { procesados: 2, enviados: 1, fallidos: 0 });
 
-    // Solo salió correo a Pedro; nunca al otro estudiante
+    // Solo salió correo al piloto; nunca al otro estudiante
     assert.equal(s.sentEmails.length, 1);
-    assert.equal(s.sentEmails[0].permission.user_id, pedro.userId);
-    assert.equal(s.sentEmails[0].permission.recipient_email, PEDRO_EMAIL);
+    assert.equal(s.sentEmails[0].permission.user_id, piloto.userId);
+    assert.equal(s.sentEmails[0].permission.recipient_email, PILOTO_EMAIL);
 
     // El otro estudiante no tiene ninguna entrega materializada ni enviada
     const entregasOtro = s.h.tables.classroom_notification_deliveries.filter((d) => d.user_id === otro.userId);
@@ -676,6 +688,22 @@ describe("POST /internal/classroom/dispatch - Autenticación, bandera y lista pe
     assert.equal(filaOtro.last_error_code, "user_not_allowed");
   });
 
+  test("503 classroom_canales_no_configurados si no hay transporte email ni web_push (nunca finge envío con log)", async () => {
+    const prevResend = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    try {
+      const s = createTestSetup({ withoutTransports: true });
+      seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
+      const res = await s.despachar();
+      assert.equal(res.status, 503);
+      assert.deepEqual(res.body, { error: "classroom_canales_no_configurados" });
+      assert.equal(s.h.tables.classroom_notification_deliveries.length, 0);
+      assert.equal(s.h.tables.classroom_task_events[0].delivered_at, null);
+    } finally {
+      if (prevResend !== undefined) process.env.RESEND_API_KEY = prevResend;
+    }
+  });
+
   test("409 despacho_en_curso si ya hay una corrida activa en la misma instancia", async () => {
     let liberar;
     const bloqueado = new Promise((r) => {
@@ -687,7 +715,7 @@ describe("POST /internal/classroom/dispatch - Autenticación, bandera y lista pe
         return { status: "accepted", providerReference: "re_slow" };
       },
     });
-    seedStudentAndEvent(s.h, { email: PEDRO_EMAIL });
+    seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
 
     const p1 = s.despachar().then((r) => r);
     // Damos un turno de microtasks para que p1 entre al handler
@@ -704,20 +732,20 @@ describe("POST /internal/classroom/dispatch - Autenticación, bandera y lista pe
 
   test("503 si falta la migración 019 y 500 ante error interno sin filtrar detalles ni PII", async () => {
     const s = createTestSetup();
-    seedStudentAndEvent(s.h, { email: PEDRO_EMAIL });
+    seedStudentAndEvent(s.h, { email: PILOTO_EMAIL });
 
     s.h.failNext({ code: "42883", message: "function materialize_classroom_deliveries does not exist PRIVADO" });
     const res503 = await s.despachar();
     assert.equal(res503.status, 503);
     assert.deepEqual(res503.body, { error: "classroom_migracion_requerida" });
 
-    s.h.failNext({ code: "XX000", message: `fallo con ${PEDRO_EMAIL} y ${TITULO_SECRETO}` });
+    s.h.failNext({ code: "XX000", message: `fallo con ${PILOTO_EMAIL} y ${TITULO_SECRETO}` });
     const res500 = await s.despachar();
     assert.equal(res500.status, 500);
     assert.deepEqual(res500.body, { error: "error_interno" });
 
     const todo = JSON.stringify([res503.body, res500.body, s.logs]);
-    assert.doesNotMatch(todo, /PRIVADO|potros\.itson/);
+    assert.doesNotMatch(todo, /PRIVADO|example\.test/);
   });
 });
 
@@ -726,10 +754,10 @@ describe("GET /api/notifications y marcado de lectura con entregas del ledger 01
     return `itn41_google_session=${encrypt({ userId, googleId, sessionId, exp }, SECRET, "google-session")}`;
   }
 
-  test("el aviso despachado a Pedro aparece en GET /api/notifications con categoría tareas y se puede marcar leído", async () => {
+  test("el aviso despachado al piloto aparece en GET /api/notifications con categoría tareas y se puede marcar leído", async () => {
     const s = createTestSetup();
-    const pedro = seedStudentAndEvent(s.h, {
-      email: PEDRO_EMAIL,
+    const piloto = seedStudentAndEvent(s.h, {
+      email: PILOTO_EMAIL,
       courseName: MATERIA_SECRETA,
       taskTitle: TITULO_SECRETO,
       dueAt: "2026-11-21T06:59:00.000Z",
@@ -739,11 +767,11 @@ describe("GET /api/notifications y marcado de lectura con entregas del ledger 01
     assert.equal(disp.status, 200);
     assert.deepEqual(disp.body, { procesados: 1, enviados: 1, fallidos: 0 });
 
-    const res = await request(s.app).get("/api/notifications").set("Cookie", cookie(pedro));
+    const res = await request(s.app).get("/api/notifications").set("Cookie", cookie(piloto));
     assert.equal(res.status, 200);
     assert.equal(res.body.length, 1);
     assert.deepEqual(res.body[0], {
-      id: pedro.eventId,
+      id: piloto.eventId,
       type: "tareas",
       title: "Nueva tarea publicada",
       subject: MATERIA_SECRETA,
@@ -759,12 +787,12 @@ describe("GET /api/notifications y marcado de lectura con entregas del ledger 01
 
     // Marcar como leído
     const readRes = await request(s.app)
-      .post(`/api/notifications/${pedro.eventId}/read`)
-      .set("Cookie", cookie(pedro))
+      .post(`/api/notifications/${piloto.eventId}/read`)
+      .set("Cookie", cookie(piloto))
       .set("Origin", "http://localhost:5173");
     assert.equal(readRes.status, 204);
 
-    const afterRead = await request(s.app).get("/api/notifications").set("Cookie", cookie(pedro));
+    const afterRead = await request(s.app).get("/api/notifications").set("Cookie", cookie(piloto));
     assert.equal(afterRead.body[0].unread, false);
   });
 });
@@ -796,8 +824,8 @@ describe("Validación de CLASSROOM_DISPATCH_ENABLED y CLASSROOM_DISPATCH_ALLOWED
   test("lista permitida rechaza comodín '*' y normaliza correos/ids en minúsculas", () => {
     assert.deepEqual(parseClassroomDispatchAllowedUsers("*"), []);
     assert.deepEqual(
-      parseClassroomDispatchAllowedUsers(" Pedro.Izquierdo252587@potros.itson.edu.mx , * , "),
-      ["pedro.izquierdo252587@potros.itson.edu.mx"],
+      parseClassroomDispatchAllowedUsers(" Piloto.Classroom@Example.Test , * , "),
+      ["piloto.classroom@example.test"],
     );
   });
 });
