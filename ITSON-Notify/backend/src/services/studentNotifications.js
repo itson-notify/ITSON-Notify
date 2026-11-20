@@ -4,11 +4,13 @@
 const { describirCodigo } = require("./itsonGradeCodes");
 const { esGrupoTareaNueva } = require("./notificationService");
 const { formatearFechaHermosillo, ZONA } = require("../utils/fechaHermosillo");
+const { toClassroomDeliveryNotif, CLASSROOM_NOTIF_TYPE } = require("./classroomDeliveryService");
 
-// notifications_log no tiene columna de tipo y hoy solo registra cambios de
-// calificación. Tareas, cupos y trámites llegarán cuando exista un detector que
-// los escriba.
+// notifications_log no tiene columna de tipo y registra cambios de calificación.
+// Los avisos entregados de Classroom provienen de classroom_notification_deliveries
+// (migración 019, ITN-50 / ITN-44) con categoría "tareas".
 const NOTIFICATION_TYPE = "calificaciones";
+const CLASSROOM_TYPE = CLASSROOM_NOTIF_TYPE;
 
 const SIN_MATERIA = "Materia no disponible";
 const SIN_VALOR = "Sin valor";
@@ -75,7 +77,8 @@ function toNotif(row, changesById, subjectNames) {
   };
 }
 
-// Lista las notificaciones del alumno, más recientes primero.
+// Lista las notificaciones del alumno, más recientes primero (calificaciones +
+// tareas de Classroom entregadas en el ledger 019).
 async function listStudentNotifications(userId, repo) {
   const filas = await repo.listNotifications(userId);
   const changeIds = [...new Set(filas.flatMap(changeIdsOf))];
@@ -85,7 +88,19 @@ async function listStudentNotifications(userId, repo) {
 
   const changesById = new Map(changes.map((c) => [c.id, c]));
   const subjectNames = new Map(subjects.map((s) => [s.id, s.name]));
-  return filas.map((row) => toNotif(row, changesById, subjectNames));
+  const gradeNotifs = filas.map((row) => toNotif(row, changesById, subjectNames));
+
+  const classroomDeliveries =
+    typeof repo.listClassroomDeliveredEvents === "function"
+      ? await repo.listClassroomDeliveredEvents(userId)
+      : [];
+  const classroomNotifs = (classroomDeliveries ?? []).map((row) => toClassroomDeliveryNotif(row));
+
+  if (classroomNotifs.length === 0) return gradeNotifs;
+
+  return [...gradeNotifs, ...classroomNotifs]
+    .sort((a, b) => Date.parse(b.time) - Date.parse(a.time) || String(b.id).localeCompare(String(a.id)))
+    .slice(0, 100);
 }
 
-module.exports = { listStudentNotifications, toNotif, NOTIFICATION_TYPE };
+module.exports = { listStudentNotifications, toNotif, toClassroomDeliveryNotif, NOTIFICATION_TYPE, CLASSROOM_TYPE };

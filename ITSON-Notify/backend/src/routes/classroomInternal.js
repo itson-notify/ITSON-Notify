@@ -1,11 +1,97 @@
 const express = require('express');
 const { createCoursesService, CoursesError } = require('../services/classroomCourses');
 const { isMissingAuthorizationStatus } = require('../services/googleAuthorizationSchema');
+const {
+  createClassroomDeliveryRepository,
+  ClassroomLedgerError,
+  MISSING_MIGRATION_CODES,
+} = require('../repositories/classroomDeliveryRepository');
+const {
+  processClassroomDeliveries,
+  buildClassroomTransports,
+  loadClassroomDispatchConfig,
+} = require('../services/classroomDeliveryService');
 
-function classroomInternalRouter({ config, supabase, classroomFetch }) {
+function classroomInternalRouter({
+  config,
+  supabase,
+  classroomFetch,
+  channels,
+  classroomTransports,
+  classroomDeliveryRepo,
+  logger,
+  now,
+}) {
   const router = express.Router();
   const service = createCoursesService({ config, supabase, fetchImpl: classroomFetch });
+  const deliveryRepo = classroomDeliveryRepo ?? createClassroomDeliveryRepository(supabase);
+  let despachando = false;
+
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
+  // ITN-50 / ITN-44 - Despacho de avisos de tareas nuevas sobre el ledger 019
+  // (processClassroomDeliveries). La llave INTERNAL_API_KEY ya se validó en app.js
+  // antes de parsear el body. Apagado por defecto (CLASSROOM_DISPATCH_ENABLED=false
+  // -> 404 sin tocar la base) y restringido a la lista permitida de usuarios.
+  router.post('/dispatch', async (req, res) => {
+    let dispatchCfg;
+    try {
+      dispatchCfg = loadClassroomDispatchConfig(process.env, config);
+    } catch {
+      return res.status(404).json({ error: 'no_encontrado' });
+    }
+    if (dispatchCfg.classroomDispatchEnabled !== true) {
+      return res.status(404).json({ error: 'no_encontrado' });
+    }
+    if (despachando) {
+      return res.status(409).json({ error: 'despacho_en_curso' });
+    }
+    despachando = true;
+    try {
+      const transports = buildClassroomTransports({
+        config,
+        env: process.env,
+        pushRepo: deliveryRepo.pushRepo,
+        channels,
+        transports: classroomTransports,
+      });
+      const r = await processClassroomDeliveries({
+        repo: deliveryRepo,
+        transports,
+        secret: config.googleAuthSecret || config.credentialsEncryptionKey,
+        allowedUsers: dispatchCfg.classroomDispatchAllowedUsers,
+        logger,
+        now,
+      });
+      logger?.info?.('despacho_classroom', {
+        procesados: r.procesados,
+        enviados: r.enviados,
+        fallidos: r.fallidos,
+        omitidos: r.omitidos,
+      });
+      return res.json({
+        procesados: r.procesados,
+        enviados: r.enviados,
+        fallidos: r.fallidos,
+      });
+    } catch (error) {
+      const errCode = error?.pgCode ?? error?.code ?? null;
+      logger?.error?.('despacho_classroom_fallido', {
+        step: error?.step ?? null,
+        error_code: errCode,
+      });
+      if (
+        (error instanceof ClassroomLedgerError && error.status === 503) ||
+        MISSING_MIGRATION_CODES.has(errCode)
+      ) {
+        return res.status(503).json({ error: 'classroom_migracion_requerida' });
+      }
+      return res.status(500).json({ error: 'error_interno' });
+    } finally {
+      despachando = false;
+    }
+  });
+
   router.get('/active', async (req, res) => {
     try {
       const { data, error } = await supabase.from('google_authorizations')

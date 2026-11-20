@@ -41,6 +41,8 @@ function createApp({
   // ITN-55 - Límite de PUT /api/itson-profile (inyectable en pruebas).
   itsonProfileLimiter,
   classroomFetch,
+  classroomTransports,
+  classroomDeliveryRepo,
 }) {
   if (!config?.internalApiKey) throw new Error("createApp requiere config.internalApiKey");
   if (!config?.credentialsEncryptionKey) throw new Error("createApp requiere config.credentialsEncryptionKey");
@@ -88,7 +90,19 @@ function createApp({
 
   // Rutas del worker. La llave se revisa ANTES de parsear el body.
   app.use("/internal", requireApiKey(config.internalApiKey), express.json({ limit: "1mb" }));
-  app.use("/internal/classroom", classroomInternalRouter({ config, supabase, classroomFetch }));
+  app.use(
+    "/internal/classroom",
+    classroomInternalRouter({
+      config,
+      supabase,
+      classroomFetch,
+      channels: activeChannels,
+      classroomTransports,
+      classroomDeliveryRepo,
+      logger,
+      now,
+    }),
+  );
   app.use("/internal/grade-snapshots", gradeSnapshotsRouter({ supabase, logger, now, channels: activeChannels }));
   app.use(
     "/internal/credentials",

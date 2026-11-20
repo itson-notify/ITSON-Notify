@@ -163,13 +163,20 @@ function createClassroomDeliveryRepository(supabase, { pushRepo } = {}) {
   // Lector aditivo para la bandeja de la app (GET /api/notifications): devuelve
   // una entrada por event_id que ya haya sido entregada (state = 'sent') al alumno.
   async function listStudentDeliveredEvents(userId, limit = STUDENT_INBOX_LIMIT) {
-    const { data, error } = await supabase
-      .from("classroom_notification_deliveries")
-      .select("id,user_id,event_id,channel,payload,state,sent_at,read_at,created_at")
-      .eq("user_id", userId)
-      .eq("state", "sent")
-      .order("created_at", { ascending: false })
-      .limit(limit * 2);
+    let queryResult;
+    try {
+      queryResult = await supabase
+        .from("classroom_notification_deliveries")
+        .select("id,user_id,event_id,channel,payload,state,sent_at,read_at,created_at")
+        .eq("user_id", userId)
+        .eq("state", "sent")
+        .order("created_at", { ascending: false })
+        .limit(limit * 2);
+    } catch (err) {
+      if (/Tabla desconocida en el fake/.test(err?.message ?? "")) return [];
+      throw err;
+    }
+    const { data, error } = queryResult;
 
     if (error) {
       // Si la migración 019 aún no está aplicada, la bandeja de calificaciones sigue funcionando.
@@ -190,21 +197,43 @@ function createClassroomDeliveryRepository(supabase, { pushRepo } = {}) {
   }
 
   async function markDeliveryRead(userId, idOrEventId, readAt) {
-    const { data, error } = await supabase
-      .from("classroom_notification_deliveries")
-      .select("id,event_id,read_at")
-      .eq("user_id", userId)
-      .eq("state", "sent")
-      .or(`id.eq.${idOrEventId},event_id.eq.${idOrEventId}`);
-
-    if (error) {
-      if (MISSING_MIGRATION_CODES.has(error.code)) return false;
-      throw mapSqlError("mark_delivery_read_select", error);
+    let byEventRes;
+    try {
+      byEventRes = await supabase
+        .from("classroom_notification_deliveries")
+        .select("id,event_id,read_at")
+        .eq("user_id", userId)
+        .eq("state", "sent")
+        .eq("event_id", idOrEventId);
+    } catch (err) {
+      if (/Tabla desconocida en el fake/.test(err?.message ?? "")) return false;
+      throw err;
     }
-    if (!data || data.length === 0) return false;
 
-    const eventId = data[0].event_id;
-    const pendientes = data.some((r) => r.read_at == null);
+    if (byEventRes.error) {
+      if (MISSING_MIGRATION_CODES.has(byEventRes.error.code)) return false;
+      throw mapSqlError("mark_delivery_read_select", byEventRes.error);
+    }
+
+    let rows = byEventRes.data ?? [];
+    if (rows.length === 0) {
+      const byIdRes = await supabase
+        .from("classroom_notification_deliveries")
+        .select("id,event_id,read_at")
+        .eq("user_id", userId)
+        .eq("state", "sent")
+        .eq("id", idOrEventId);
+      if (byIdRes.error) {
+        if (MISSING_MIGRATION_CODES.has(byIdRes.error.code)) return false;
+        throw mapSqlError("mark_delivery_read_select", byIdRes.error);
+      }
+      rows = byIdRes.data ?? [];
+    }
+
+    if (rows.length === 0) return false;
+
+    const eventId = rows[0].event_id;
+    const pendientes = rows.some((r) => r.read_at == null);
     if (pendientes) {
       unwrap(
         "mark_delivery_read_update",
@@ -220,15 +249,21 @@ function createClassroomDeliveryRepository(supabase, { pushRepo } = {}) {
   }
 
   async function markAllDeliveriesRead(userId, readAt) {
-    const { error } = await supabase
-      .from("classroom_notification_deliveries")
-      .update({ read_at: readAt, updated_at: readAt })
-      .eq("user_id", userId)
-      .eq("state", "sent")
-      .is("read_at", null);
+    let res;
+    try {
+      res = await supabase
+        .from("classroom_notification_deliveries")
+        .update({ read_at: readAt, updated_at: readAt })
+        .eq("user_id", userId)
+        .eq("state", "sent")
+        .is("read_at", null);
+    } catch (err) {
+      if (/Tabla desconocida en el fake/.test(err?.message ?? "")) return;
+      throw err;
+    }
 
-    if (error && !MISSING_MIGRATION_CODES.has(error.code)) {
-      throw mapSqlError("mark_all_deliveries_read", error);
+    if (res?.error && !MISSING_MIGRATION_CODES.has(res.error.code)) {
+      throw mapSqlError("mark_all_deliveries_read", res.error);
     }
   }
 

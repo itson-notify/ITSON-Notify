@@ -8,11 +8,12 @@ const { createLogger } = require("./utils/logger");
 const { buildChannels } = require("./services/notificationChannels");
 const { createNotificationRepository } = require("./repositories/notificationRepository");
 const { createExchangeToken } = require("./services/ivirtualToken");
+const { loadClassroomDispatchConfig } = require("./services/classroomDeliveryService");
 
 function main() {
   let config;
   try {
-    config = loadConfig(process.env);
+    config = Object.assign(loadConfig(process.env), loadClassroomDispatchConfig(process.env));
   } catch (error) {
     // El mensaje solo nombra variables, nunca valores.
     console.error(`No se pudo arrancar el backend. ${error.message}`);

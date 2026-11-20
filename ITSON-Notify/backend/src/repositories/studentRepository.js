@@ -2,6 +2,7 @@
 // filtran por el user_id de la sesión: un id del cliente nunca basta para llegar
 // a una fila de otro alumno.
 const { check } = require("../utils/errors");
+const { createClassroomDeliveryRepository } = require("./classroomDeliveryRepository");
 
 // Una fila de notifications_log por aviso y canal: el canal log siempre existe,
 // así que sus filas dan exactamente una notificación por aviso.
@@ -27,6 +28,8 @@ function trozos(lista, tamano) {
 }
 
 function createStudentRepository(supabase) {
+  const classroomDeliveryRepo = createClassroomDeliveryRepository(supabase);
+
   // Solo columnas con datos para mostrar: nunca ciphertext ni tokens.
   async function getProfile(userId) {
     const user = check(
@@ -221,6 +224,10 @@ function createStudentRepository(supabase) {
     return check("classroom_coursework", res);
   }
 
+  async function listClassroomDeliveredEvents(userId) {
+    return classroomDeliveryRepo.listStudentDeliveredEvents(userId, NOTIFICATIONS_LIMIT);
+  }
+
   // Devuelve false si la notificación no existe o es de otro alumno.
   async function markRead(userId, id, readAt) {
     const filas = check(
@@ -233,7 +240,8 @@ function createStudentRepository(supabase) {
         .eq("channel", NOTIFICATION_CHANNEL)
         .select("id"),
     );
-    return filas.length > 0;
+    if (filas.length > 0) return true;
+    return classroomDeliveryRepo.markDeliveryRead(userId, id, readAt);
   }
 
   async function markAllRead(userId, readAt) {
@@ -246,11 +254,13 @@ function createStudentRepository(supabase) {
         .eq("channel", NOTIFICATION_CHANNEL)
         .is("read_at", null),
     );
+    await classroomDeliveryRepo.markAllDeliveriesRead(userId, readAt);
   }
 
   return {
     getProfile,
     listNotifications,
+    listClassroomDeliveredEvents,
     getGradeChanges,
     getSubjects,
     getSubject,

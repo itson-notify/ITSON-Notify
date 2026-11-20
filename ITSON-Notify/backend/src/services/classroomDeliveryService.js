@@ -19,6 +19,21 @@ const crypto = require("crypto");
 const { motivoCorreoNoEnviable } = require("./notificationChannels");
 const { NEW_TASK_SUBJECT } = require("./notificationService");
 const { formatearFechaHermosillo, fraseEntrega, ZONA } = require("../utils/fechaHermosillo");
+const { CAMPOS_PERMITIDOS } = require("../utils/logger");
+
+// Registra los campos de conteo e ids seguros del despacho de Classroom en la
+// lista blanca del logger sin modificar backend/src/utils/logger.js (evita
+// colisionar con PR #41).
+for (const campo of [
+  "classroom_task_event_id",
+  "delivery_id",
+  "procesados",
+  "enviados",
+  "fallidos",
+  "omitidos",
+]) {
+  CAMPOS_PERMITIDOS?.add?.(campo);
+}
 
 const RESEND_URL = "https://api.resend.com/emails";
 const RESEND_TIMEOUT_MS = 10_000;
@@ -33,6 +48,78 @@ const BACKOFF_MAX_SECONDS = 1800;
 
 const CLASSROOM_NOTIF_TYPE = "tareas";
 const SIN_MATERIA = "Materia no disponible";
+
+// Lista cerrada de banderas booleanas (igual que GOOGLE_OAUTH_ENABLED).
+const ALLOWED_DISPATCH_FLAG_VALUES = Object.freeze(["true", "false", "1", "0"]);
+
+// Usuario piloto permitido por defecto (Pedro) para que no salga ningún aviso
+// a otros estudiantes mientras se valida el despacho de Classroom.
+const DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS = Object.freeze([
+  "pedro.izquierdo252587@potros.itson.edu.mx",
+  "pedro.izquierdo3005@gmail.com",
+]);
+
+function parseClassroomDispatchFlag(raw) {
+  if (typeof raw === "boolean") return { valid: true, enabled: raw };
+  const flag = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (flag === "") return { valid: true, enabled: false };
+  if (!ALLOWED_DISPATCH_FLAG_VALUES.includes(flag)) return { valid: false, enabled: false };
+  return { valid: true, enabled: flag === "true" || flag === "1" };
+}
+
+function parseClassroomDispatchAllowedUsers(raw) {
+  if (raw === undefined || raw === null) {
+    return [...DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS];
+  }
+  const items = Array.isArray(raw) || raw instanceof Set
+    ? [...raw]
+    : typeof raw === "string"
+      ? raw.split(",")
+      : [];
+  const normalized = [];
+  for (const item of items) {
+    if (typeof item !== "string") continue;
+    const token = item.trim();
+    if (!token || token === "*") continue;
+    normalized.push(token.toLowerCase());
+  }
+  return Object.freeze([...new Set(normalized)]);
+}
+
+function isClassroomUserAllowed(user, allowedUsers) {
+  const list = Array.isArray(allowedUsers) ? allowedUsers : parseClassroomDispatchAllowedUsers(allowedUsers);
+  if (list.length === 0) return false;
+  const set = new Set(list.map((u) => String(u).trim().toLowerCase()).filter((u) => u && u !== "*"));
+  if (set.size === 0) return false;
+
+  const candidates = [user?.userId, user?.user_id, user?.googleId, user?.google_id, user?.email];
+  return candidates.some((val) => typeof val === "string" && val.trim() !== "" && set.has(val.trim().toLowerCase()));
+}
+
+function loadClassroomDispatchConfig(env = process.env, config = {}) {
+  const flagResult =
+    typeof config?.classroomDispatchEnabled === "boolean"
+      ? { valid: true, enabled: config.classroomDispatchEnabled }
+      : parseClassroomDispatchFlag(env?.CLASSROOM_DISPATCH_ENABLED);
+
+  if (!flagResult.valid) {
+    throw new Error(
+      "Configuración inválida o incompleta en backend/.env: CLASSROOM_DISPATCH_ENABLED (booleano inválido)",
+    );
+  }
+
+  const rawAllowed =
+    config?.classroomDispatchAllowedUsers !== undefined
+      ? config.classroomDispatchAllowedUsers
+      : env?.CLASSROOM_DISPATCH_ALLOWED_USERS !== undefined && String(env.CLASSROOM_DISPATCH_ALLOWED_USERS).trim() !== ""
+        ? env.CLASSROOM_DISPATCH_ALLOWED_USERS
+        : undefined;
+
+  return {
+    classroomDispatchEnabled: flagResult.enabled,
+    classroomDispatchAllowedUsers: parseClassroomDispatchAllowedUsers(rawAllowed),
+  };
+}
 
 const ERROR_CODE_WHITELIST = new Set([
   "invalid_recipient_email",
@@ -49,6 +136,7 @@ const ERROR_CODE_WHITELIST = new Set([
   "push_ambiguous_network",
   "push_purge_failed",
   "channel_unconfigured",
+  "channel_send_failed",
   "untyped_transport_error",
   "transport_invalid_outcome",
   "send_deadline_expired",
@@ -62,6 +150,7 @@ const ERROR_CODE_WHITELIST = new Set([
   "event_no_longer_valid",
   "event_not_eligible",
   "event_deleted",
+  "user_not_allowed",
 ]);
 
 function sanitizeErrorCode(code, fallback = "untyped_transport_error") {
@@ -398,6 +487,94 @@ async function invokeTransportSafely(transport, message, session, options) {
   }
 }
 
+// Envuelve un canal tipo { name, send(message, meta) } en el contrato tipado
+// de transporte del ledger cuando se inyectan canales de prueba en createApp.
+function wrapLegacyChannelAsTransport(channel) {
+  return {
+    name: channel.name === "web_push" ? "web_push" : "email",
+    async send(message, permission) {
+      try {
+        await channel.send(
+          { subject: message.subject, text: message.text },
+          {
+            userId: permission.user_id,
+            classroomTaskEventId: permission.event_id,
+            deliveryId: permission.delivery_id,
+            idempotencyKey: permission.idempotency_key,
+          },
+        );
+        return {
+          status: "accepted",
+          providerReference: permission.idempotency_key ?? null,
+        };
+      } catch (err) {
+        return {
+          status: "not_accepted",
+          permanent: Boolean(err?.permanent),
+          errorCode: "channel_send_failed",
+        };
+      }
+    },
+  };
+}
+
+// Arma los transportes tipados { email, web_push } a partir de transports
+// inyectados, configuración de entorno (Resend / VAPID) o canales inyectados.
+function buildClassroomTransports({
+  config = {},
+  env = process.env,
+  pushRepo,
+  channels,
+  transports,
+  fetchImpl,
+  webpushImpl,
+} = {}) {
+  if (transports && (transports.email || transports.web_push)) {
+    return transports;
+  }
+
+  const built = {};
+  const resendApiKey = config?.resendApiKey || env?.RESEND_API_KEY;
+  if (resendApiKey) {
+    built.email = createClassroomEmailTransport({
+      apiKey: resendApiKey,
+      from: config?.notifyEmailFrom || env?.NOTIFY_EMAIL_FROM || "ITSON Notify <onboarding@resend.dev>",
+      overrideTo: (config?.notifyEmailTo || env?.NOTIFY_EMAIL_TO || "").trim() || undefined,
+      fetchImpl,
+    });
+  }
+
+  const vapidPublicKey = config?.vapidPublicKey || env?.VAPID_PUBLIC_KEY;
+  const vapidPrivateKey = config?.vapidPrivateKey || env?.VAPID_PRIVATE_KEY;
+  const pushEnabled = (config?.pushEnabled ?? true) && Boolean(vapidPublicKey && vapidPrivateKey && pushRepo);
+  if (pushEnabled) {
+    try {
+      built.web_push = createClassroomWebPushTransport({
+        vapidPublicKey,
+        vapidPrivateKey,
+        vapidSubject: config?.vapidSubject || env?.VAPID_SUBJECT || "mailto:notificaciones@itson.edu.mx",
+        pushRepo,
+        webpushImpl,
+      });
+    } catch {
+      // Si las llaves VAPID son inválidas, se omite web_push sin tumbar el proceso.
+    }
+  }
+
+  if (Array.isArray(channels)) {
+    const emailCh = channels.find((c) => c?.name === "email" && typeof c.send === "function");
+    const pushCh = channels.find((c) => c?.name === "web_push" && typeof c.send === "function");
+    if (!built.email && emailCh) built.email = wrapLegacyChannelAsTransport(emailCh);
+    if (!built.web_push && pushCh) built.web_push = wrapLegacyChannelAsTransport(pushCh);
+    if (!built.email && !built.web_push) {
+      const logCh = channels.find((c) => c?.name === "log" && typeof c.send === "function");
+      if (logCh) built.email = wrapLegacyChannelAsTransport(logCh);
+    }
+  }
+
+  return built;
+}
+
 // Resuelve el manifiesto de canales requeridos para un evento al materializar.
 async function resolveEventManifest({ userId, transports, repo }) {
   const channels = [];
@@ -416,11 +593,14 @@ async function resolveEventManifest({ userId, transports, repo }) {
 
 // Orquesta materialización de eventos nuevos + procesamiento de la cola del ledger.
 // Incluye también los contadores { procesados, enviados, fallidos, omitidos }
-// compatibles con el contrato de despacho del worker.
+// compatibles con el contrato de despacho del worker, y aplica la lista
+// permitida de usuarios (allowedUsers) tanto antes de materializar como antes de
+// iniciar cualquier envío en beginSend.
 async function processClassroomDeliveries({
   repo,
   transports,
   secret,
+  allowedUsers,
   logger,
   now = () => Date.now(),
   randomFn = Math.random,
@@ -440,6 +620,9 @@ async function processClassroomDeliveries({
     throw new Error("processClassroomDeliveries requiere secret para recipient_fingerprint");
   }
 
+  const enforceAllowlist = allowedUsers !== undefined && allowedUsers !== null;
+  const normalizedAllowlist = enforceAllowlist ? parseClassroomDispatchAllowedUsers(allowedUsers) : null;
+
   const counters = {
     materialized: 0,
     existing: 0,
@@ -450,6 +633,7 @@ async function processClassroomDeliveries({
     dead: 0,
     blocked: 0,
     cancelled: 0,
+    skippedAllowlist: 0,
     eventsDelivered: 0,
     procesados: 0,
     enviados: 0,
@@ -461,6 +645,23 @@ async function processClassroomDeliveries({
   const events = await repo.listUndeliveredEvents(maxEvents);
   counters.procesados = events.length;
   for (const event of events) {
+    if (enforceAllowlist) {
+      const auth = await repo.getAuthorizationRecipient(event.user_id);
+      const allowed = isClassroomUserAllowed(
+        {
+          userId: event.user_id,
+          googleId: auth?.google_id,
+          email: auth?.email,
+        },
+        normalizedAllowlist,
+      );
+      if (!allowed) {
+        counters.skippedAllowlist += 1;
+        counters.omitidos += 1;
+        continue;
+      }
+    }
+
     const channels = await resolveEventManifest({
       userId: event.user_id,
       transports,
@@ -488,6 +689,31 @@ async function processClassroomDeliveries({
     if (!claimed) break;
     counters.claimed += 1;
 
+    const auth = await repo.getAuthorizationRecipient(claimed.user_id);
+    if (enforceAllowlist) {
+      const allowed = isClassroomUserAllowed(
+        {
+          userId: claimed.user_id,
+          googleId: auth?.google_id,
+          email: auth?.email,
+        },
+        normalizedAllowlist,
+      );
+      if (!allowed) {
+        await repo.ackDelivery({
+          deliveryId: claimed.id,
+          claimToken: claimed.claim_token,
+          outcome: "cancelled",
+          errorCode: "user_not_allowed",
+          maxAttempts,
+        });
+        counters.cancelled += 1;
+        counters.skippedAllowlist += 1;
+        counters.omitidos += 1;
+        continue;
+      }
+    }
+
     const transport = transports[claimed.channel];
     if (!transport) {
       await repo.ackDelivery({
@@ -501,7 +727,6 @@ async function processClassroomDeliveries({
       continue;
     }
 
-    const auth = await repo.getAuthorizationRecipient(claimed.user_id);
     const fingerprint = computeRecipientFingerprint({
       channel: claimed.channel,
       email: auth?.email,
@@ -577,12 +802,11 @@ async function processClassroomDeliveries({
         counters.eventsDelivered += 1;
         counters.enviados += 1;
       }
-      logger?.info?.("classroom_entrega_confirmada", {
+      logger?.info?.("notificacion_enviada", {
+        classroom_task_event_id: claimed.event_id,
         delivery_id: claimed.id,
-        event_id: claimed.event_id,
         channel: claimed.channel,
         attempts: permission.attempts,
-        event_delivered: Boolean(ack.event_delivered),
       });
     } else {
       if (ack.state === "retry_wait") {
@@ -600,11 +824,10 @@ async function processClassroomDeliveries({
         counters.cancelled += 1;
       }
 
-      logger?.warn?.("classroom_entrega_no_completada", {
+      logger?.warn?.("notificacion_fallida", {
+        classroom_task_event_id: claimed.event_id,
         delivery_id: claimed.id,
-        event_id: claimed.event_id,
         channel: claimed.channel,
-        state: ack.state,
         attempts: permission.attempts,
         error_code: errorCode,
       });
@@ -618,6 +841,12 @@ module.exports = {
   processClassroomDeliveries,
   createClassroomEmailTransport,
   createClassroomWebPushTransport,
+  buildClassroomTransports,
+  parseClassroomDispatchFlag,
+  parseClassroomDispatchAllowedUsers,
+  isClassroomUserAllowed,
+  loadClassroomDispatchConfig,
+  DEFAULT_CLASSROOM_DISPATCH_ALLOWED_USERS,
   computeRecipientFingerprint,
   computeBackoffSeconds,
   formatClassroomTaskMessage,
