@@ -186,6 +186,21 @@ begin
   );
   perform public.test_assert((v_new_begin->>'allowed')::boolean = true, 'new claim_token allowed in beginSend');
   perform public.test_assert((v_new_begin->>'attempts')::int = 1, 'beginSend increments attempts to 1');
+  perform public.test_assert(
+    v_new_begin ? 'created_at'
+    and (v_new_begin->>'created_at')::timestamptz = (
+      select created_at from public.classroom_notification_deliveries where id = (v_claim1_reclaimed->>'id')::uuid
+    ),
+    'beginSend returns persisted delivery created_at for Resend idempotency TTL'
+  );
+  perform public.test_assert(
+    (select array_agg(k order by k) from jsonb_object_keys(v_new_begin) as k) = array[
+      'allowed', 'attempts', 'authorization_google_id', 'channel', 'claim_token',
+      'created_at', 'delivery_id', 'event_id', 'idempotency_key', 'payload',
+      'recipient_email', 'recipient_fingerprint', 'send_deadline', 'user_id'
+    ],
+    'beginSend JSON contract matches exact expected keys'
+  );
 
   -- ACK email as 'sent': delivered_at on event must still be NULL because web_push is not sent yet
   v_ack_email := public.ack_classroom_delivery(

@@ -244,7 +244,8 @@ begin
   select jsonb_agg(jsonb_build_object(
            'id', d.id, 'event_id', d.event_id, 'channel', d.channel,
            'state', d.state, 'required_channels', d.required_channels,
-           'policy_version', d.policy_version, 'attempts', d.attempts
+           'policy_version', d.policy_version, 'attempts', d.attempts,
+           'last_error_code', d.last_error_code
          ) order by d.channel)
     into v_existing
     from public.classroom_notification_deliveries d
@@ -314,7 +315,8 @@ begin
   select jsonb_agg(jsonb_build_object(
            'id', d.id, 'event_id', d.event_id, 'channel', d.channel,
            'state', d.state, 'required_channels', d.required_channels,
-           'policy_version', d.policy_version, 'attempts', d.attempts
+           'policy_version', d.policy_version, 'attempts', d.attempts,
+           'last_error_code', d.last_error_code
          ) order by d.channel)
     into v_existing
     from public.classroom_notification_deliveries d
@@ -707,6 +709,7 @@ begin
     'recipient_email', v_auth.email,
     'authorization_google_id', v_auth.google_id,
     'payload', v_payload,
+    'created_at', v_d.created_at,
     'send_deadline', v_now + v_deadline
   );
 end;
