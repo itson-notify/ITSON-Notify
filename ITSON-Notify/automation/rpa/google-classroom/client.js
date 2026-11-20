@@ -9,7 +9,8 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
   async function call(path, body) {
     try {
       const response = await fetchImpl(new URL('/internal/classroom/' + path, base).href, {
-        method: body ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(body?.sync ? syncTimeoutMs : timeoutMs),
+        method: body ? 'POST' : 'GET', redirect: 'error',
+        signal: AbortSignal.timeout(body?.sync || path === 'dispatch' ? syncTimeoutMs : timeoutMs),
         headers: { 'x-api-key': apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
@@ -24,9 +25,12 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
         return failure;
       }
       const data = await response.json();
-      const valid = body?.sync === true
-        ? data?.sync && ['courses', 'coursework', 'newTasks'].every(key => Number.isSafeInteger(data.sync[key]) && data.sync[key] >= 0)
-        : Array.isArray(data?.[path === 'active' ? 'students' : 'courses']);
+      const counts = (obj, keys) => obj && keys.every(key => Number.isSafeInteger(obj[key]) && obj[key] >= 0);
+      const valid = path === 'dispatch'
+        ? counts(data, ['procesados', 'enviados', 'fallidos'])
+        : body?.sync === true
+          ? counts(data?.sync, ['courses', 'coursework', 'newTasks'])
+          : Array.isArray(data?.[path === 'active' ? 'students' : 'courses']);
       if (!valid) {
         return { ok: false, status: 502, needsRelink: false };
       }
@@ -39,6 +43,13 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
     listActive: () => call('active'),
     read: ({ userId, googleId }) => call('read', { userId, googleId }),
     sync: ({ userId, googleId }) => call('read', { userId, googleId, sync: true }),
+    // ITN-50: only counters come back; any other body data is discarded.
+    dispatch: async () => {
+      const result = await call('dispatch', {});
+      if (!result.ok) return result;
+      const { procesados, enviados, fallidos } = result.data;
+      return { ok: true, data: { procesados, enviados, fallidos } };
+    },
   };
 }
 module.exports = { createClassroomWorkerClient };

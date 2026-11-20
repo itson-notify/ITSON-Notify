@@ -1,7 +1,7 @@
 // Supabase simulado en memoria para las pruebas de ITN-27. Imita solo lo que
 // usa el backend del query builder de supabase-js (select, upsert, update,
 // delete, eq/neq/lt/in/is null/not is null, order, limit, range, single,
-// maybeSingle) y las reglas de las migraciones 001 a 004 y 006 a 010 que importan
+// maybeSingle) y las reglas de las migraciones 001 a 004, 006 a 010 y 016 que importan
 // aquí:
 //   - upsert exige que onConflict sea el id o un unique real de la tabla
 //     (Postgres responde 42P10 si no), así las pruebas detectan llaves mal
@@ -39,8 +39,11 @@ const TABLES = {
     notNull: ["user_id", "field_name", "change_type"],
   },
   // 002: unique (grade_change_id, channel); status y attempts con default. 010: read_at.
+  // Ese unique es simple (nulls distinct): filas con grade_change_id null, como las
+  // de Classroom (ITN-50), nunca chocan entre sí.
   notifications_log: {
     uniques: [["grade_change_id", "channel"]],
+    nullsDistinct: true,
     notNull: ["user_id", "channel", "status", "attempts"],
     defaults: { status: "pending", attempts: 0, error: null, sent_at: null, payload: null, read_at: null },
   },
@@ -54,6 +57,12 @@ const TABLES = {
     uniques: [["course_id", "external_coursework_id"]],
     notNull: ["user_id", "course_id", "external_coursework_id", "title"],
     defaultNow: ["first_seen_at", "last_seen_at", "updated_at"],
+  },
+  // 016 (ITN-43): outbox de tareas nuevas; un evento por tarea.
+  classroom_task_events: {
+    uniques: [["coursework_id"]],
+    notNull: ["user_id", "coursework_id"],
+    defaults: { event_type: "classroom.task.created", delivered_at: null },
   },
   // 007: checks por columna y el que amarra kind con portal.
   student_credentials: {
@@ -332,7 +341,9 @@ class Query {
       }
       vistas.add(key);
 
-      const existente = staged.find((r) => keyOf(r, conflict) === key);
+      // nulls distinct: una llave con NULL nunca coincide (salvo la llave primaria).
+      const conNulo = (fila, cols) => def.nullsDistinct && cols.some((c) => norm(fila[c]) === null);
+      const existente = conNulo(row, conflict) ? undefined : staged.find((r) => keyOf(r, conflict) === key);
       if (existente) {
         if (this.op === 'insert') return pgError('23505', 'duplicado');
         if (this.options.ignoreDuplicates) continue;
@@ -351,8 +362,10 @@ class Query {
       if (this.table === "grade_snapshots" && !nueva.captured_at) nueva.captured_at = new Date().toISOString();
       if (nueva.captured_at) nueva.captured_at = new Date(nueva.captured_at).toISOString();
       for (const u of def.uniques) {
+        if (conNulo(nueva, u)) continue;
         if (staged.some((r) => keyOf(r, u) === keyOf(nueva, u))) return pgError("23505", "duplicado");
       }
+      if (staged.some((r) => r.id === nueva.id)) return pgError("23505", "duplicado");
       staged.push(nueva);
       devueltas.push(nueva);
     }

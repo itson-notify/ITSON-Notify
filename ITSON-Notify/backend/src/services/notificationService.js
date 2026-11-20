@@ -385,6 +385,9 @@ module.exports = {
   buildItsonApiMessage,
   esGrupoTareaNueva,
   groupChanges,
+  // ITN-50 - Reutilizados por el despacho de tareas de Classroom.
+  entregar,
+  textoTareaNueva,
   REPO_METHODS,
   GROUPED_REPO_METHODS,
   RETRY_REPO_METHODS,

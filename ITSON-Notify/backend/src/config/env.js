@@ -165,6 +165,15 @@ function loadGoogleOAuthConfig(valor) {
   };
 }
 
+// ITN-50 - Bandera booleana con la misma lista cerrada que GOOGLE_OAUTH_ENABLED.
+// Vacía o ausente = false. Cualquier otro valor es inválido (sin repetir el valor).
+function parseBooleanFlag(raw) {
+  const flag = raw.toLowerCase();
+  if (flag === "") return { valid: true, value: false };
+  if (!ALLOWED_GOOGLE_OAUTH_ENABLED_VALUES.includes(flag)) return { valid: false, value: false };
+  return { valid: true, value: flag === "true" || flag === "1" };
+}
+
 function loadConfig(env = process.env) {
   const valor = (name) => (typeof env[name] === "string" ? env[name].trim() : "");
 
@@ -228,6 +237,12 @@ function loadConfig(env = process.env) {
 
   invalidas.push(...oauthResult.invalidas);
 
+  // ITN-50 - Despacho de avisos de tareas de Classroom. Apagado por defecto.
+  const classroomDispatch = parseBooleanFlag(valor("CLASSROOM_DISPATCH_ENABLED"));
+  if (!classroomDispatch.valid) {
+    invalidas.push("CLASSROOM_DISPATCH_ENABLED (booleano inválido)");
+  }
+
   const frontendUrl = valor("FRONTEND_URL") || "http://localhost:5173";
   if (!isValidRedirectUri(frontendUrl) || new URL(frontendUrl).search) {
     invalidas.push("FRONTEND_URL (URL https o loopback local, sin query ni fragmentos)");
@@ -260,6 +275,7 @@ function loadConfig(env = process.env) {
     supabaseUrl: valor("SUPABASE_URL"),
     supabaseServiceRoleKey: valor("SUPABASE_SERVICE_ROLE_KEY"),
     googleOAuth: oauthResult.config,
+    classroomDispatchEnabled: classroomDispatch.value,
     vapidPublicKey,
     vapidSubject,
     pushEnabled: vapid.enabled,
@@ -287,6 +303,7 @@ function loadConfig(env = process.env) {
 
 module.exports = {
   loadConfig,
+  parseBooleanFlag,
   REQUERIDAS,
   MIN_API_KEY_LENGTH,
   CREDENTIALS_KEY_BYTES,

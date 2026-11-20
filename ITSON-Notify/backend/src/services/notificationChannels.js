@@ -13,7 +13,12 @@ const RESEND_TIMEOUT_MS = 10_000;
 function logChannel(logger = console) {
   return {
     name: "log",
-    async send(message, { gradeChangeId, gradeChangeIds }) {
+    async send(message, { gradeChangeId, gradeChangeIds, classroomTaskEventId }) {
+      // ITN-50 - Avisos de tareas de Classroom: solo el id del evento del outbox.
+      if (classroomTaskEventId) {
+        logger.info("notificacion_enviada", { classroom_task_event_id: classroomTaskEventId });
+        return;
+      }
       logger.info("notificacion_enviada", {
         grade_change_id: gradeChangeId,
         grade_change_ids: gradeChangeIds ?? [gradeChangeId],
@@ -104,7 +109,7 @@ function webPushChannel({
 
   return {
     name: "web_push",
-    async send(message, { userId, gradeChangeId } = {}) {
+    async send(message, { userId, gradeChangeId, classroomTaskEventId } = {}) {
       if (!userId) throw new Error("webPushChannel requiere userId");
       // ITN-54: antes de elegir destinatarios, purga el Push de las sesiones que el
       // logout marcó como revocadas. Falla cerrado: si la purga lanza, no se envía
@@ -118,7 +123,13 @@ function webPushChannel({
       const payload = JSON.stringify({
         title: message.subject,
         body: message.text,
-        tag: gradeChangeId ? `itson-change-${gradeChangeId}` : "itson-notify",
+        // ITN-50 - Cada tarea de Classroom con su propia etiqueta, para que un
+        // aviso no reemplace al anterior en el dispositivo.
+        tag: gradeChangeId
+          ? `itson-change-${gradeChangeId}`
+          : classroomTaskEventId
+            ? `itson-classroom-${classroomTaskEventId}`
+            : "itson-notify",
         url: "/notifications",
       });
 

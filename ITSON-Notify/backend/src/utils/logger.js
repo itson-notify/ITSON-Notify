@@ -37,6 +37,12 @@ const CAMPOS_PERMITIDOS = new Set([
   // ITN-53/54: etiqueta fija del borrado Push que falló ("session" o "endpoint"),
   // nunca el endpoint.
   "target",
+  // ITN-50: despacho de tareas de Classroom, solo el id del evento y conteos.
+  "classroom_task_event_id",
+  "procesados",
+  "enviados",
+  "fallidos",
+  "omitidos",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.

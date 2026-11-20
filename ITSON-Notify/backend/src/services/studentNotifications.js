@@ -5,9 +5,10 @@ const { describirCodigo } = require("./itsonGradeCodes");
 const { esGrupoTareaNueva } = require("./notificationService");
 const { formatearFechaHermosillo, ZONA } = require("../utils/fechaHermosillo");
 
-// notifications_log no tiene columna de tipo y hoy solo registra cambios de
-// calificación. Tareas, cupos y trámites llegarán cuando exista un detector que
-// los escriba.
+// notifications_log no tiene columna de tipo. Los avisos de iVirtual e itson_api
+// son "calificaciones" (incluidas las tareas nuevas de iVirtual, como hasta hoy);
+// los de Classroom (payload.source = "classroom", ITN-50) son "tareas". Cupos y
+// trámites llegarán cuando exista un detector que los escriba.
 const NOTIFICATION_TYPE = "calificaciones";
 
 const SIN_MATERIA = "Materia no disponible";
@@ -57,7 +58,36 @@ function rowsOf(subjectName, changes, source, payload = null) {
   return rows;
 }
 
+// ITN-50 - Avisos de tareas nuevas de Classroom (classroomDispatch). No tienen
+// grade_changes: todo lo que se muestra viene del payload que guardó el despacho.
+const CLASSROOM = "classroom";
+const CLASSROOM_TYPE = "tareas";
+const texto = (v) => (typeof v === "string" && v.trim() !== "" ? v : undefined);
+
+function toClassroomNotif(row) {
+  const p = row.payload;
+  const materia = texto(p.course_name);
+  const rows = [];
+  if (materia) rows.push({ label: "Materia", value: materia });
+  if (texto(p.task_title)) rows.push({ label: "Tarea", value: p.task_title });
+  if ("due_at" in p) {
+    const fecha = formatearFechaHermosillo(p.due_at);
+    rows.push({ label: "Entrega", value: fecha ? `${fecha} (${ZONA})` : "Sin fecha de entrega" });
+  }
+  return {
+    id: row.id,
+    type: CLASSROOM_TYPE,
+    title: "Nueva tarea publicada",
+    subject: materia ?? SIN_MATERIA,
+    time: new Date(row.created_at).toISOString(),
+    unread: row.read_at == null,
+    body: texto(p.text) ?? "Hay una tarea nueva en Google Classroom.",
+    rows,
+  };
+}
+
 function toNotif(row, changesById, subjectNames) {
+  if (row.payload?.source === CLASSROOM) return toClassroomNotif(row);
   const changes = changeIdsOf(row).map((id) => changesById.get(id)).filter(Boolean);
   const subjectId = changes.find((c) => c.subject_id)?.subject_id;
   const subjectName = subjectId ? subjectNames.get(subjectId) : undefined;
@@ -88,4 +118,4 @@ async function listStudentNotifications(userId, repo) {
   return filas.map((row) => toNotif(row, changesById, subjectNames));
 }
 
-module.exports = { listStudentNotifications, toNotif, NOTIFICATION_TYPE };
+module.exports = { listStudentNotifications, toNotif, NOTIFICATION_TYPE, CLASSROOM_TYPE };
