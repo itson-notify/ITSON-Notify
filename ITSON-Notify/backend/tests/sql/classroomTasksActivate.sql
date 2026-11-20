@@ -1,17 +1,21 @@
 -- ITN-43c (018): activate_classroom_tasks. Solo para un clúster desechable; datos sintéticos.
 -- Requiere classroomSync.sql y classroomTasksDisable.sql (test_assert, test_snapshot,
 -- test_seed_tasks, test_user_state, alumnos 1 y 2).
-create function public.test_courses_scope() returns text language sql as $$
+-- Se ejecuta UNA VEZ POR NOMBRE del permiso de tareas: el script sustituye __WORK_SCOPE__ por el
+-- nombre que "devuelve Google" (coursework.me.readonly o el alias empírico
+-- student-submissions.me.readonly) y __OTHER_WORK_SCOPE__ por el otro. Cada pasada es otra sesión
+-- (tablas temporales nuevas); las funciones de apoyo usan create or replace.
+create or replace function public.test_courses_scope() returns text language sql as $$
   select 'openid https://www.googleapis.com/auth/classroom.courses.readonly email'; $$;
-create function public.test_granted() returns text language sql as $$
-  select 'openid https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.courses.readonly'; $$;
+create or replace function public.test_granted() returns text language sql as $$
+  select 'openid __WORK_SCOPE__ https://www.googleapis.com/auth/classroom.courses.readonly'; $$;
 -- Deja al alumno con tareas sembradas y baseline, pero el scope solo de cursos (tareas inactivas).
-create function public.test_seed_inactive(u uuid, g text) returns void language plpgsql as $$
+create or replace function public.test_seed_inactive(u uuid, g text) returns void language plpgsql as $$
 begin
   perform public.test_seed_tasks(u, g);
   update public.google_authorizations set scope = public.test_courses_scope(), refresh_token = 'sealed-old' where user_id = u;
 end; $$;
-create function public.test_try_activate(u uuid, g text, granted text, refresh text default null) returns text
+create or replace function public.test_try_activate(u uuid, g text, granted text, refresh text default null) returns text
 language plpgsql as $$
 begin
   return 'returned:' || public.activate_classroom_tasks(u, g, granted, refresh)::text;
@@ -30,7 +34,13 @@ insert into activate_checks select 'i: happy path result',
   test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', test_granted(), 'sealed-new')
   = 'returned:{"courses": 1, "activated": true}';
 reset role;
-insert into activate_checks select 'i: scope union ordered', scope = 'openid https://www.googleapis.com/auth/classroom.courses.readonly email https://www.googleapis.com/auth/classroom.coursework.me.readonly'
+insert into activate_checks select 'i: scope union ordered', scope = 'openid https://www.googleapis.com/auth/classroom.courses.readonly email __WORK_SCOPE__'
+  from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
+-- El scope guardado nunca contiene un scope que Google no devolvió: todo viene del grant previo o
+-- de lo concedido, y el otro nombre del permiso de tareas NO aparece (no se traduce ni se añade).
+insert into activate_checks select 'i: stored scope only from stored ∪ granted',
+  string_to_array(scope, ' ') <@ (string_to_array(test_courses_scope(), ' ') || string_to_array(test_granted(), ' '))
+  and not ('__OTHER_WORK_SCOPE__' = any(string_to_array(scope, ' ')))
   from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
 insert into activate_checks select 'i: refresh token replaced, status active', refresh_token = 'sealed-new' and status = 'active'
   from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
@@ -45,7 +55,7 @@ reset role;
 create temporary table a_u1 as select test_user_state('00000000-0000-4000-8000-000000000001') s;
 set role service_role;
 insert into activate_checks select 'i: already active result',
-  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', 'openid https://www.googleapis.com/auth/classroom.coursework.me.readonly')
+  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', 'openid __WORK_SCOPE__')
   = 'returned:{"courses": 0, "activated": false}';
 reset role;
 insert into activate_checks select 'i: already active keeps baselines/scope/token',
@@ -86,8 +96,13 @@ insert into activate_checks select 'ii: granted without tasks scope',
   test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', 'openid https://www.googleapis.com/auth/classroom.courses.readonly')
   = 'rejected:22023:classroom_tasks_scope_not_granted';
 insert into activate_checks select 'ii: new refresh token without courses scope',
-  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', 'openid https://www.googleapis.com/auth/classroom.coursework.me.readonly', 'sealed-new')
+  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', 'openid __WORK_SCOPE__', 'sealed-new')
   = 'rejected:22023:classroom_courses_scope_not_granted';
+-- Un scope de tareas que NO es ninguno de los dos nombres (escritura o más amplio) no activa.
+insert into activate_checks select 'ii: other classroom scopes are not task permission',
+  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1',
+    'https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.me https://www.googleapis.com/auth/classroom.coursework.students.readonly')
+  = 'rejected:22023:classroom_tasks_scope_not_granted';
 reset role;
 insert into activate_checks select 'ii: rejected calls changed nothing',
   (x.s - 'authUpdatedAt') = (b.s - 'authUpdatedAt')
@@ -96,7 +111,7 @@ insert into activate_checks select 'ii: rejected calls changed nothing',
 
 -- (iii) Fallo a mitad: un trigger revienta en el UPDATE del grant, DESPUÉS de limpiar la
 -- baseline. Todo vuelve atrás: baseline, scope y refresh token intactos.
-create function public.test_fail_grant_update() returns trigger language plpgsql as $$
+create or replace function public.test_fail_grant_update() returns trigger language plpgsql as $$
 begin
   if current_setting('test.fail_grant', true) = 'on' then raise exception 'forced_mid_activation_failure'; end if;
   return new;
@@ -158,6 +173,48 @@ grant update on public.classroom_courses to service_role;
 insert into activate_checks select 'v: privilege failure rolled back',
   x.s = b.s from (select test_user_state('00000000-0000-4000-8000-000000000001') s) x, a_iii b;
 
-select 'ACTIVATE | ' || label || ' | ' || case when ok then 'PASS' else 'FAIL' end from activate_checks;
-select test_assert((select bool_and(ok) and count(*) = 27 from activate_checks), 'activate checks');
-select 'ACTIVATE_CHECKS_OK';
+-- (vi) Ya activas con el OTRO nombre: activar con este nombre no limpia la baseline (cualquiera
+-- de los dos cuenta como activo) y une ambos, porque ambos los devolvió Google en algún momento.
+select test_seed_inactive('00000000-0000-4000-8000-000000000001', 'g1');
+update google_authorizations set scope = test_courses_scope() || ' __OTHER_WORK_SCOPE__'
+  where user_id = '00000000-0000-4000-8000-000000000001';
+set role service_role;
+insert into activate_checks select 'vi: active under the other name counts as active',
+  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', test_granted(), 'sealed-new')
+  = 'returned:{"courses": 0, "activated": false}';
+reset role;
+insert into activate_checks select 'vi: baseline kept, both returned names stored',
+  (select (s->>'baselines')::int > 0 from (select test_user_state('00000000-0000-4000-8000-000000000001') s) x)
+  and scope = test_courses_scope() || ' __OTHER_WORK_SCOPE__ __WORK_SCOPE__'
+  from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
+-- (vii) Desactivar quita AMBOS nombres (también repetidos), conserva el resto y su orden, borra
+-- tareas/eventos y limpia la baseline; la siguiente activación con este nombre vuelve a funcionar.
+update google_authorizations set scope = 'openid __WORK_SCOPE__ https://www.googleapis.com/auth/classroom.courses.readonly __OTHER_WORK_SCOPE__ email __WORK_SCOPE__'
+  where user_id = '00000000-0000-4000-8000-000000000001';
+set role service_role;
+create temporary table a_vii as select disable_classroom_tasks('00000000-0000-4000-8000-000000000001', 'g1') r;
+reset role;
+insert into activate_checks select 'vii: disable removes both names, keeps the rest in order',
+  scope = 'openid https://www.googleapis.com/auth/classroom.courses.readonly email'
+  from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
+insert into activate_checks select 'vii: disable cleaned tasks, events and baseline',
+  (s->>'events')::int = 0 and (s->>'coursework')::int = 0 and (s->>'baselines')::int = 0
+  from (select test_user_state('00000000-0000-4000-8000-000000000001') s) x;
+-- Solo el alias (sin canónico) también cuenta como activo para desactivar.
+update google_authorizations set scope = test_courses_scope() || ' __WORK_SCOPE__'
+  where user_id = '00000000-0000-4000-8000-000000000001';
+set role service_role;
+select disable_classroom_tasks('00000000-0000-4000-8000-000000000001', 'g1');
+reset role;
+insert into activate_checks select 'vii: disable with only this name removes it',
+  scope = test_courses_scope() from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001';
+select test_seed_inactive('00000000-0000-4000-8000-000000000001', 'g1');
+set role service_role;
+insert into activate_checks select 'vii: reactivation after disable',
+  test_try_activate('00000000-0000-4000-8000-000000000001', 'g1', test_granted(), 'sealed-new')
+  = 'returned:{"courses": 1, "activated": true}';
+reset role;
+
+select 'ACTIVATE[__WORK_SCOPE__] | ' || label || ' | ' || case when ok then 'PASS' else 'FAIL' end from activate_checks;
+select test_assert((select bool_and(ok) and count(*) = 35 from activate_checks), 'activate checks');
+select 'ACTIVATE_CHECKS_OK[__WORK_SCOPE__]';

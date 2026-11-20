@@ -110,11 +110,38 @@ const scopeList = scope => (typeof scope === "string" ? scope.split(" ").filter(
 const hasScope = (scope, value) => scopeList(scope).includes(value);
 const withoutScope = (scope, value) => scopeList(scope).filter(item => item !== value).join(" ");
 
+// ITN-43c - Alias EMPÍRICO del scope de tareas. Al pedir classroom.coursework.me.readonly,
+// Google ha devuelto en el campo `scope` del token classroom.student-submissions.me.readonly
+// (visto con OAuth Playground y con el cliente real). No hay documentación que garantice esa
+// equivalencia ni que no cambie, así que NO se traduce un nombre al otro: el scope se guarda tal
+// como lo devuelve Google y cualquiera de los dos nombres cuenta como permiso de tareas. La prueba
+// definitiva es la llamada real a courseWork.list: si responde 403, el sync lo trata como "sin
+// permiso de tareas" y sincroniza solo cursos.
+const CLASSROOM_WORK_SCOPE_ALIAS = "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly";
+const CLASSROOM_WORK_SCOPES = Object.freeze([CLASSROOM_WORK_SCOPE, CLASSROOM_WORK_SCOPE_ALIAS]);
+const CLASSROOM_SCOPES = Object.freeze([CLASSROOM_SCOPE, ...CLASSROOM_WORK_SCOPES]);
+
+// ¿El scope (cadena separada por espacios) incluye permiso de tareas con cualquiera de los nombres?
+const tienePermisoTareas = scope => scopeList(scope).some(value => CLASSROOM_WORK_SCOPES.includes(value));
+// Requisitos de scope: CLASSROOM_WORK_SCOPE se cumple con cualquiera de los dos nombres.
+const cumpleScopes = (scope, required) => required.every(value =>
+  value === CLASSROOM_WORK_SCOPE ? tienePermisoTareas(scope) : hasScope(scope, value));
+// Solo los scopes de Classroom, con el nombre que devolvió Google, sin duplicados y en su orden.
+// openid, email, profile y cualquier otro se descartan.
+const classroomScopesOnly = scope => Array.from(new Set(
+  scopeList(scope).filter(value => CLASSROOM_SCOPES.includes(value)))).join(" ");
+// Quita el permiso de tareas con ambos nombres.
+const withoutWorkScopes = scope => scopeList(scope).filter(value => !CLASSROOM_WORK_SCOPES.includes(value)).join(" ");
+// Solo para marcar en logs si llegó el alias (nunca se registra el valor del scope).
+const hasWorkScopeAlias = scope => hasScope(scope, CLASSROOM_WORK_SCOPE_ALIAS);
+
 // Conserva el refresh token anterior cuando Google no envía uno nuevo.
 // Nunca persiste el access token: ITN-42 podrá obtener uno con el refresh token.
 async function saveGoogleAuthorization({ supabase, googleId, email, name, authoritativeEmail, refreshToken, scope, secret, requiredScopes = [CLASSROOM_SCOPE] }) {
-  if (typeof scope !== 'string' || !requiredScopes.every(value => scope.split(' ').includes(value)) ||
-      !scope.split(' ').includes(CLASSROOM_SCOPE)) throw new Error("classroom_scope_not_granted");
+  // Se guarda solo lo de Classroom, con el nombre que devolvió Google (sin traducir el alias).
+  const classroomScope = classroomScopesOnly(scope);
+  if (typeof scope !== 'string' || !cumpleScopes(classroomScope, requiredScopes) ||
+      !hasScope(classroomScope, CLASSROOM_SCOPE)) throw new Error("classroom_scope_not_granted");
 
   const { data: existing, error: lookupError } = await supabase
     .from("google_authorizations").select("user_id, scope").eq("google_id", googleId).maybeSingle();
@@ -145,8 +172,8 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
   // ITN-43c - El login no activa tareas. Con autorización incremental Google puede
   // devolver el scope de tareas concedido antes; solo se guarda si ya estaba activo
   // (el alumno no lo desactivó en Ajustes) o si el propio login lo solicita.
-  const keepWork = requiredScopes.includes(CLASSROOM_WORK_SCOPE) || hasScope(existing?.scope, CLASSROOM_WORK_SCOPE);
-  const storedScope = keepWork ? scope : withoutScope(scope, CLASSROOM_WORK_SCOPE);
+  const keepWork = requiredScopes.includes(CLASSROOM_WORK_SCOPE) || tienePermisoTareas(existing?.scope);
+  const storedScope = keepWork ? classroomScope : withoutWorkScopes(classroomScope);
   const row = { email, scope: storedScope, updated_at: new Date().toISOString() };
   if (refreshToken) {
     row.refresh_token = encrypt({ token: refreshToken }, secret, "google-refresh");
@@ -169,4 +196,6 @@ async function saveGoogleAuthorization({ supabase, googleId, email, name, author
 module.exports = {
   CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization, hasScope, withoutScope,
+  CLASSROOM_WORK_SCOPE_ALIAS, CLASSROOM_WORK_SCOPES, tienePermisoTareas, cumpleScopes, classroomScopesOnly,
+  withoutWorkScopes, hasWorkScopeAlias,
 };

@@ -37,6 +37,9 @@ const CAMPOS_PERMITIDOS = new Set([
   // ITN-53/54: etiqueta fija del borrado Push que falló ("session" o "endpoint"),
   // nunca el endpoint.
   "target",
+  // ITN-43c: marca booleana de si Google devolvió el alias del scope de tareas,
+  // nunca el valor del scope.
+  "scope_tareas_alias",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.

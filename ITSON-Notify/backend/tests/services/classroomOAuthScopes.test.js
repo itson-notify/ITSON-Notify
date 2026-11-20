@@ -1,4 +1,7 @@
-// Characterization only: no equivalence is assumed and no Google calls are made.
+// ITN-43c: Google devuelve classroom.student-submissions.me.readonly al pedir
+// classroom.coursework.me.readonly (alias EMPÍRICO). No se traduce: ambos nombres cuentan y se guarda
+// el que devolvió Google; la prueba definitiva
+// es courseWork.list (un 403 deja el sync en solo cursos). No se hacen llamadas reales a Google.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -21,6 +24,7 @@ const config = { googleAuthSecret: secret, frontendUrl: 'http://localhost:5173',
     redirectUri: 'http://localhost:3000/auth/google/callback', scopes: [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE] } };
 const json = value => new Response(JSON.stringify(value));
 
+// La configuración sigue pidiendo el nombre documentado: el alias solo se acepta en la respuesta.
 test('configured request uses literal coursework scope, alternative and write scopes fail allowlist', () => {
   const env = { PORT: '3000', INTERNAL_API_KEY: 'synthetic-internal-'.repeat(3),
     SUPABASE_URL: 'https://synthetic.supabase.test', SUPABASE_SERVICE_ROLE_KEY: 'synthetic-role',
@@ -38,7 +42,7 @@ test('configured request uses literal coursework scope, alternative and write sc
 });
 
 for (const [name, work] of [['documented', CLASSROOM_WORK_SCOPE], ['alternative', alternate]]) {
-  test(`exchange preserves ${name} scope; save requires the configured literal name`, async () => {
+  test(`exchange preserves ${name} scope; save accepts it and stores it as returned`, async () => {
     const response = await exchangeCodeForTokens({ code: 'synthetic-code', clientId: 'synthetic-client',
       clientSecret: 'synthetic-secret', redirectUri: config.googleOAuth.redirectUri, verifier: 'synthetic-verifier',
       fetchImpl: async () => json({ id_token: 'synthetic-id', access_token: 'synthetic-access', scope: scopes(work) }) });
@@ -47,13 +51,8 @@ for (const [name, work] of [['documented', CLASSROOM_WORK_SCOPE], ['alternative'
     const save = () => saveGoogleAuthorization({ supabase: db.client, googleId: identity.googleId,
       email: 'synthetic@example.test', authoritativeEmail: true, refreshToken: 'synthetic-refresh',
       scope: response.scope, secret, requiredScopes: config.googleOAuth.scopes });
-    if (work === alternate) {
-      await assert.rejects(save(), /classroom_scope_not_granted/);
-      assert.equal(db.calls.length, 0);
-    } else {
-      await save();
-      assert.equal(db.tables.google_authorizations[0].scope, scopes(work));
-    }
+    await save();
+    assert.equal(db.tables.google_authorizations[0].scope, scopes(work));
   });
 
   test(`signed OAuth callback with ${name} token-response scope`, async () => {
@@ -83,9 +82,10 @@ for (const [name, work] of [['documented', CLASSROOM_WORK_SCOPE], ['alternative'
     const queryScope = work === alternate ? CLASSROOM_WORK_SCOPE : alternate;
     const callback = await agent.get('/auth/google/callback').query({ code: 'synthetic-code', state: nonce, scope: scopes(queryScope) });
     assert.equal(callback.status, 302);
-    assert.equal(new URL(callback.headers.location).searchParams.get('classroom'), work === alternate ? 'error' : 'auth_success');
-    assert.equal(db.tables.google_authorizations.length, work === alternate ? 0 : 1);
-    assert.equal(db.tables.google_app_sessions.length, work === alternate ? 0 : 1);
+    assert.equal(new URL(callback.headers.location).searchParams.get('classroom'), 'auth_success');
+    assert.equal(db.tables.google_authorizations.length, 1);
+    assert.equal(db.tables.google_authorizations[0].scope, scopes(work));
+    assert.equal(db.tables.google_app_sessions.length, 1);
     assert.doesNotMatch(JSON.stringify(logs), /synthetic|refresh|access_token/);
   });
 }
@@ -93,10 +93,12 @@ for (const [name, work] of [['documented', CLASSROOM_WORK_SCOPE], ['alternative'
 // ITN-43b: sync never fails for a missing task scope; it falls back to courses-only.
 for (const [name, stored, refreshed, mode] of [
   ['documented grant and documented refresh', CLASSROOM_WORK_SCOPE, CLASSROOM_WORK_SCOPE, 'tasks'],
-  ['alternative stored grant', alternate, CLASSROOM_WORK_SCOPE, 'courses'],
+  ['alternative stored grant', alternate, CLASSROOM_WORK_SCOPE, 'tasks'],
   ['write scope cannot substitute for task read scope', 'https://www.googleapis.com/auth/classroom.coursework.me', CLASSROOM_WORK_SCOPE, 'courses'],
   ['broader student scope cannot substitute for personal task scope', 'https://www.googleapis.com/auth/classroom.coursework.students.readonly', CLASSROOM_WORK_SCOPE, 'courses'],
-  ['alternative refreshed scope', CLASSROOM_WORK_SCOPE, alternate, 'courses'],
+  ['alternative refreshed scope', CLASSROOM_WORK_SCOPE, alternate, 'tasks'],
+  ['alternative stored and refreshed', alternate, alternate, 'tasks'],
+  ['alternative stored, refresh without task scope', alternate, 'openid', 'courses'],
   ['refresh without scope uses the stored grant', CLASSROOM_WORK_SCOPE, undefined, 'tasks'],
 ]) test(`readForWorker sync: ${name}`, async () => {
   const db = createFakeSupabase(), calls = [], rpcArgs = [];
@@ -119,7 +121,7 @@ for (const [name, stored, refreshed, mode] of [
   assert.equal(db.calls.filter(call => call.op !== 'select').length, 0);
 });
 
-test('getAccessToken default remains courses-only; explicit task requirements reject the alternative', async () => {
+test('getAccessToken default remains courses-only; explicit task requirements accept the alternative', async () => {
   const db = createFakeSupabase();
   db.tables.google_authorizations.push({ user_id: identity.userId, google_id: identity.googleId,
     status: 'active', scope: scopes(alternate), refresh_token: encrypt({ token: 'synthetic-refresh' }, secret, 'google-refresh') });
@@ -129,23 +131,23 @@ test('getAccessToken default remains courses-only; explicit task requirements re
     return json({ access_token: 'synthetic-access', token_type: 'Bearer', expires_in: 3600, scope: scopes(alternate) });
   } });
   assert.equal(typeof await service.getAccessToken(identity), 'string');
-  await assert.rejects(service.getAccessToken(identity, config.googleOAuth.scopes), { status: 403 });
-  assert.equal(calls, 1);
+  assert.equal(typeof await service.getAccessToken(identity, config.googleOAuth.scopes), 'string');
+  assert.equal(calls, 2);
 });
 
-test('courses-only OAuth config can save alternative metadata but does not certify task access', async () => {
+test('courses-only login with the alternative does not activate tasks (stored courses-only)', async () => {
   const db = createFakeSupabase();
   await saveGoogleAuthorization({ supabase: db.client, googleId: identity.googleId,
     email: 'synthetic@example.test', authoritativeEmail: true, refreshToken: 'synthetic-refresh',
     scope: scopes(alternate), secret, requiredScopes: [CLASSROOM_SCOPE] });
   const row = db.tables.google_authorizations[0];
-  assert.equal(row.scope, scopes(alternate));
+  assert.equal(row.scope, CLASSROOM_SCOPE);
   let rpcArgs;
   db.client.rpc = async (rpcName, args) => { rpcArgs = args; return { data: { courses: 1, coursework: 0, newTasks: 0 } }; };
   const service = createCoursesService({ config, supabase: db.client, fetchImpl: async url => {
     if (url === 'https://oauth2.googleapis.com/token') return json({ access_token: 'synthetic-access',
       token_type: 'Bearer', expires_in: 3600, scope: scopes(alternate) });
-    assert.equal(new URL(url).pathname, '/v1/courses', 'Alternative scope must not certify task access');
+    assert.equal(new URL(url).pathname, '/v1/courses', 'Login must not activate tasks');
     return json({ courses: [{ id: 'c1', name: 'Synthetic course' }] });
   } });
   await service.readForWorker({ userId: row.user_id, googleId: row.google_id }, { sync: true });

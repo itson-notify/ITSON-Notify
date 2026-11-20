@@ -31,7 +31,9 @@ end; $$;
 -- (2) Quita solo el scope de tareas, borra tareas/eventos del alumno y limpia su baseline.
 select test_seed_tasks('00000000-0000-4000-8000-000000000001', 'g1');
 select test_seed_tasks('00000000-0000-4000-8000-000000000002', 'g2');
-update google_authorizations set scope = test_scope(' https://www.googleapis.com/auth/classroom.coursework.me.readonly')
+-- Con ambos nombres del permiso de tareas (canónico repetido y el alias empírico): se quitan todos.
+update google_authorizations set scope = test_scope(' https://www.googleapis.com/auth/classroom.coursework.me.readonly'
+    || ' https://www.googleapis.com/auth/classroom.student-submissions.me.readonly')
   where user_id = '00000000-0000-4000-8000-000000000001';
 create temporary table u1_before as select test_user_state('00000000-0000-4000-8000-000000000001') s;
 create temporary table u2_before as select test_user_state('00000000-0000-4000-8000-000000000002') s;
@@ -44,7 +46,7 @@ reset role;
 select test_assert((select r = jsonb_build_object('events', (b.s->>'events')::int, 'coursework', (b.s->>'coursework')::int,
   'courses', (b.s->>'baselines')::int) from disable_result, u1_before b), 'disable result counts');
 select test_assert((select scope = 'openid https://www.googleapis.com/auth/classroom.courses.readonly email'
-  from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001'), 'only tasks scope removed, order kept (duplicates too)');
+  from google_authorizations where user_id = '00000000-0000-4000-8000-000000000001'), 'both task scope names removed, order kept (duplicates too)');
 select test_assert((select (x.s->>'events')::int = 0 and (x.s->>'coursework')::int = 0 and (x.s->>'baselines')::int = 0
   and x.s->'courses' = b.s->'courses' from (select test_user_state('00000000-0000-4000-8000-000000000001') s) x, u1_before b),
   'u1 tasks/events deleted, courses kept, baselines null');

@@ -1,6 +1,6 @@
 // ITN-42: reuse ITN-41 encryption and ITN-49 pagination. No token persistence.
 const { decrypt } = require('../utils/secureToken');
-const { CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE } = require('./googleAuthService');
+const { CLASSROOM_SCOPE, tienePermisoTareas, cumpleScopes } = require('./googleAuthService');
 const { normalizeCourses, persistClassroom } = require('./classroomSync');
 const { createClassroomClient, ClassroomError } = require('./classroomClient');
 const { isMissingAuthorizationStatus } = require('./googleAuthorizationSchema');
@@ -54,7 +54,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
           typeof data.token_type !== 'string' || data.token_type.toLowerCase() !== 'bearer' ||
           !Number.isFinite(data.expires_in) || data.expires_in <= 0) throw upstream();
       if (data.scope !== undefined && (typeof data.scope !== 'string' ||
-          !requiredScopes.every(scope => data.scope.split(' ').includes(scope)))) {
+          !cumpleScopes(data.scope, requiredScopes))) {
         throw new CoursesError(403, 'classroom_sin_permisos');
       }
       return { accessToken: data.access_token, scope: data.scope };
@@ -77,7 +77,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     if (error) throw new CoursesError(500, 'error_interno');
     if (!data || data.user_id !== userId || data.google_id !== googleId) throw relink();
     if (data.status === 'needs_relink') throw relink();
-    if (typeof data.scope !== 'string' || !requiredScopes.every(scope => data.scope.split(' ').includes(scope))) {
+    if (typeof data.scope !== 'string' || !cumpleScopes(data.scope, requiredScopes)) {
       throw new CoursesError(403, 'classroom_sin_permisos');
     }
     const credential = decrypt(data.refresh_token, config.googleAuthSecret, 'google-refresh');
@@ -129,9 +129,11 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
   // scope; otherwise courses are sent WITHOUT the coursework key so SQL leaves tasks untouched.
   async function readForWorker(identity, { sync = false } = {}) {
     const { accessToken, storedScope, refreshedScope } = await authorize(identity, [CLASSROOM_SCOPE]);
-    const has = (scope, value) => typeof scope === 'string' && scope.split(' ').includes(value);
-    const withWork = sync !== true || (has(storedScope, CLASSROOM_WORK_SCOPE) &&
-      (refreshedScope === undefined || has(refreshedScope, CLASSROOM_WORK_SCOPE)));
+    // Cualquiera de los dos nombres del permiso de tareas (canónico o alias empírico) cuenta,
+    // en el scope guardado y en el del token refrescado. No es una equivalencia garantizada; la
+    // prueba es courseWork.list (un 403 ahí deja el sync en solo cursos).
+    let withWork = sync !== true || (tienePermisoTareas(storedScope) &&
+      (refreshedScope === undefined || tienePermisoTareas(refreshedScope)));
     try {
       const courses = await client.listCourses(accessToken, { studentId: 'me' });
       const result = [];
@@ -141,7 +143,23 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
           result.push(courseOnly);
           continue;
         }
-        const work = await client.listCourseWork(accessToken, course.id);
+        let work;
+        try {
+          work = await client.listCourseWork(accessToken, course.id);
+        } catch (error) {
+          // Sync: un 403 de courseWork.list significa "sin permiso de tareas" (p. ej. el alias
+          // no resultó equivalente). Se omiten las tareas de TODOS los cursos (sin la clave
+          // coursework, la SQL no las toca) y los cursos se sincronizan igual.
+          if (sync !== true || !(error instanceof ClassroomError) || error.code !== 'PERMISSION_DENIED') throw error;
+          withWork = false;
+          for (let i = 0; i < result.length; i++) {
+            const { coursework: _dropped, ...courseOnly } = result[i];
+            result[i] = courseOnly;
+          }
+          const { coursework: _ignored, ...courseOnly } = course;
+          result.push(courseOnly);
+          continue;
+        }
         if (sync === true) {
           result.push({ ...course, coursework: work });
           continue;

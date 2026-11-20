@@ -160,57 +160,82 @@ async function main() {
     // (6) Autorización inactiva o google_id distinto: no se borra nada.
     const check6 = sql(fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomTasksDisableAuth.sql'), 'utf8'));
     console.log(check6.trim().split('\n').filter(line => /CHECK6|OK/.test(line)).join('\n'));
-    // ITN-43c (018): activate_classroom_tasks. (i) feliz, (ii) sin autorización → 42501,
-    // (iii) fallo a mitad → rollback, (v) permisos.
-    const activate = sql(fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomTasksActivate.sql'), 'utf8'));
-    console.log(activate.trim().split('\n').filter(line => /ACTIVATE/.test(line)).map(line => line.trim()).join('\n'));
+    // ITN-43c (018): activate_classroom_tasks con AMBOS nombres del permiso de tareas. Google ha
+    // devuelto el alias empírico student-submissions.me.readonly al pedir coursework.me.readonly;
+    // cada pasada simula que Google devuelve uno de los dos. (i) feliz, (ii) sin autorización →
+    // 42501 y solo cursos → 22023, (iii) fallo a mitad → rollback, (v) permisos, (vi) activo con el
+    // otro nombre, (vii) desactivar quita ambos.
+    const WORK_SCOPES = ['https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+      'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly'];
+    const activateSql = fs.readFileSync(path.resolve(__dirname, '../tests/sql/classroomTasksActivate.sql'), 'utf8');
+    for (const [work, other] of [WORK_SCOPES, [...WORK_SCOPES].reverse()]) {
+      const out = sql(activateSql.replaceAll('__OTHER_WORK_SCOPE__', other).replaceAll('__WORK_SCOPE__', work));
+      assert.match(out, new RegExp(`ACTIVATE_CHECKS_OK\\[${work.replaceAll('.', '\\.')}\\]`));
+      console.log(out.trim().split('\n').filter(line => /ACTIVATE/.test(line)).map(line => line.trim()).join('\n'));
+    }
     // (iv) Concurrencia activate_classroom_tasks vs sync_classroom sobre el mismo alumno, en ambos
-    // órdenes: sin deadlock (ambas terminan), la segunda espera al commit de la primera y el
-    // resultado es consistente (nunca scope ampliado con la baseline vieja ni avisos en bloque).
-    const granted = "'openid https://www.googleapis.com/auth/classroom.coursework.me.readonly https://www.googleapis.com/auth/classroom.courses.readonly'";
-    const work = 'https://www.googleapis.com/auth/classroom.coursework.me.readonly';
-    const hasWork = () => u1State().scope.some(value => value.split(' ').includes(work));
-    // (iv-a) activate tiene el candado; la sync que llega en medio espera y ve la baseline ya limpia.
-    sql(`select test_seed_inactive(${u1}, 'g1');`);
-    let before = u1State();
-    assert.ok(before.baselines > 0 && !hasWork(), 'precondition iv-a');
-    const activateHolder = concurrent(`set role service_role; begin; select activate_classroom_tasks(${u1}, 'g1', ${granted}, 'sealed-iv'); select pg_sleep(1.5); ${stamp} commit;`);
-    await sleep(500);
-    const [activateOut, syncAfterOut] = await Promise.all([activateHolder,
-      concurrent(`set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'during-activate-' || gen_random_uuid()], 'd1'); ${stamp}`)]);
-    assert.ok(at(syncAfterOut) > at(activateOut), 'sync did not wait for activate_classroom_tasks');
-    assert.match(syncAfterOut, /"newTasks": 0/, 'sync after activation must be a silent baseline');
-    state = u1State();
-    assert.ok(hasWork(), 'iv-a scope');
-    assert.equal(state.events, before.events, 'iv-a no new events');
-    // La activación limpió todas; la sync que esperó solo cubre d1 y fija su baseline (silenciosa).
-    assert.equal(state.baselines, 1, 'iv-a only the synced course gets a fresh baseline');
-    console.log(`ACTIVATE_CONCURRENCY | iv-a: activate first, sync waited (${at(activateOut)} < ${at(syncAfterOut)}), newTasks 0, no deadlock | PASS`);
-    // (iv-b) sync tiene el candado (scope aún sin tareas); activate espera y limpia la baseline
-    // que la sync acaba de escribir: la siguiente sync con tareas es silenciosa.
-    sql(`select test_seed_inactive(${u1}, 'g1');`);
-    before = u1State();
-    const syncFirst = concurrent(`set role service_role; begin; select test_snapshot(${u1}, 'g1', array['d-w1', 'mid-sync-' || gen_random_uuid()], 'd1'); select pg_sleep(1.5); ${stamp} commit;`);
-    await sleep(500);
-    const [syncFirstOut, activateAfterOut] = await Promise.all([syncFirst,
-      concurrent(`set role service_role; select activate_classroom_tasks(${u1}, 'g1', ${granted}, 'sealed-iv'); ${stamp}`)]);
-    assert.ok(at(activateAfterOut) > at(syncFirstOut), 'activate did not wait for sync_classroom');
-    assert.match(activateAfterOut, /"activated": true/);
-    state = u1State();
-    assert.ok(hasWork(), 'iv-b scope');
-    assert.equal(state.baselines, 0, 'iv-b activation must reset the baseline written by the sync');
-    const eventsAfter = state.events;
-    assert.match(sql(`set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'after-iv-' || gen_random_uuid()], 'd1');`), /"newTasks": 0/);
-    assert.equal(u1State().events, eventsAfter, 'iv-b next sync is silent');
-    console.log(`ACTIVATE_CONCURRENCY | iv-b: sync first, activate waited (${at(syncFirstOut)} < ${at(activateAfterOut)}), baseline reset, next sync silent, no deadlock | PASS`);
-    // (iv-c) varias activaciones y syncs mezcladas a la vez: ninguna falla por deadlock.
-    sql(`select test_seed_inactive(${u1}, 'g1');`);
-    const mixed = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => concurrent(i % 2
-      ? `set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'mix-${i}'], 'd1');`
-      : `set role service_role; select activate_classroom_tasks(${u1}, 'g1', ${granted}, null);`)));
-    assert.deepEqual(mixed.filter(r => r.status === 'rejected').map(r => r.reason.message), [], 'iv-c deadlock or failure');
-    assert.ok(hasWork(), 'iv-c scope');
-    console.log('ACTIVATE_CONCURRENCY | iv-c: 3 activations + 3 syncs interleaved, all finished, no deadlock | PASS');
+    // órdenes y con ambos nombres: sin deadlock (ambas terminan), la segunda espera al commit de la
+    // primera y el resultado es consistente (nunca scope ampliado con la baseline vieja ni avisos en bloque).
+    for (const [work, other] of [WORK_SCOPES, [...WORK_SCOPES].reverse()]) {
+      const label = work.split('/').pop();
+      const granted = `'openid ${work} https://www.googleapis.com/auth/classroom.courses.readonly'`;
+      const scopeOf = () => u1State().scope.flatMap(value => value.split(' '));
+      const hasWork = () => scopeOf().includes(work);
+      // Nunca aparece el otro nombre: Google no lo devolvió en esta pasada.
+      const neverOther = tag => assert.equal(scopeOf().includes(other), false, `${tag}: stored scope has a name Google did not return`);
+      // (iv-a) activate tiene el candado; la sync que llega en medio espera y ve la baseline ya limpia.
+      sql(`select test_seed_inactive(${u1}, 'g1');`);
+      let before = u1State();
+      assert.ok(before.baselines > 0 && !hasWork() && !scopeOf().includes(other), 'precondition iv-a');
+      const activateHolder = concurrent(`set role service_role; begin; select activate_classroom_tasks(${u1}, 'g1', ${granted}, 'sealed-iv'); select pg_sleep(1.5); ${stamp} commit;`);
+      await sleep(500);
+      const [activateOut, syncAfterOut] = await Promise.all([activateHolder,
+        concurrent(`set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'during-activate-' || gen_random_uuid()], 'd1'); ${stamp}`)]);
+      assert.ok(at(syncAfterOut) > at(activateOut), 'sync did not wait for activate_classroom_tasks');
+      assert.match(syncAfterOut, /"newTasks": 0/, 'sync after activation must be a silent baseline');
+      state = u1State();
+      assert.ok(hasWork(), 'iv-a scope');
+      neverOther('iv-a');
+      assert.equal(state.events, before.events, 'iv-a no new events');
+      // La activación limpió todas; la sync que esperó solo cubre d1 y fija su baseline (silenciosa).
+      assert.equal(state.baselines, 1, 'iv-a only the synced course gets a fresh baseline');
+      console.log(`ACTIVATE_CONCURRENCY[${label}] | iv-a: activate first, sync waited (${at(activateOut)} < ${at(syncAfterOut)}), newTasks 0, no deadlock | PASS`);
+      // (iv-b) sync tiene el candado (scope aún sin tareas); activate espera y limpia la baseline
+      // que la sync acaba de escribir: la siguiente sync con tareas es silenciosa.
+      sql(`select test_seed_inactive(${u1}, 'g1');`);
+      before = u1State();
+      const syncFirst = concurrent(`set role service_role; begin; select test_snapshot(${u1}, 'g1', array['d-w1', 'mid-sync-' || gen_random_uuid()], 'd1'); select pg_sleep(1.5); ${stamp} commit;`);
+      await sleep(500);
+      const [syncFirstOut, activateAfterOut] = await Promise.all([syncFirst,
+        concurrent(`set role service_role; select activate_classroom_tasks(${u1}, 'g1', ${granted}, 'sealed-iv'); ${stamp}`)]);
+      assert.ok(at(activateAfterOut) > at(syncFirstOut), 'activate did not wait for sync_classroom');
+      assert.match(activateAfterOut, /"activated": true/);
+      state = u1State();
+      assert.ok(hasWork(), 'iv-b scope');
+      neverOther('iv-b');
+      assert.equal(state.baselines, 0, 'iv-b activation must reset the baseline written by the sync');
+      const eventsAfter = state.events;
+      assert.match(sql(`set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'after-iv-' || gen_random_uuid()], 'd1');`), /"newTasks": 0/);
+      assert.equal(u1State().events, eventsAfter, 'iv-b next sync is silent');
+      console.log(`ACTIVATE_CONCURRENCY[${label}] | iv-b: sync first, activate waited (${at(syncFirstOut)} < ${at(activateAfterOut)}), baseline reset, next sync silent, no deadlock | PASS`);
+      // (iv-c) varias activaciones, syncs y desactivaciones mezcladas a la vez: ninguna falla por deadlock.
+      sql(`select test_seed_inactive(${u1}, 'g1');`);
+      const mixed = await Promise.allSettled(Array.from({ length: 9 }, (_, i) => concurrent(
+        i % 3 === 0 ? `set role service_role; select activate_classroom_tasks(${u1}, 'g1', ${granted}, null);`
+          : i % 3 === 1 ? `set role service_role; select test_snapshot(${u1}, 'g1', array['d-w1', 'mix-${label}-${i}'], 'd1');`
+            : `set role service_role; select disable_classroom_tasks(${u1}, 'g1');`)));
+      assert.deepEqual(mixed.filter(r => r.status === 'rejected').map(r => r.reason.message), [], 'iv-c deadlock or failure');
+      neverOther('iv-c');
+      // NO se exige "desactivadas ⇒ sin tareas": sync_classroom (017) no revisa el permiso de tareas
+      // bajo el candado, así que una sync que el backend decidió con tareas ANTES de una
+      // desactivación las escribe después (test_snapshot siempre manda coursework). Es un hueco
+      // previo de la 017, independiente del nombre del scope; pendiente de decidir aparte.
+      // Una última activación deja el permiso con el nombre devuelto y nada más.
+      sql(`set role service_role; select activate_classroom_tasks(${u1}, 'g1', ${granted}, null);`);
+      assert.ok(hasWork(), 'iv-c scope');
+      neverOther('iv-c final');
+      console.log(`ACTIVATE_CONCURRENCY[${label}] | iv-c: 3 activations + 3 syncs + 3 disables interleaved, all finished, no deadlock | PASS`);
+    }
     console.log('CLASSROOM_SQL_OK: courses-only, per-course task baseline (017), baseline, dedup, timestamps, isolation, relink, rollback, concurrent writers, RLS, migration replay, external transaction rollback');
   } catch (error) {
     console.error(error.message);

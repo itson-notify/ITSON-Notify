@@ -11,7 +11,7 @@ const { createApp } = require("../../src/app");
 const { createLogger } = require("../../src/utils/logger");
 const { sessionHash } = require("../../src/middleware/studentSession");
 const { encrypt, decrypt } = require("../../src/utils/secureToken");
-const { CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, saveGoogleAuthorization } = require("../../src/services/googleAuthService");
+const { CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, CLASSROOM_WORK_SCOPES, saveGoogleAuthorization } = require("../../src/services/googleAuthService");
 const { createFakeSupabase } = require("../helpers/fakeSupabase");
 const { API_KEY, CREDENTIALS_KEY } = require("../helpers/payloads");
 
@@ -93,10 +93,12 @@ function installRpcs(db) {
   const find = ({ p_user_id, p_google_id }) => db.tables.google_authorizations
     .find(g => g.user_id === p_user_id && g.google_id === p_google_id);
   const userExists = id => db.tables.app_users.some(u => u.id === id);
+  // Permiso de tareas con cualquiera de los dos nombres (canónico o alias), como la 018.
+  const hasWork = value => list(value).some(v => CLASSROOM_WORK_SCOPES.includes(v));
   db.rpcHandlers.activate_classroom_tasks = args => {
     db.rpcArgs.push({ name: "activate_classroom_tasks", args });
     const granted = list(args.p_granted_scope);
-    if (!granted.includes(CLASSROOM_WORK_SCOPE)) return rpcError("22023", "classroom_tasks_scope_not_granted");
+    if (!hasWork(args.p_granted_scope)) return rpcError("22023", "classroom_tasks_scope_not_granted");
     if (args.p_refresh_token != null && (!args.p_refresh_token || !granted.includes(CLASSROOM_SCOPE))) {
       return rpcError("22023", "classroom_courses_scope_not_granted");
     }
@@ -104,14 +106,14 @@ function installRpcs(db) {
     if (!grant || grant.status !== "active" || !list(grant.scope).includes(CLASSROOM_SCOPE)) {
       return rpcError("42501", "classroom_authorization_required");
     }
-    const wasActive = list(grant.scope).includes(CLASSROOM_WORK_SCOPE);
+    const wasActive = hasWork(grant.scope);
     let courses = 0;
     if (!wasActive) {
       for (const c of db.tables.classroom_courses) {
         if (c.user_id === args.p_user_id && c.coursework_baseline_at != null) { c.coursework_baseline_at = null; courses++; }
       }
     }
-    grant.scope = Array.from(new Set([...list(grant.scope), ...granted, CLASSROOM_WORK_SCOPE])).join(" ");
+    grant.scope = Array.from(new Set([...list(grant.scope), ...granted])).join(" ");
     if (args.p_refresh_token != null) grant.refresh_token = args.p_refresh_token;
     grant.updated_at = new Date().toISOString();
     return { data: { activated: !wasActive, courses }, error: null };
@@ -120,8 +122,8 @@ function installRpcs(db) {
     db.rpcArgs.push({ name: "disable_classroom_tasks", args });
     const grant = userExists(args.p_user_id) ? find(args) : null;
     if (!grant) return rpcError("42501", "classroom_authorization_required");
-    if (list(grant.scope).includes(CLASSROOM_WORK_SCOPE)) {
-      grant.scope = list(grant.scope).filter(v => v !== CLASSROOM_WORK_SCOPE).join(" ");
+    if (hasWork(grant.scope)) {
+      grant.scope = list(grant.scope).filter(v => !CLASSROOM_WORK_SCOPES.includes(v)).join(" ");
       grant.updated_at = new Date().toISOString();
     }
     const mine = r => r.user_id === args.p_user_id;
@@ -577,5 +579,111 @@ describe("ITN-43c login conserva la decisión del alumno", () => {
     await saveGoogleAuthorization({ supabase: ctx.db.client, ...identity, refreshToken: "nuevo",
       scope: `${BASE_SCOPE} ${CLASSROOM_WORK_SCOPE}`, secret: SECRET, requiredScopes: [CLASSROOM_SCOPE] });
     assert.ok(scopes(grantOf(ctx.db).scope).includes(CLASSROOM_WORK_SCOPE));
+  });
+});
+
+// ITN-43c - Alias empírico del scope de tareas: al pedir classroom.coursework.me.readonly Google
+// ha devuelto classroom.student-submissions.me.readonly. No se traduce: se guarda el nombre que
+// devolvió Google y cualquiera de los dos cuenta como permiso de tareas.
+describe("ITN-43c alias del scope de tareas", () => {
+  const ALIAS = "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly";
+  const OIDC = "openid email profile https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
+  const event = (logs, name) => logs.map(l => JSON.parse(l)).find(l => l.event === name);
+
+  for (const [name, work, alias] of [["alias student-submissions", ALIAS, true], ["canónico coursework", CLASSROOM_WORK_SCOPE, false]]) {
+    it(`Google devuelve solo ${name} más cursos: activa y a la función llega ese scope tal cual`, async () => {
+      const ctx = setup({ google: { scope: `${OIDC} ${CLASSROOM_SCOPE} ${work}` } });
+      seedClassroom(ctx.db, ALUMNA);
+      const flow = await start(ctx);
+      assert.equal(await callback(ctx, flow, "code=codigo-43c"), "ok");
+      assert.deepEqual(ctx.db.rpcArgs.map(c => c.name), ["activate_classroom_tasks"]);
+      // Solo Classroom (sin openid/email/profile) y con el nombre que devolvió Google.
+      assert.equal(ctx.db.rpcArgs[0].args.p_granted_scope, `${CLASSROOM_SCOPE} ${work}`);
+      const stored = scopes(grantOf(ctx.db).scope);
+      assert.ok(stored.includes(work));
+      assert.equal(stored.includes(alias ? CLASSROOM_WORK_SCOPE : ALIAS), false);
+      assert.equal(ctx.db.tables.classroom_courses[0].coursework_baseline_at, null);
+      // El estado lo refleja con cualquiera de los dos nombres.
+      const state = await request(ctx.api).get("/api/classroom/tasks-authorization").set("Cookie", cookie(ALUMNA));
+      assert.deepEqual(state.body, { enabled: true, granted: true, needsRelink: false });
+      // El log solo lleva la marca fija, nunca valores de scope.
+      assert.equal(event(ctx.logs, "classroom_tareas_activadas").scope_tareas_alias, alias);
+      for (const value of [ALIAS, CLASSROOM_SCOPE, "openid", "userinfo"]) {
+        assert.equal(ctx.logs.join("\n").includes(value), false, `log con scope: ${value}`);
+      }
+      assertNoSecretsLogged(ctx.logs);
+    });
+  }
+
+  it("Google devuelve solo cursos: rechazada antes de la función (la 018 respondería 22023) y sin cambios", async () => {
+    const ctx = setup({ google: { scope: `${OIDC} ${CLASSROOM_SCOPE}` } });
+    const before = { ...grantOf(ctx.db) };
+    const flow = await start(ctx);
+    assert.equal(await callback(ctx, flow, "code=codigo-43c"), "rechazada");
+    assert.deepEqual(ctx.db.rpcArgs, []);
+    assert.deepEqual(grantOf(ctx.db), before);
+    assert.equal(event(ctx.logs, "classroom_tareas_permiso_parcial").scope_tareas_alias, false);
+    const direct = ctx.db.rpcHandlers.activate_classroom_tasks({ p_user_id: ALUMNA.userId, p_google_id: ALUMNA.googleId,
+      p_granted_scope: CLASSROOM_SCOPE, p_refresh_token: null });
+    assert.equal(direct.error.code, "22023");
+  });
+
+  it("alias sin cursos y con refresh token nuevo: error y sin cambios", async () => {
+    const ctx = setup({ google: { scope: `openid ${ALIAS}` } });
+    const before = { ...grantOf(ctx.db) };
+    const flow = await start(ctx);
+    assert.equal(await callback(ctx, flow, "code=codigo-43c"), "error");
+    assert.deepEqual(grantOf(ctx.db), before);
+    assert.deepEqual(ctx.db.rpcArgs, []);
+  });
+
+  it("ya activas con el alias: no limpia la baseline", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${ALIAS}`, google: { scope: `${OIDC} ${CLASSROOM_SCOPE} ${ALIAS}` } });
+    seedClassroom(ctx.db, ALUMNA);
+    const flow = await start(ctx);
+    assert.equal(await callback(ctx, flow, "code=codigo-43c"), "ok");
+    assert.notEqual(ctx.db.tables.classroom_courses[0].coursework_baseline_at, null);
+  });
+
+  it("DELETE quita AMBOS nombres del scope guardado", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${ALIAS} ${CLASSROOM_WORK_SCOPE}` });
+    seedClassroom(ctx.db, ALUMNA);
+    const res = await request(ctx.api).delete("/api/classroom/tasks-authorization").set("Origin", FRONTEND).set("Cookie", cookie(ALUMNA));
+    assert.equal(res.status, 204);
+    assert.equal(grantOf(ctx.db).scope, BASE_SCOPE);
+    const state = await request(ctx.api).get("/api/classroom/tasks-authorization").set("Cookie", cookie(ALUMNA));
+    assert.equal(state.body.granted, false);
+  });
+
+  it("re-login con el alias conserva tareas activas y guarda el nombre de Google", async () => {
+    const ctx = setup({ scope: `${BASE_SCOPE} ${ALIAS}` });
+    await saveGoogleAuthorization({ supabase: ctx.db.client, googleId: ALUMNA.googleId, email: ALUMNA.email,
+      name: "", authoritativeEmail: true, refreshToken: "nuevo", scope: `${OIDC} ${CLASSROOM_SCOPE} ${ALIAS}`,
+      secret: SECRET, requiredScopes: [CLASSROOM_SCOPE] });
+    assert.equal(grantOf(ctx.db).scope, `${CLASSROOM_SCOPE} ${ALIAS}`);
+  });
+
+  it("re-login con el alias no activa tareas desactivadas", async () => {
+    const ctx = setup();
+    await saveGoogleAuthorization({ supabase: ctx.db.client, googleId: ALUMNA.googleId, email: ALUMNA.email,
+      name: "", authoritativeEmail: true, refreshToken: "nuevo", scope: `${OIDC} ${CLASSROOM_SCOPE} ${ALIAS}`,
+      secret: SECRET, requiredScopes: [CLASSROOM_SCOPE] });
+    assert.equal(grantOf(ctx.db).scope, CLASSROOM_SCOPE);
+  });
+});
+
+// La 018 (archivo propuesto, no se ejecuta aquí): ambas funciones conocen los dos nombres.
+describe("ITN-43c 018 con ambos nombres del permiso de tareas", () => {
+  const sql = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../../../database/migrations/018_classroom_tasks_authorization.sql"), "utf8");
+  const body = name => sql.slice(sql.indexOf(`function public.${name}(`), sql.indexOf("$$;", sql.indexOf(`function public.${name}(`)));
+  for (const name of ["activate_classroom_tasks", "disable_classroom_tasks"]) {
+    it(`${name} declara ambos nombres`, () => {
+      assert.ok(body(name).includes("classroom.coursework.me.readonly"));
+      assert.ok(body(name).includes("classroom.student-submissions.me.readonly"));
+    });
+  }
+  it("activate no añade el nombre canónico por su cuenta", () => {
+    assert.equal(body("activate_classroom_tasks").includes("array[work_scope]"), false);
   });
 });

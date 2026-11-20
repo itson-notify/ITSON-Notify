@@ -6,6 +6,7 @@ const { SESSION_COOKIE, sessionHash, cookieValue, createSessionReader } = requir
 const {
   createPkcePair, generateAuthUrl, exchangeCodeForTokens,
   verifyGoogleIdToken, saveGoogleAuthorization, CLASSROOM_WORK_SCOPE,
+  tienePermisoTareas, hasWorkScopeAlias,
 } = require("../services/googleAuthService");
 const { activateTasks, isUsableGrant, loadGrant } = require("../services/classroomTasksAuthorization");
 const { createNotificationRepository } = require("../repositories/notificationRepository");
@@ -150,15 +151,17 @@ function authGoogleRouter({ config, supabase, logger = console, fetchImpl = fetc
       if (identity.googleId !== session.googleId) {
         return done("cuenta_distinta", "classroom_tareas_cuenta_distinta", { user_id: session.userId });
       }
-      const granted = typeof tokens.scope === "string" ? tokens.scope.split(" ") : [];
-      if (!granted.includes(CLASSROOM_WORK_SCOPE)) {
-        return done("rechazada", "classroom_tareas_permiso_parcial", { user_id: session.userId });
+      // Cualquiera de los dos nombres del permiso de tareas cuenta (ver tienePermisoTareas). El log
+      // solo lleva una marca fija de si llegó el alias, nunca el valor del scope.
+      const aliasField = { scope_tareas_alias: hasWorkScopeAlias(tokens.scope) };
+      if (!tienePermisoTareas(tokens.scope)) {
+        return done("rechazada", "classroom_tareas_permiso_parcial", { user_id: session.userId, ...aliasField });
       }
       await activateTasks({
         supabase, identity: { userId: session.userId, googleId: session.googleId },
         grantedScope: tokens.scope, refreshToken: tokens.refresh_token, secret,
       });
-      return done("ok", "classroom_tareas_activadas", { user_id: session.userId });
+      return done("ok", "classroom_tareas_activadas", { user_id: session.userId, ...aliasField });
     } catch (error) {
       logger.warn("classroom_tareas_autorizacion_fallida", { error_code: error?.code || "oauth_failed" });
       return done("error");

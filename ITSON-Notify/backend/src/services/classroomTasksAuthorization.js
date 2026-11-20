@@ -4,7 +4,7 @@
 // Ni este módulo ni sus llamadores registran tokens, scopes ni datos académicos.
 const { encrypt } = require("../utils/secureToken");
 const {
-  CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE, hasScope,
+  CLASSROOM_SCOPE, hasScope, tienePermisoTareas, classroomScopesOnly,
 } = require("./googleAuthService");
 const { isMissingAuthorizationStatus } = require("./googleAuthorizationSchema");
 
@@ -57,7 +57,8 @@ async function getTasksAuthorization(supabase, identity) {
   const grant = await loadGrant(supabase, identity);
   const needsRelink = grant?.status === "needs_relink";
   return {
-    granted: Boolean(grant) && !needsRelink && hasScope(grant.scope, CLASSROOM_WORK_SCOPE),
+    // Cualquiera de los dos nombres del permiso de tareas (ver tienePermisoTareas).
+    granted: Boolean(grant) && !needsRelink && tienePermisoTareas(grant.scope),
     needsRelink,
   };
 }
@@ -69,14 +70,10 @@ async function getTasksAuthorization(supabase, identity) {
 // si no hay, la función conserva el anterior).
 // A la base solo viajan los scopes de Classroom que Google concedió, en el orden de Google y
 // sin duplicados. openid, email, profile o cualquier otro se descartan: no deben acabar en el
-// scope guardado del grant.
-const CLASSROOM_SCOPES = [CLASSROOM_SCOPE, CLASSROOM_WORK_SCOPE];
-const classroomScopesOnly = scope => Array.from(new Set(
-  (typeof scope === "string" ? scope.split(" ") : []).filter(value => CLASSROOM_SCOPES.includes(value)),
-)).join(" ");
-
+// scope guardado del grant. El nombre del permiso de tareas viaja tal como lo devolvió Google
+// (canónico o alias empírico); la 018 acepta ambos (ver tienePermisoTareas).
 async function activateTasks({ supabase, identity, grantedScope, refreshToken, secret }) {
-  if (!hasScope(grantedScope, CLASSROOM_WORK_SCOPE)) throw new TasksAuthorizationError("tareas_no_concedidas");
+  if (!tienePermisoTareas(grantedScope)) throw new TasksAuthorizationError("tareas_no_concedidas");
   // Un refresh token nuevo sustituye al anterior: debe seguir cubriendo los cursos.
   if (refreshToken && !hasScope(grantedScope, CLASSROOM_SCOPE)) {
     throw new TasksAuthorizationError("cursos_no_incluidos");

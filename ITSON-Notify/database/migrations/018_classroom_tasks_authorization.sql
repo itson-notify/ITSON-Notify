@@ -13,16 +13,22 @@ set local lock_timeout = '5s';
 
 -- Activar: une el scope de tareas al grant guardado y, si las tareas no estaban activas, deja
 -- coursework_baseline_at en null en los cursos del alumno (la primera sync con tareas es baseline
--- silencioso). p_granted_scope es el scope que informó Google; p_refresh_token, el refresh token
+-- silencioso). p_granted_scope son los scopes de Classroom que informó Google, con el nombre que
+-- devolvió (el backend descarta openid/email/profile); p_refresh_token, el refresh token
 -- nuevo YA CIFRADO por el backend (null conserva el anterior). Exige el grant (user_id, google_id)
 -- con status 'active' y el scope de cursos; needs_relink no activa.
+-- Permiso de tareas: classroom.coursework.me.readonly O classroom.student-submissions.me.readonly.
+-- El segundo es un alias EMPÍRICO: Google lo ha devuelto al pedir el primero. No se traduce un
+-- nombre al otro; se guarda el que devolvió Google y la prueba real es courseWork.list (un 403
+-- ahí deja el sync en solo cursos).
 create or replace function public.activate_classroom_tasks(
   p_user_id uuid, p_google_id text, p_granted_scope text, p_refresh_token text default null)
 returns jsonb
 language plpgsql security invoker set search_path = pg_catalog, public as $$
 declare
   courses_scope constant text := 'https://www.googleapis.com/auth/classroom.courses.readonly';
-  work_scope constant text := 'https://www.googleapis.com/auth/classroom.coursework.me.readonly';
+  work_scopes constant text[] := array['https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+    'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly'];
   granted text[] := string_to_array(coalesce(p_granted_scope, ''), ' ');
   stored text[];
   stored_status text;
@@ -31,7 +37,7 @@ declare
 begin
   -- Entrada (antes de cualquier candado): Google debe haber concedido las tareas, y un refresh
   -- token nuevo sustituye al anterior, así que debe seguir cubriendo los cursos.
-  if not (work_scope = any(granted)) then
+  if not (granted && work_scopes) then
     raise exception 'classroom_tasks_scope_not_granted' using errcode = '22023';
   end if;
   if p_refresh_token is not null and (p_refresh_token = '' or not (courses_scope = any(granted))) then
@@ -48,18 +54,19 @@ begin
     raise exception 'classroom_authorization_required' using errcode = '42501';
   end if;
 
-  was_active := work_scope = any(stored);
+  was_active := coalesce(stored && work_scopes, false);
   if not was_active then
     update public.classroom_courses set coursework_baseline_at = null
       where user_id = p_user_id and coursework_baseline_at is not null;
     get diagnostics reset_courses = row_count;
   end if;
 
-  -- guardado ∪ concedido ∪ tareas, sin duplicados y en orden de primera aparición.
+  -- guardado ∪ concedido, sin duplicados y en orden de primera aparición. Lo concedido ya trae el
+  -- permiso de tareas (validado arriba) con el nombre que devolvió Google.
   update public.google_authorizations
     set scope = (select string_agg(s, ' ' order by first_n) from (
           select s, min(n) as first_n
-          from unnest(stored || granted || array[work_scope]) with ordinality as t(s, n)
+          from unnest(stored || granted) with ordinality as t(s, n)
           where s <> '' group by s) u),
         refresh_token = coalesce(p_refresh_token, refresh_token),
         updated_at = now()
@@ -71,7 +78,8 @@ $$;
 revoke all on function public.activate_classroom_tasks(uuid, text, text, text) from public, anon, authenticated;
 grant execute on function public.activate_classroom_tasks(uuid, text, text, text) to service_role;
 
--- Desactivar: 1) quita classroom.coursework.me.readonly del scope guardado (conserva el de
+-- Desactivar: 1) quita el permiso de tareas del scope guardado con AMBOS nombres
+-- (classroom.coursework.me.readonly y el alias classroom.student-submissions.me.readonly; conserva el de
 -- cursos), 2) borra sus classroom_task_events y classroom_coursework, 3) deja
 -- coursework_baseline_at en null en sus cursos (reactivación = baseline silencioso).
 -- Exige la fila google_authorizations (user_id, google_id) con CUALQUIER status (needs_relink
@@ -80,7 +88,8 @@ create or replace function public.disable_classroom_tasks(p_user_id uuid, p_goog
 returns jsonb
 language plpgsql security invoker set search_path = pg_catalog, public as $$
 declare
-  work_scope constant text := 'https://www.googleapis.com/auth/classroom.coursework.me.readonly';
+  work_scopes constant text[] := array['https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+    'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly'];
   removed_events integer;
   removed_work integer;
   reset_courses integer;
@@ -92,14 +101,14 @@ begin
     for update;
   if not found then raise exception 'classroom_authorization_required' using errcode = '42501'; end if;
 
-  -- Conserva el orden del resto de scopes; solo quita el de tareas.
+  -- Conserva el orden del resto de scopes; solo quita el de tareas (ambos nombres).
   update public.google_authorizations
     set scope = array_to_string(array(
           select s from unnest(string_to_array(scope, ' ')) with ordinality as t(s, n)
-          where s <> '' and s <> work_scope order by n), ' '),
+          where s <> '' and not (s = any(work_scopes)) order by n), ' '),
         updated_at = now()
     where user_id = p_user_id and google_id = p_google_id
-      and work_scope = any(string_to_array(scope, ' '));
+      and string_to_array(scope, ' ') && work_scopes;
 
   delete from public.classroom_task_events where user_id = p_user_id;
   get diagnostics removed_events = row_count;
