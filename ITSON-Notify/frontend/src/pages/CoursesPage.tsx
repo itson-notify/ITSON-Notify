@@ -4,7 +4,7 @@ import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
   classifyItem, CLASSROOM_TASKS_NOTICE, courseSources, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
-  SOURCE_LABEL, SOURCE_ORDER, type ItemStatus, type SemesterCourse,
+  PAST_COURSES_HELP, PAST_COURSES_TITLE, SOURCE_LABEL, SOURCE_ORDER, splitByScope, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
 import type { CourseItemsEntry, CoursesState, Page } from '@/types'
@@ -16,7 +16,9 @@ import type { CourseItemsEntry, CoursesState, Page } from '@/types'
    ITN-58c - Las secciones por plataforma son plegables y empiezan cerradas. La de la
    API de ITSON es el historial de calificaciones: una subsección plegable por
    semestre con todas las materias que tienen fuente itson_api (también las
-   unificadas, que en iVirtual o Classroom siguen saliendo con sus indicadores). */
+   unificadas, que en iVirtual o Classroom siguen saliendo con sus indicadores).
+   ITN-58d - Las materias con scope "anterior" (cursos de Classroom fuera del semestre
+   actual) salen solo en la sección plegable final "Fuera del plan de estudios". */
 
 const SOURCE_STYLE: Record<CourseSource, { icon: (s?: number) => ReactElement; color: string; bg: string }> = {
   ivirtual: { icon: I.chart, color: '#16A34A', bg: '#F0FDF4' },
@@ -193,6 +195,7 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
     return <div className="px-4 md:px-0 lg:px-6"><EmptyCourses ivirtualLink={ivirtualLink} classroomConnected={classroomConnected} onGo={onGo} onRetry={onRetry} /></div>
   }
   const pendingFirstRun = ivirtualLink?.linked && !courses.some(c => c.source === 'ivirtual')
+  const { current, past } = splitByScope(courses)
   return (
     <div className="space-y-2 lg:space-y-0">
       {status === 'error' && (
@@ -212,7 +215,7 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
       {SOURCE_ORDER.map(source => {
         const id = `fuente-${source}`
         if (source === 'itson_api') {
-          const semestres = itsonSemesters(courses)
+          const semestres = itsonSemesters(current)
           if (semestres.length === 0) return null
           const total = semestres.reduce((n, s) => n + s.courses.length, 0)
           return (
@@ -237,7 +240,7 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
             </Collapsible>
           )
         }
-        const group = courses.filter(c => c.source === source)
+        const group = current.filter(c => c.source === source)
         if (group.length === 0) return null
         return (
           <Collapsible key={source} id={id} open={Boolean(open[id])} onToggle={onToggle} title={SOURCE_LABEL[source]} count={String(group.length)}>
@@ -249,6 +252,18 @@ function CourseList({ state, selectedId, onOpen, onRetry, ivirtualLink, classroo
           </Collapsible>
         )
       })}
+      {past.length > 0 && (
+        <Collapsible id="fuera-del-plan" open={Boolean(open['fuera-del-plan'])} onToggle={onToggle} title={PAST_COURSES_TITLE} count={`(${past.length})`}>
+          <div className="mt-1 bg-white border-y md:border md:rounded-lg lg:border-x-0 lg:rounded-none border-[#E5E7EB]">
+            <p className="px-4 md:px-6 py-2.5 text-[13px] text-[#64748B] border-b border-[#F1F5F9]">{PAST_COURSES_HELP}</p>
+            <ul className="divide-y divide-[#F1F5F9]">
+              {past.map(c => (
+                <li key={`${c.source}-${c.id}`}><CourseRow c={c} selected={selectedId === c.id} onClick={() => onOpen(c.id)} /></li>
+              ))}
+            </ul>
+          </div>
+        </Collapsible>
+      )}
     </div>
   )
 }

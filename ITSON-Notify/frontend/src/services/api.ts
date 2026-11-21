@@ -211,7 +211,12 @@ export interface Course {
   // ITN-58b - Fuentes que forman esta materia unificada; la primera es la principal
   // (la de los campos de arriba). Opcional por compatibilidad: sin él, solo `source`.
   sources?: CourseSourceEntry[]
+  // ITN-58d - "anterior": curso solo de Classroom que no es del semestre actual. Opcional
+  // por compatibilidad: sin él, la materia cuenta como "actual".
+  scope?: CourseScope
 }
+
+export type CourseScope = 'actual' | 'anterior'
 
 // ITN-58b - Datos propios de una fuente dentro de una materia unificada.
 export interface CourseSourceEntry {

@@ -189,10 +189,11 @@ function createStudentRepository(supabase) {
 
   // ITN-57 - Cursos de Google Classroom del alumno (migración 006). Si la tabla no
   // existe (42P01), devuelve lista vacía.
+  // ITN-58d: course_state y first_seen_at deciden si el curso es del semestre actual.
   async function listClassroomCourses(userId) {
     const res = await supabase
       .from("classroom_courses")
-      .select("id,name,section,last_seen_at,updated_at,created_at")
+      .select("id,name,section,course_state,first_seen_at,last_seen_at,updated_at,created_at")
       .eq("user_id", userId)
       .order("id", { ascending: true });
     if (res.error?.code === UNDEFINED_TABLE) return [];
@@ -219,6 +220,24 @@ function createStudentRepository(supabase) {
       .order("id", { ascending: true });
     if (res.error?.code === UNDEFINED_TABLE) return [];
     return check("classroom_coursework", res);
+  }
+
+  // ITN-58d - Fechas de Classroom de todas las tareas del alumno (sin títulos), para
+  // medir la actividad más reciente de cada curso. Paginado; sin la tabla, lista vacía.
+  async function listClassroomActivity(userId) {
+    const filas = [];
+    for (let from = 0; ; from += PAGE) {
+      const res = await supabase
+        .from("classroom_coursework")
+        .select("course_id,source_updated_at,source_created_at")
+        .eq("user_id", userId)
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (res.error?.code === UNDEFINED_TABLE) return [];
+      const pagina = check("classroom_coursework", res);
+      filas.push(...pagina);
+      if (pagina.length < PAGE) return filas;
+    }
   }
 
   // Devuelve false si la notificación no existe o es de otro alumno.
@@ -260,6 +279,7 @@ function createStudentRepository(supabase) {
     listClassroomCourses,
     getClassroomCourse,
     listClassroomCoursework,
+    listClassroomActivity,
     markRead,
     markAllRead,
   };

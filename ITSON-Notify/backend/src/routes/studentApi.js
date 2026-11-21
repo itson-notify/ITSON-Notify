@@ -107,6 +107,7 @@ function studentApiRouter({
 
   router.get("/courses", async (req, res) => {
     return res.json(await listStudentCourses(req.student.userId, repo, {
+      now,
       onSourceError,
       onAmbiguous: (count) => logger?.info?.("materias_sin_unir_por_empate", { count }),
     }));
