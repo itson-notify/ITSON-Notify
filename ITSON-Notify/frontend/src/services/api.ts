@@ -239,6 +239,14 @@ export interface CourseItem {
   kind: 'ivirtual' | 'classroom'
   // ITN-58b - Fuente del item en una materia unificada (igual a `kind`).
   source?: 'ivirtual' | 'classroom'
+  // ITN-58f - Estado de entrega en Classroom (solo tareas de Classroom). Ausente o null si
+  // aún no se conoce. state es el de Google: NEW, CREATED, TURNED_IN, RETURNED o RECLAIMED_BY_STUDENT.
+  submission?: CourseItemSubmission | null
+}
+
+export interface CourseItemSubmission {
+  state: string
+  late: boolean
 }
 
 export async function getCourses(): Promise<Course[]> {

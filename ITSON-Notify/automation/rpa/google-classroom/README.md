@@ -45,6 +45,15 @@ Aplicar/revisar manualmente 006, 008, 014 y 016 antes de activar la fase.
 No se envían notificaciones: ITN-50/44 debe consumir la bandeja de eventos
 persistida en backend. Ver [ITN-43.md](../../../backend/ITN-43.md).
 
+ITN-58f añade la fase no crítica de estado de entrega: tras el sync, solo para las
+cuentas cuyo sync reportó tareas (`coursework > 0`; un permiso solo de cursos reporta 0),
+`client.submissions(account)` envía `{ userId, googleId }` a
+`/internal/classroom/submissions`. El backend lee `studentSubmissions.list`
+(`courseWorkId "-"`, `userId "me"`) por curso con tareas y lo guarda con la RPC de la
+migración 022; nunca genera eventos ni avisos. El worker solo recibe conteos y registra
+conteos y status HTTP. Un fallo por cuenta no detiene las demás; `401`/`404` detienen la
+fase. Su resultado nunca cambia el código de salida.
+
 Contrato, migración, privacidad y alta de usuarios:
 [ITN-59.md](../../../backend/ITN-59.md).
 

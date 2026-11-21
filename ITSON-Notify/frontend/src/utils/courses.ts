@@ -4,9 +4,20 @@ import type { Course, CourseItem, CourseSource, CourseSourceEntry } from '@/serv
 
 export const ZONA_ITSON = 'America/Hermosillo'
 
-export type ItemStatus = 'vencida' | 'proxima' | 'calificada' | 'sin_fecha'
+export type ItemStatus = 'vencida' | 'proxima' | 'entregada' | 'calificada' | 'sin_fecha'
 
-export const STATUS_ORDER: ItemStatus[] = ['vencida', 'proxima', 'calificada', 'sin_fecha']
+export const STATUS_ORDER: ItemStatus[] = ['vencida', 'proxima', 'entregada', 'calificada', 'sin_fecha']
+
+// ITN-58f - Estados de Classroom que cuentan como entregada. NEW, CREATED y
+// RECLAIMED_BY_STUDENT (el alumno retiró la entrega) no cuentan.
+const SUBMITTED_STATES = new Set(['TURNED_IN', 'RETURNED'])
+
+/** La tarea de Classroom ya se entregó (TURNED_IN o RETURNED). iVirtual nunca usa este estado. */
+export const isSubmitted = (item: CourseItem) =>
+  (item.source ?? item.kind) === 'classroom' && SUBMITTED_STATES.has(item.submission?.state ?? '')
+
+/** Entregada después de la fecha límite, según Classroom. */
+export const isLateSubmission = (item: CourseItem) => isSubmitted(item) && item.submission?.late === true
 
 export const SOURCE_LABEL: Record<CourseSource, string> = {
   ivirtual: 'iVirtual',
@@ -34,15 +45,19 @@ export function sortItems(items: CourseItem[]): CourseItem[] {
     .map(x => x.item)
 }
 
-/** Calificada si tiene nota; si no, sin fecha, vencida (dueAt < now) o próxima (dueAt >= now). */
+/**
+ * Calificada si tiene nota; si no, entregada si Classroom la marca como entregada
+ * (TURNED_IN o RETURNED); si no, sin fecha, vencida (dueAt < now) o próxima (dueAt >= now).
+ */
 export function classifyItem(item: CourseItem, now: number): ItemStatus {
   if (hasGrade(item)) return 'calificada'
+  if (isSubmitted(item)) return 'entregada'
   const ms = dueMs(item)
   if (Number.isNaN(ms)) return 'sin_fecha'
   return ms < now ? 'vencida' : 'proxima'
 }
 
-/** Grupos no vacíos en el orden Vencidas, Próximas, Calificadas, Sin fecha; cada uno ordenado por fecha. */
+/** Grupos no vacíos en el orden Vencidas, Próximas, Entregadas, Calificadas, Sin fecha; cada uno ordenado por fecha. */
 export function groupItems(items: CourseItem[], now: number): { status: ItemStatus; items: CourseItem[] }[] {
   const sorted = sortItems(items)
   return STATUS_ORDER
@@ -118,6 +133,13 @@ export function sourceSections(course: Course, items: CourseItem[]): { entry: Co
     .map(entry => ({ entry, items: entry.source === 'itson_api' ? [] : items.filter(i => itemSource(i) === entry.source) }))
     .filter(({ entry, items }) => items.length > 0 || hasFinalGrade(entry.finalGrade))
 }
+
+/**
+ * ITN-58f - Nota bajo las tareas de Classroom: el estado de entrega viene de Classroom y
+ * se actualiza con cada sincronización.
+ */
+export const CLASSROOM_SUBMISSION_NOTE =
+  'El estado de entrega se actualiza con cada sincronización con Google Classroom. Si una tarea aún no muestra su estado, puede tardar en aparecer.'
 
 /** Aviso de Classroom: sus tareas todavía no se sincronizan (no significa que no existan). */
 export const CLASSROOM_TASKS_NOTICE = {

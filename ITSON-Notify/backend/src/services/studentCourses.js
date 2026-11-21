@@ -286,9 +286,30 @@ async function listStudentCourses(userId, repo, options = {}) {
   return { courses: asignarScopes(courses, { classroomCourses, tareas, now }) };
 }
 
+// ITN-58f - Estados de entrega que el frontend entiende; cualquier otro valor (o uno
+// futuro de Google) se trata como "sin estado" y la tarea se clasifica por fecha.
+const SUBMISSION_STATES = new Set(["NEW", "CREATED", "TURNED_IN", "RETURNED", "RECLAIMED_BY_STUDENT"]);
+
+// { coursework_id: { state, late } } del alumno. Es información accesoria: si falla la
+// lectura (o falta la tabla 022), las tareas salen sin estado de entrega.
+async function entregasClassroom(userId, tareas, repo, options) {
+  const porTarea = new Map();
+  if (tareas.length === 0 || typeof repo.listClassroomSubmissions !== "function") return porTarea;
+  try {
+    const filas = await repo.listClassroomSubmissions(userId, tareas.map((t) => t.id));
+    for (const fila of filas) {
+      if (typeof fila?.state !== "string" || !SUBMISSION_STATES.has(fila.state)) continue;
+      porTarea.set(fila.coursework_id, { state: fila.state, late: fila.late === true });
+    }
+  } catch (error) {
+    avisarFuente(options, "classroom_submissions", error);
+  }
+  return porTarea;
+}
+
 // Items de una sola materia de una sola fuente. Devuelve { source, items } o null si
 // no existe o es de otro alumno.
-async function itemsDeUnaFuente(userId, courseId, repo) {
+async function itemsDeUnaFuente(userId, courseId, repo, options) {
   const subject = await repo.getSubject(userId, courseId);
   if (subject) {
     // Las materias de itson_api solo tienen calificación final en /api/courses.
@@ -318,6 +339,7 @@ async function itemsDeUnaFuente(userId, courseId, repo) {
   if (!classroomCourse) return null;
 
   const tareas = await repo.listClassroomCoursework(userId, courseId);
+  const entregas = await entregasClassroom(userId, tareas, repo, options);
   const items = tareas
     .map((row) => ({
       id: row.id,
@@ -327,6 +349,8 @@ async function itemsDeUnaFuente(userId, courseId, repo) {
       dueAt: toIso(row.due_at),
       kind: ITEM_KINDS.classroom,
       source: "classroom",
+      // ITN-58f: solo cuando hay estado de entrega conocido; si no, la llave no va.
+      ...(entregas.has(row.id) ? { submission: entregas.get(row.id) } : {}),
     }))
     .sort(compararItemsClassroom);
   return { source: "classroom", items };
@@ -338,7 +362,7 @@ async function itemsDeUnaFuente(userId, courseId, repo) {
 // fuente se conserva el orden de antes. Pedirla por el id de cualquiera de sus
 // fuentes da la misma respuesta. Si una fuente hermana falla, se omite.
 async function listStudentCourseItems(userId, courseId, repo, options = {}) {
-  const propia = await itemsDeUnaFuente(userId, courseId, repo);
+  const propia = await itemsDeUnaFuente(userId, courseId, repo, options);
   if (!propia) return null;
 
   let hermanas = [];
@@ -353,7 +377,7 @@ async function listStudentCourseItems(userId, courseId, repo, options = {}) {
   const porFuente = [propia];
   for (const hermana of hermanas) {
     try {
-      const resultado = await itemsDeUnaFuente(userId, hermana.id, repo);
+      const resultado = await itemsDeUnaFuente(userId, hermana.id, repo, options);
       if (resultado) porFuente.push(resultado);
     } catch (error) {
       avisarFuente(options, `items_${hermana.source}`, error);

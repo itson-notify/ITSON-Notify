@@ -134,6 +134,34 @@ function classroomInternalRouter({
         .json({ error: error instanceof CoursesError ? error.code : 'error_interno' });
     }
   });
+  // ITN-58f - Estado de entrega del alumno por tarea (solo lectura, sin avisos). Fase aparte del
+  // sync: la llama el worker después de sincronizar cursos y tareas. Solo devuelve conteos.
+  router.post('/submissions', async (req, res) => {
+    const { userId, googleId } = req.body ?? {};
+    if (typeof userId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId) ||
+        typeof googleId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(googleId)) {
+      return res.status(400).json({ error: 'datos_invalidos' });
+    }
+    try {
+      const { submissions, errorCodes } = await service.syncSubmissionsForWorker({ userId, googleId });
+      logger?.info?.('classroom_entregas', {
+        courses: submissions.courses,
+        items: submissions.items,
+        stored: submissions.stored,
+        unknown: submissions.unknown,
+        failed: submissions.failedCourses,
+        reason: submissions.skipped ?? null,
+        error_code: errorCodes,
+      });
+      const { skipped, ...counts } = submissions;
+      return res.json({ submissions: { ...counts, skipped: Boolean(skipped) } });
+    } catch (error) {
+      const known = error instanceof CoursesError;
+      logger?.warn?.('classroom_entregas_fallida', { status: known ? error.status : 500, error_code: known ? error.code : 'error_interno' });
+      return res.status(known ? error.status : 500).json({ error: known ? error.code : 'error_interno' });
+    }
+  });
   return router;
 }
 module.exports = { classroomInternalRouter };

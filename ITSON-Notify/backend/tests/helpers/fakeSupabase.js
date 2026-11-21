@@ -84,6 +84,8 @@ const TABLES = {
       matricula_auth_tag: esBytea(16),
     },
   },
+  // 022 (ITN-58f): estado de entrega por tarea de Classroom; llave primaria coursework_id.
+  classroom_submissions: { uniques: [["coursework_id"]], notNull: ["user_id", "coursework_id", "state"] },
   // 016 (ITN-43): eventos de tareas nuevas de Classroom.
   classroom_task_events: { uniques: [["coursework_id"]], notNull: ["user_id", "coursework_id"] },
   // 008

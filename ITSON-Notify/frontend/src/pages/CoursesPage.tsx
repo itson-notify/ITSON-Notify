@@ -3,7 +3,7 @@ import { I } from '@/components/icons'
 import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
-  classifyItem, CLASSROOM_TASKS_NOTICE, courseSources, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
+  classifyItem, CLASSROOM_SUBMISSION_NOTE, CLASSROOM_TASKS_NOTICE, courseSources, isLateSubmission, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
   PAST_COURSES_HELP, PAST_COURSES_TITLE, SOURCE_LABEL, SOURCE_ORDER, splitByScope, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
@@ -30,6 +30,8 @@ const SOURCE_STYLE: Record<CourseSource, { icon: (s?: number) => ReactElement; c
 const STATUS_CFG: Record<ItemStatus, { title: string; tag: string; icon: ReactElement; text: string; bg: string; border: string }> = {
   vencida: { title: 'Vencidas', tag: 'Vencida', icon: I.alert(14), text: 'text-[#B91C1C]', bg: 'bg-[#FEF2F2]', border: 'border-[#FECACA]' },
   proxima: { title: 'Próximas', tag: 'Próxima', icon: I.clock(14), text: 'text-[#1D4ED8]', bg: 'bg-[#EFF6FF]', border: 'border-[#BFDBFE]' },
+  // ITN-58f - Sobrio (pizarra), nunca rojo: ya no requiere acción del alumno.
+  entregada: { title: 'Entregadas', tag: 'Entregada', icon: I.file(14), text: 'text-[#334155]', bg: 'bg-[#F8FAFC]', border: 'border-[#CBD5E1]' },
   calificada: { title: 'Calificadas', tag: 'Calificada', icon: I.check(14), text: 'text-[#15803D]', bg: 'bg-[#F0FDF4]', border: 'border-[#BBF7D0]' },
   sin_fecha: { title: 'Sin fecha', tag: 'Sin fecha', icon: I.info(14), text: 'text-[#475569]', bg: 'bg-[#F1F5F9]', border: 'border-[#E2E8F0]' },
 }
@@ -272,6 +274,7 @@ function ItemRow({ item, status, now }: { item: CourseItem; status: ItemStatus; 
   const cfg = STATUS_CFG[status]
   const due = formatDue(item.dueAt, now)
   const grade = formatGrade(item)
+  const tag = status === 'entregada' && isLateSubmission(item) ? 'Entregada con retraso' : cfg.tag
   return (
     <li className="flex items-start gap-3 px-4 py-3.5">
       <div className="flex-1 min-w-0">
@@ -280,8 +283,8 @@ function ItemRow({ item, status, now }: { item: CourseItem; status: ItemStatus; 
       </div>
       <div className="flex-shrink-0 flex flex-col items-end gap-1.5">
         <span className={`text-[14px] ${grade === 'Sin calificar' ? 'text-[#94A3B8]' : 'font-semibold text-[#111827]'}`}>{grade}</span>
-        <span className={`inline-flex items-center gap-1 h-6 px-2 rounded-full border text-[12px] font-medium ${cfg.text} ${cfg.bg} ${cfg.border}`}>
-          {cfg.icon}{cfg.tag}
+        <span data-status={status} className={`inline-flex items-center gap-1 h-6 px-2 rounded-full border text-[12px] font-medium whitespace-nowrap ${cfg.text} ${cfg.bg} ${cfg.border}`}>
+          {cfg.icon}{tag}
         </span>
       </div>
     </li>
@@ -312,7 +315,7 @@ function ClassroomNote() {
   return (
     <p className="flex items-start gap-2 text-[12px] leading-relaxed text-[#94A3B8]">
       <span className="mt-0.5 flex-shrink-0">{I.info()}</span>
-      Google Classroom no nos dice si ya entregaste una tarea: “Vencida” solo significa que pasó la fecha de entrega.
+      {CLASSROOM_SUBMISSION_NOTE}
     </p>
   )
 }

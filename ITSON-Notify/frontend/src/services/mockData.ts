@@ -81,8 +81,16 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
     { id: 'm6', label: 'Normalización hasta 3FN', grade: null, maxGrade: 100, dueAt: enHoras(20), kind: 'ivirtual' },
     { id: 'm7', label: 'Examen parcial 1', grade: 78.5, maxGrade: 100, dueAt: enHoras(-24 * 14), kind: 'ivirtual' },
   ],
-  // Las tareas de Classroom todavía no se sincronizan: sus clases van sin items.
-  'mock-classroom-1': [],
+  // ITN-58f - Tareas de Classroom con estado de entrega: entregada a tiempo, entregada con
+  // retraso, retirada por el alumno (RECLAIMED_BY_STUDENT no cuenta como entregada) y una
+  // sin estado todavía (se clasifica por fecha).
+  'mock-classroom-1': [
+    { id: 'm10', label: 'Ensayo: ética en IA', grade: null, maxGrade: 100, dueAt: enHoras(-24 * 3), kind: 'classroom', source: 'classroom', submission: { state: 'TURNED_IN', late: false } },
+    { id: 'm11', label: 'Práctica: regresión lineal', grade: null, maxGrade: 100, dueAt: enHoras(-24 * 6), kind: 'classroom', source: 'classroom', submission: { state: 'RETURNED', late: true } },
+    { id: 'm12', label: 'Cuestionario: búsqueda A*', grade: null, maxGrade: 10, dueAt: enHoras(-20), kind: 'classroom', source: 'classroom', submission: { state: 'RECLAIMED_BY_STUDENT', late: false } },
+    { id: 'm13', label: 'Proyecto: clasificador de imágenes', grade: null, maxGrade: 100, dueAt: enHoras(24 * 8), kind: 'classroom', source: 'classroom', submission: { state: 'NEW', late: false } },
+    { id: 'm14', label: 'Lectura: redes neuronales', grade: null, maxGrade: null, dueAt: enHoras(24 * 2), kind: 'classroom', source: 'classroom' },
+  ],
   'mock-classroom-2': [],
   'mock-classroom-4': [],
   'mock-classroom-5': [

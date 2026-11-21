@@ -1,4 +1,5 @@
 // ITN-59: consumes only the authenticated internal backend endpoint.
+const SUBMISSION_COUNTS = ['courses', 'items', 'stored', 'unknown', 'invalid', 'failedCourses'];
 function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.fetch, timeoutMs = 15000, syncTimeoutMs = 120000 }) {
   const base = new URL(baseUrl);
   if (base.username || base.password || base.search || base.hash || base.pathname !== '/' ||
@@ -10,7 +11,7 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
     try {
       const response = await fetchImpl(new URL('/internal/classroom/' + path, base).href, {
         method: body ? 'POST' : 'GET', redirect: 'error',
-        signal: AbortSignal.timeout(body?.sync || path === 'dispatch' ? syncTimeoutMs : timeoutMs),
+        signal: AbortSignal.timeout(body?.sync || path === 'dispatch' || path === 'submissions' ? syncTimeoutMs : timeoutMs),
         headers: { 'x-api-key': apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
@@ -28,6 +29,8 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
       const counts = (obj, keys) => obj && keys.every(key => Number.isSafeInteger(obj[key]) && obj[key] >= 0);
       const valid = path === 'dispatch'
         ? counts(data, ['procesados', 'enviados', 'fallidos'])
+        : path === 'submissions'
+          ? counts(data?.submissions, SUBMISSION_COUNTS) && typeof data.submissions.skipped === 'boolean'
         : body?.sync === true
           ? counts(data?.sync, ['courses', 'coursework', 'newTasks'])
           : Array.isArray(data?.[path === 'active' ? 'students' : 'courses']);
@@ -43,6 +46,13 @@ function createClassroomWorkerClient({ baseUrl, apiKey, fetchImpl = globalThis.f
     listActive: () => call('active'),
     read: ({ userId, googleId }) => call('read', { userId, googleId }),
     sync: ({ userId, googleId }) => call('read', { userId, googleId, sync: true }),
+    // ITN-58f: submission status phase (backend reads Google); only counters come back.
+    submissions: async ({ userId, googleId }) => {
+      const result = await call('submissions', { userId, googleId });
+      if (!result.ok) return result;
+      const s = result.data.submissions;
+      return { ok: true, data: { submissions: { ...Object.fromEntries(SUBMISSION_COUNTS.map(k => [k, s[k]])), skipped: s.skipped } } };
+    },
     // ITN-50: only counters come back; any other body data is discarded.
     dispatch: async () => {
       const result = await call('dispatch', {});
