@@ -243,6 +243,14 @@ function loadConfig(env = process.env) {
   ) {
     invalidas.push("GOOGLE_COOKIE_SAME_SITE (none requiere HTTPS en backend y frontend)");
   }
+  // ITN-43c - Autorización opcional de tareas de Classroom desde Ajustes. Apagada por
+  // defecto: sin ella las rutas nuevas responden 404 y la UI no muestra la tarjeta.
+  const tasksFlag = valor("CLASSROOM_TASKS_AUTH_ENABLED").toLowerCase();
+  if (tasksFlag !== "" && !ALLOWED_GOOGLE_OAUTH_ENABLED_VALUES.includes(tasksFlag)) {
+    invalidas.push("CLASSROOM_TASKS_AUTH_ENABLED (booleano inválido)");
+  }
+  const classroomTasksAuthEnabled = tasksFlag === "true" || tasksFlag === "1";
+
   const googleAuthSecret = valor("GOOGLE_AUTH_SECRET");
   if (googleAuthSecret && googleAuthSecret.length < 32) {
     invalidas.push("GOOGLE_AUTH_SECRET (mínimo 32 caracteres)");
@@ -260,6 +268,7 @@ function loadConfig(env = process.env) {
     supabaseUrl: valor("SUPABASE_URL"),
     supabaseServiceRoleKey: valor("SUPABASE_SERVICE_ROLE_KEY"),
     googleOAuth: oauthResult.config,
+    classroomTasksAuthEnabled,
     vapidPublicKey,
     vapidSubject,
     pushEnabled: vapid.enabled,

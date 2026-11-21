@@ -5,7 +5,7 @@ import { PageTitle } from '@/components/PageTitle'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
-import type { ItsonProfile, IvirtualLink } from '@/services/api'
+import type { ItsonProfile, IvirtualLink, TasksAuthorization } from '@/services/api'
 import { timeAgo } from '@/utils/time'
 import type { ConfirmReq, Notify, SetSettings, Settings } from '@/types'
 
@@ -37,11 +37,14 @@ function itsonView(link: IvirtualLink | null | undefined, itsonError: boolean) {
 export function SettingsPage({
   settings, setSettings, onFix, askConfirm, notify, onDisconnected, ivirtualLink, onUnlinkItson,
   itsonProfile, onEditItsonProfile, onRemoveItsonProfile,
+  tasksAuth, onActivateTasks, onDisableTasks, onReconnectClassroom,
 }: {
   settings: Settings; setSettings: SetSettings; onFix: () => void; askConfirm: (r: ConfirmReq) => void; notify: Notify; onDisconnected?: () => void
   ivirtualLink?: IvirtualLink | null; onUnlinkItson?: () => void
   // ITN-55 - Perfil de /api/itson-profile: undefined mientras no se conoce, null si no se pudo leer.
   itsonProfile?: ItsonProfile | null; onEditItsonProfile?: () => void; onRemoveItsonProfile?: () => void
+  // ITN-43c - Tareas de Classroom (opcional). Sin `enabled` la tarjeta no se muestra.
+  tasksAuth?: TasksAuthorization; onActivateTasks?: () => void; onDisableTasks?: () => void; onReconnectClassroom?: () => void
 }) {
   const itsonError = settings.itsonStatus === 'error'
   const itson = itsonView(ivirtualLink, itsonError)
@@ -144,6 +147,36 @@ export function SettingsPage({
             )}
           </SettingRow>
         </Section>
+
+        {/* ITN-43c - Permiso opcional de tareas, aparte del login (que solo pide cursos). */}
+        {tasksAuth?.enabled && settings.classroomConnected && (
+          <Section title="Tareas de Classroom" description="Opcional. Con este permiso te avisamos de las tareas nuevas de tus cursos.">
+            <SettingRow icon={<SmallIcon>{I.check(18)}</SmallIcon>} title="Avisos de tareas"
+              subtitle={
+                <div className="flex flex-col items-start gap-0.5">
+                  {tasksAuth.needsRelink
+                    ? <>
+                        <StatusPill tone="warn" text="Vuelve a autorizar Google Classroom" />
+                        {onReconnectClassroom && (
+                          <button onClick={onReconnectClassroom} className={`${linkCls} text-[#C2410C]`}>Volver a autorizar</button>
+                        )}
+                      </>
+                    : tasksAuth.granted
+                      ? <>
+                          <StatusPill tone="ok" text="Activadas" />
+                          {onDisableTasks && (
+                            <button onClick={onDisableTasks} className={`${linkCls} text-[#DC2626]`}>Desactivar</button>
+                          )}
+                        </>
+                      : <StatusPill tone="neutral" text="No activadas" />}
+                </div>
+              }>
+              {!tasksAuth.granted && !tasksAuth.needsRelink && onActivateTasks && (
+                <Button onClick={onActivateTasks}>Activar</Button>
+              )}
+            </SettingRow>
+          </Section>
+        )}
 
         <Section title="Qué quieres recibir">
           <CategoryRows settings={settings} setSettings={setSettings} />

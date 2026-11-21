@@ -11,6 +11,9 @@ const { listStudentCourses, listStudentCourseItems } = require("../services/stud
 const { studentCredentialsRouter } = require("./studentCredentials");
 const { itsonProfileRouter } = require("./itsonProfile");
 const { createCoursesService, CoursesError } = require("../services/classroomCourses");
+const {
+  getTasksAuthorization, disableTasks, TasksAuthorizationError,
+} = require("../services/classroomTasksAuthorization");
 const { parseCalendarRange } = require("../models/calendarEvent");
 const { createCalendarRepository, esTablaFaltante } = require("../repositories/calendarRepository");
 
@@ -54,6 +57,33 @@ function studentApiRouter({
       if (error instanceof CoursesError) return res.status(error.status).json({ error: error.code });
       throw error;
     }
+  });
+
+  // ITN-43c - Autorización opcional de tareas de Classroom. Con la bandera apagada el
+  // GET informa enabled=false (la UI no muestra nada) y el DELETE responde 404.
+  const tasksEnabled = config.classroomTasksAuthEnabled === true;
+  router.get("/classroom/tasks-authorization", async (req, res) => {
+    if (!tasksEnabled) return res.json({ enabled: false, granted: false, needsRelink: false });
+    const status = await getTasksAuthorization(supabase, req.student);
+    return res.json({ enabled: true, ...status });
+  });
+
+  router.delete("/classroom/tasks-authorization", async (req, res) => {
+    if (!tasksEnabled) return res.status(404).json({ error: "no_encontrado" });
+    try {
+      await disableTasks(supabase, req.student);
+    } catch (error) {
+      // Códigos fijos sin mensajes de Supabase: 503 migracion_pendiente (sin la 018 no se escribe
+      // nada por otro camino), 403 classroom_requiere_autorizacion (42501 de negocio; nada se
+      // borró) y 500 error_interno para el resto.
+      if (error instanceof TasksAuthorizationError) {
+        if (error.status >= 500) logger?.warn?.("classroom_tareas_desactivacion_fallida", { error_code: error.code });
+        return res.status(error.status).json({ error: error.code });
+      }
+      throw error;
+    }
+    logger?.info?.("classroom_tareas_desactivadas", { user_id: req.student.userId });
+    return res.sendStatus(204);
   });
 
   router.get("/me", async (req, res) => {

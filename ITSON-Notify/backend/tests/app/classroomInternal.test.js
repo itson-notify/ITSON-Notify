@@ -377,3 +377,45 @@ for (const [label, error, status, exitCode] of [
     'Classroom: procesadas=0 omitidas=0 fallidas=1']);
   assert.doesNotMatch(JSON.stringify([logs, s.logs]), /PRIVATE|permission denied|row-level|classroom_authorization_required/);
 });
+
+// ITN-43c: el alias es empírico; la prueba real es courseWork.list. Un 403 ahí se trata como
+// "sin permiso de tareas": se omiten las tareas de todos los cursos y los cursos se sincronizan.
+const ALIAS = 'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly';
+test('sync with the alias reads tasks; a 403 from courseWork.list falls back to courses-only', async () => {
+  const s = scopeSetup(`${CLASSROOM_SCOPE} ${ALIAS}`, `openid ${CLASSROOM_SCOPE} ${ALIAS}`);
+  const res = await s.syncRead();
+  assert.equal(res.status, 200);
+  assert.equal(s.calls.some(([url]) => String(url).includes('/courseWork')), true);
+  assert.equal(s.rpcArgs[0].p_courses[0].coursework.length, 1);
+
+  const denied = setup([json({ access_token: 'synthetic-access', token_type: 'Bearer', expires_in: 3600,
+    scope: `${CLASSROOM_SCOPE} ${ALIAS}` }),
+  json({ courses: [{ id: 'c1', name: 'PRIVATE' }, { id: 'c2', name: 'PRIVATE' }] }),
+  json({ courseWork: [{ id: 'w1', courseId: 'c1', title: 'PRIVATE' }] }),
+  json({ error: { status: 'PERMISSION_DENIED' } }, 403)]);
+  const userId = '00000000-0000-4000-8000-000000000001';
+  Object.assign(denied.db.tables.google_authorizations[0], { user_id: userId, scope: `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}` });
+  const rpcArgs = [];
+  denied.db.client.rpc = async (name, args) => { rpcArgs.push(args); return { data: { courses: 2, coursework: 0, newTasks: 0 } }; };
+  const out = await denied.read({ userId, googleId: identity.googleId, sync: true });
+  assert.equal(out.status, 200);
+  assert.equal(rpcArgs.length, 1);
+  assert.equal(rpcArgs[0].p_courses.length, 2);
+  for (const course of rpcArgs[0].p_courses) assert.equal(Object.hasOwn(course, 'coursework'), false);
+  assert.equal(denied.db.tables.google_authorizations[0].status, 'active');
+  assert.doesNotMatch(JSON.stringify([out.body, denied.logs]), /PRIVATE|synthetic|refresh_token/);
+});
+
+test('refresh with neither task name syncs only courses', async () => {
+  const s = scopeSetup(`${CLASSROOM_SCOPE} ${ALIAS}`, `openid ${CLASSROOM_SCOPE}`);
+  assert.equal((await s.syncRead()).status, 200);
+  assert.equal(s.calls.some(([url]) => String(url).includes('/courseWork')), false);
+  assert.equal(Object.hasOwn(s.rpcArgs[0].p_courses[0], 'coursework'), false);
+});
+
+test('legacy read (no sync) still fails on a courseWork 403', async () => {
+  const s = setup([token(), json({ courses: [{ id: 'c1', name: 'PRIVATE' }] }), json({}, 403)]);
+  const res = await s.read();
+  assert.equal(res.status, 403);
+  assert.deepEqual(res.body, { error: 'classroom_sin_permisos' });
+});
