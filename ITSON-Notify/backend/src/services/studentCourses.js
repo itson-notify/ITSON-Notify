@@ -17,6 +17,7 @@
 const { normalizarCodigo } = require("./itsonGradeCodes");
 const { matchCourses } = require("./courseMatcher");
 const { asignarScopes } = require("./courseScope");
+const { urlClassroomSegura } = require("../utils/classroomUrl");
 
 const COURSE_SOURCES = ["ivirtual", "classroom", "itson_api"];
 const ITEM_KINDS = {
@@ -327,6 +328,8 @@ async function itemsDeUnaFuente(userId, courseId, repo) {
       dueAt: toIso(row.due_at),
       kind: ITEM_KINDS.classroom,
       source: "classroom",
+      // ITN-58e: enlace a la tarea en Classroom, solo si es https://classroom.google.com.
+      url: urlClassroomSegura(row.alternate_link),
     }))
     .sort(compararItemsClassroom);
   return { source: "classroom", items };

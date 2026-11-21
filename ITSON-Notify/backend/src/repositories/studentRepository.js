@@ -214,13 +214,23 @@ function createStudentRepository(supabase) {
     return check("classroom_courses", res);
   }
 
+  // ITN-58e: también lee alternate_link (enlace a la tarea en Classroom). Si la
+  // columna todavía no existe (42703), repite la consulta sin ella y la devuelve null.
   async function listClassroomCoursework(userId, courseId) {
-    const res = await supabase
-      .from("classroom_coursework")
-      .select("id,title,due_at,max_points")
-      .eq("user_id", userId)
-      .eq("course_id", courseId)
-      .order("id", { ascending: true });
+    const consultar = (cols) =>
+      supabase
+        .from("classroom_coursework")
+        .select(cols)
+        .eq("user_id", userId)
+        .eq("course_id", courseId)
+        .order("id", { ascending: true });
+
+    let res = await consultar("id,title,due_at,max_points,alternate_link");
+    if (res.error?.code === UNDEFINED_COLUMN) {
+      res = await consultar("id,title,due_at,max_points");
+      if (res.error?.code === UNDEFINED_TABLE) return [];
+      return check("classroom_coursework", res).map((r) => ({ ...r, alternate_link: null }));
+    }
     if (res.error?.code === UNDEFINED_TABLE) return [];
     return check("classroom_coursework", res);
   }

@@ -4,7 +4,7 @@ import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
   classifyItem, CLASSROOM_TASKS_NOTICE, courseSources, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
-  PAST_COURSES_HELP, PAST_COURSES_TITLE, SOURCE_LABEL, SOURCE_ORDER, splitByScope, type ItemStatus, type SemesterCourse,
+  PAST_COURSES_HELP, PAST_COURSES_TITLE, safeItemUrl, SOURCE_LABEL, SOURCE_ORDER, splitByScope, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
 import type { CourseItemsEntry, CoursesState, Page } from '@/types'
@@ -272,11 +272,18 @@ function ItemRow({ item, status, now }: { item: CourseItem; status: ItemStatus; 
   const cfg = STATUS_CFG[status]
   const due = formatDue(item.dueAt, now)
   const grade = formatGrade(item)
-  return (
-    <li className="flex items-start gap-3 px-4 py-3.5">
+  // ITN-58e - Las tareas de Classroom con enlace válido abren la tarea en Classroom.
+  const href = item.source === 'classroom' || item.kind === 'classroom' ? safeItemUrl(item.url) : null
+  const contenido = (
+    <>
       <div className="flex-1 min-w-0">
-        <p className="text-[15px] font-medium text-[#111827] break-words">{item.label || 'Actividad sin nombre'}</p>
+        <p className={`text-[15px] font-medium text-[#111827] break-words ${href ? 'group-hover:underline underline-offset-2' : ''}`}>{item.label || 'Actividad sin nombre'}</p>
         <p className="text-[13px] text-[#64748B] mt-0.5">{due ? `Entrega: ${due}` : 'Sin fecha de entrega'}</p>
+        {href && (
+          <p className="inline-flex items-center gap-1 text-[12px] font-medium text-[#7C3AED] mt-1">
+            Abrir en Classroom{I.external(12)}<span className="sr-only"> (se abre en una pestaña nueva)</span>
+          </p>
+        )}
       </div>
       <div className="flex-shrink-0 flex flex-col items-end gap-1.5">
         <span className={`text-[14px] ${grade === 'Sin calificar' ? 'text-[#94A3B8]' : 'font-semibold text-[#111827]'}`}>{grade}</span>
@@ -284,6 +291,15 @@ function ItemRow({ item, status, now }: { item: CourseItem; status: ItemStatus; 
           {cfg.icon}{cfg.tag}
         </span>
       </div>
+    </>
+  )
+  if (!href) return <li className="flex items-start gap-3 px-4 py-3.5">{contenido}</li>
+  return (
+    <li>
+      <a href={href} target="_blank" rel="noopener noreferrer"
+        className={`group flex items-start gap-3 px-4 py-3.5 hover:bg-[#F8FAFC] ${focusRing}`}>
+        {contenido}
+      </a>
     </li>
   )
 }
@@ -312,7 +328,7 @@ function ClassroomNote() {
   return (
     <p className="flex items-start gap-2 text-[12px] leading-relaxed text-[#94A3B8]">
       <span className="mt-0.5 flex-shrink-0">{I.info()}</span>
-      Google Classroom no nos dice si ya entregaste una tarea: “Vencida” solo significa que pasó la fecha de entrega.
+      ITSON Notify no lee tus entregas de Classroom: “Vencida” solo significa que pasó la fecha de entrega. Abre la tarea en Classroom para ver si ya la entregaste.
     </p>
   )
 }

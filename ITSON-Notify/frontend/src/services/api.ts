@@ -239,6 +239,9 @@ export interface CourseItem {
   kind: 'ivirtual' | 'classroom'
   // ITN-58b - Fuente del item en una materia unificada (igual a `kind`).
   source?: 'ivirtual' | 'classroom'
+  // ITN-58e - Enlace a la tarea en Google Classroom (solo items de Classroom; null si
+  // no hay enlace válido). Los de iVirtual no lo traen.
+  url?: string | null
 }
 
 export async function getCourses(): Promise<Course[]> {
