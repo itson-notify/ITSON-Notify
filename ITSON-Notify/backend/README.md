@@ -865,3 +865,27 @@ códigos de salida y alertas en [`docs/deployment/cron-railway.md`](../docs/depl
 
 Contrato interno Classroom, configuración y preparación de usuarios de prueba:
 [ITN-59.md](ITN-59.md).
+
+
+# ITN-50 / ITN-44 — Ledger de notificaciones de Classroom y orden de bloqueos
+
+Detalle del ledger aditivo (`019_classroom_notification_deliveries.sql`), máquina de estados y transportes:
+[ITN-50-LEDGER.md](ITN-50-LEDGER.md).
+
+### Orden canónico de bloqueos (prevención de deadlocks `40P01`)
+
+Todas las funciones transaccionales de Classroom por alumno (`sync_classroom`, `activate_classroom_tasks`,
+`disable_classroom_tasks`, `materialize_classroom_deliveries`, `begin_classroom_delivery_send` y
+`ack_classroom_delivery`) y el trigger `trg_classroom_task_event_delete` adquieren candados de fila en este
+mismo orden jerárquico:
+
+1. `public.app_users` (`FOR UPDATE` por `user_id`)
+2. `public.google_authorizations` (`FOR UPDATE` en `018` / `FOR SHARE` en `016`, `017` y `019`)
+3. `public.classroom_task_events` (`FOR UPDATE` / `FOR SHARE` / `DELETE` en `018`)
+4. `public.classroom_notification_deliveries` (`FOR UPDATE` en las RPCs de `019` y en `trg_classroom_task_event_delete`)
+
+Para mantener ese orden cuando la RPC recibe un `event_id` o `delivery_id`, `materialize_classroom_deliveries`,
+`begin_classroom_delivery_send` y `ack_classroom_delivery` primero leen `user_id` (y `event_id`) **sin candado**,
+bloquean `app_users` (`FOR UPDATE`) y `google_authorizations` (`FOR SHARE`), y solo después bloquean el evento y
+la entrega. Por su parte, `claim_classroom_delivery` opera únicamente sobre `classroom_notification_deliveries`
+con `FOR UPDATE OF d SKIP LOCKED` ordenado por `d.id`, por lo que nunca espera candados de otra sesión.
