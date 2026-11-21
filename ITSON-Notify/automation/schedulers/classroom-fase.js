@@ -1,5 +1,33 @@
 const { createClassroomWorkerClient } = require('../rpa/google-classroom');
 
+// ITN-50: same closed list as the backend flags (true/false/1/0); empty = off.
+const FLAG_VALUES = ['true', 'false', '1', '0'];
+function dispatchFlag(raw) {
+  const flag = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (flag === '') return { valid: true, enabled: false };
+  if (!FLAG_VALUES.includes(flag)) return { valid: false, enabled: false };
+  return { valid: true, enabled: flag === 'true' || flag === '1' };
+}
+
+// ITN-50: non critical phase after the sync. Never throws and never changes the
+// worker exit code; logs only counters.
+async function despacharClassroom({ env = process.env, client, log = console.log, logError = console.error } = {}) {
+  const flag = dispatchFlag(env.CLASSROOM_DISPATCH_ENABLED);
+  if (!flag.valid) { logError('Classroom despacho: configuracion invalida.'); return; }
+  if (!flag.enabled) return;
+  try {
+    const result = await client.dispatch();
+    if (!result?.ok) {
+      logError(`Classroom despacho: no disponible (status=${Number.isSafeInteger(result?.status) ? result.status : 0}).`);
+      return;
+    }
+    const { procesados, enviados, fallidos } = result.data;
+    log(`Classroom despacho: procesados=${procesados} enviados=${enviados} fallidos=${fallidos}`);
+  } catch {
+    logError('Classroom despacho: no disponible (status=0).');
+  }
+}
+
 async function ejecutarClassroom({ env = process.env, crearCliente = createClassroomWorkerClient,
   log = console.log, logError = console.error } = {}) {
   if (env.RPA_PAUSADO === 'true' || env.CLASSROOM_SYNC_ENABLED !== 'true') return 0;
@@ -35,6 +63,8 @@ async function ejecutarClassroom({ env = process.env, crearCliente = createClass
   }
   // No bodies, account identities, academic metadata or arbitrary error messages.
   log(`Classroom: procesadas=${processed} omitidas=${skipped} fallidas=${failures}`);
+  // ITN-50: dispatch pending task notices; its result never changes the exit code.
+  await despacharClassroom({ env, client, log, logError });
   return failures ? 1 : 0;
 }
-module.exports = { ejecutarClassroom };
+module.exports = { ejecutarClassroom, despacharClassroom, dispatchFlag };

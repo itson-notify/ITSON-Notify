@@ -102,3 +102,14 @@ candados por alumno:
 * **`handle_classroom_task_event_delete` (trigger `BEFORE DELETE ON classroom_task_events`):** se ejecuta cuando
   `disable_classroom_tasks` ya posee `app_users` (`FOR UPDATE`), `google_authorizations` (`FOR UPDATE`) y el candado
   de borrado sobre `classroom_task_events`, actualizando `classroom_notification_deliveries` en cuarto lugar.
+
+## 4. Despacho de avisos (ITN-50, rama `feature/ITN-50-despacho-classroom`, sobre #44)
+
+`POST /internal/classroom/dispatch` ejecuta `processClassroomDeliveries` sobre el ledger 019 (no usa `notifications_log` ni `grade_changes`).
+
+* **Apagado por defecto:** `CLASSROOM_DISPATCH_ENABLED` (lista cerrada `true/false/1/0`; vacío = apagado). Apagado responde `404` sin tocar la base. Un valor inválido también responde `404` (falla cerrado).
+* **Lista permitida:** `CLASSROOM_DISPATCH_ALLOWED_USERS` (correo, `user_id` o `google_id`, separados por coma). Vacía por defecto (falla cerrado: sin correos reales en el repositorio y no envía a ningún estudiante hasta configurarla en Railway). El comodín `*` se ignora. Se aplica en dos puntos: antes de materializar el evento y antes de `beginSend`; una entrega encolada de otro alumno se cancela con `user_not_allowed` sin enviar.
+* **Respuesta:** solo `{ procesados, enviados, fallidos }`. `409` si ya hay un despacho en curso en la instancia (la exclusión real entre instancias la da el claim atómico de 019); `503` si falta una migración o no hay ningún transporte (`email` ni `web_push`) configurado (nunca finge envíos con el canal `log`).
+* **Bandeja:** `GET /api/notifications` incluye los avisos `sent` del ledger con categoría `tareas`; marcar como leído funciona por id de evento.
+* **Worker:** `despacharClassroom` corre después de la sincronización, lee la misma variable y nunca cambia el código de salida.
+* **Pruebas:** `backend/tests/app/classroomDispatch.test.js` y `automation/schedulers/test/classroom-fase.test.js`.

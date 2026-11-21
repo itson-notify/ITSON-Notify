@@ -131,3 +131,88 @@ test('HTTP sync sends only identity and opt in, validates counters, no retry on 
     { ok: true, data: { sync: { courses: 2, coursework: 3, newTasks: 1 } } });
   assert.equal(calls, 1);
 });
+
+// ITN-50 - Fase de despacho de avisos de tareas, después de la sincronización.
+const { despacharClassroom, dispatchFlag } = require('../classroom-fase');
+const cliente = (dispatch, students = [{ userId: 'a', googleId: 'a' }]) => () => ({
+  listActive: async () => ({ ok: true, data: { students } }),
+  sync: async () => ({ ok: true }),
+  dispatch,
+});
+
+test('dispatch flag uses the closed true/false/1/0 list; empty is off', () => {
+  for (const [raw, expected] of [[undefined, { valid: true, enabled: false }], ['', { valid: true, enabled: false }],
+    ['true', { valid: true, enabled: true }], ['1', { valid: true, enabled: true }], [' TRUE ', { valid: true, enabled: true }],
+    ['false', { valid: true, enabled: false }], ['0', { valid: true, enabled: false }],
+    ['yes', { valid: false, enabled: false }], ['on', { valid: false, enabled: false }]]) {
+    assert.deepEqual(dispatchFlag(raw), expected, String(raw));
+  }
+});
+
+test('dispatch off (default or invalid) never calls the backend route', async () => {
+  for (const flag of [undefined, 'false', '0', 'PRIVATE-yes']) {
+    let calls = 0; const logs = [], errors = [];
+    const code = await ejecutarClassroom({ env: { ...env, CLASSROOM_DISPATCH_ENABLED: flag }, log: s => logs.push(s),
+      logError: s => errors.push(s), crearCliente: cliente(async () => { calls++; return { ok: true, data: {} }; }) });
+    assert.equal(code, 0); assert.equal(calls, 0);
+    assert.deepEqual(logs, ['Classroom: procesadas=1 omitidas=0 fallidas=0']);
+    assert.deepEqual(errors, flag === 'PRIVATE-yes' ? ['Classroom despacho: configuracion invalida.'] : []);
+  }
+});
+
+test('dispatch runs after the sync and logs only counters', async () => {
+  const order = [], logs = [];
+  const code = await ejecutarClassroom({ env: { ...env, CLASSROOM_DISPATCH_ENABLED: 'true' }, log: s => logs.push(s),
+    crearCliente: () => ({
+      listActive: async () => ({ ok: true, data: { students: [{ userId: 'a', googleId: 'a' }] } }),
+      sync: async () => { order.push('sync'); return { ok: true }; },
+      dispatch: async () => { order.push('dispatch'); return { ok: true, data: { procesados: 3, enviados: 2, fallidos: 1 } }; },
+    }) });
+  assert.equal(code, 0); assert.deepEqual(order, ['sync', 'dispatch']);
+  assert.deepEqual(logs, ['Classroom: procesadas=1 omitidas=0 fallidas=0',
+    'Classroom despacho: procesados=3 enviados=2 fallidos=1']);
+});
+
+test('dispatch failure is non critical: exit code unchanged, logged without details', async () => {
+  for (const dispatch of [async () => { throw new Error('PRIVATE'); }, async () => ({ ok: false, status: 500 }),
+    async () => ({ ok: false, status: 503 })]) {
+    const logs = [], errors = [];
+    const code = await ejecutarClassroom({ env: { ...env, CLASSROOM_DISPATCH_ENABLED: '1' }, log: s => logs.push(s),
+      logError: s => errors.push(s), crearCliente: cliente(dispatch) });
+    assert.equal(code, 0);
+    assert.equal(errors.length, 1); assert.match(errors[0], /^Classroom despacho: no disponible \(status=\d+\)\.$/);
+    assert.doesNotMatch(JSON.stringify([logs, errors]), /PRIVATE/);
+  }
+  // A sync failure still returns 1, but dispatch failure does not add to it.
+  const code = await ejecutarClassroom({ env: { ...env, CLASSROOM_DISPATCH_ENABLED: 'true' }, log() {}, logError() {},
+    crearCliente: () => ({ listActive: async () => ({ ok: true, data: { students: [{ userId: 'a', googleId: 'a' }] } }),
+      sync: async () => ({ ok: false, status: 500 }), dispatch: async () => { throw new Error(); } }) });
+  assert.equal(code, 1);
+});
+
+test('cron keeps exit code 0 when only the dispatch fails', async () => {
+  const code = await arrancar({ correr: async () => 0, correrApi: async () => 0,
+    correrClassroom: () => ejecutarClassroom({ env: { ...env, CLASSROOM_DISPATCH_ENABLED: 'true' }, log() {}, logError() {},
+      crearCliente: cliente(async () => { throw new Error('PRIVATE'); }) }),
+    correrCalendario: async () => {}, alertar: async () => {}, logError() {} });
+  assert.equal(code, 0);
+});
+
+test('HTTP dispatch posts to the internal route with the key and keeps only counters', async () => {
+  const calls = [];
+  const client = createClassroomWorkerClient({ baseUrl: env.BACKEND_URL, apiKey: env.INTERNAL_API_KEY,
+    fetchImpl: async (url, options) => {
+      calls.push([url, options.method, options.headers['x-api-key'], options.body]);
+      return new Response(JSON.stringify({ procesados: 1, enviados: 1, fallidos: 0, private: 'PRIVATE' }));
+    } });
+  assert.deepEqual(await client.dispatch(), { ok: true, data: { procesados: 1, enviados: 1, fallidos: 0 } });
+  assert.deepEqual(calls, [['https://backend.test/internal/classroom/dispatch', 'POST', 'synthetic', '{}']]);
+  for (const body of [JSON.stringify({ procesados: -1, enviados: 0, fallidos: 0 }), JSON.stringify({ error: 'x' })]) {
+    const bad = createClassroomWorkerClient({ baseUrl: env.BACKEND_URL, apiKey: env.INTERNAL_API_KEY,
+      fetchImpl: async () => new Response(body) });
+    assert.deepEqual(await bad.dispatch(), { ok: false, status: 502, needsRelink: false });
+  }
+  const off = createClassroomWorkerClient({ baseUrl: env.BACKEND_URL, apiKey: env.INTERNAL_API_KEY,
+    fetchImpl: async () => new Response(JSON.stringify({ error: 'no_encontrado' }), { status: 404 }) });
+  assert.equal((await off.dispatch()).status, 404);
+});
