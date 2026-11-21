@@ -720,3 +720,44 @@ test('con VITE_USE_MOCK=true hay una tarea de Classroom con enlace válido', () 
   assert.ok(conUrl.length > 0);
   assert.ok(conUrl.every(i => i.kind === 'classroom' && U.safeItemUrl(i.url) === i.url));
 });
+
+// ── ITN-58e - safeItemUrl igual al backend (solo classroom.google.com) ──────
+
+test('utilidades: safeItemUrl solo acepta https://classroom.google.com, como el backend', () => {
+  const U = compile('utils/courses.ts', require);
+  assert.equal(U.safeItemUrl(ENLACE_CR), ENLACE_CR);
+  assert.equal(U.safeItemUrl('https://classroom.google.com/u/0/c/MTIz/a/NDU2/details'), 'https://classroom.google.com/u/0/c/MTIz/a/NDU2/details');
+  for (const malo of [
+    'https://example.com/c/1/a/2/details',
+    'https://classroom.google.com.evil.com/c/1/a/2/details',
+    'https://evil.com/classroom.google.com',
+    'https://evilclassroom.google.com/c/1',
+    'https://docs.google.com/c/1',
+    'https://usuario:clave@classroom.google.com/c/1',
+    'https://usuario@classroom.google.com/c/1',
+    'https://classroom.google.com:8443/c/1',
+    'http://classroom.google.com/c/1',
+    'javascript:alert(1)',
+    'data:text/html,hola',
+    '', '   ', null, undefined, 42, {}, [], true,
+    `https://classroom.google.com/${'a'.repeat(3000)}`,
+  ]) {
+    assert.equal(U.safeItemUrl(malo), null, String(malo).slice(0, 80));
+  }
+});
+
+test('detalle: una tarea de Classroom con url https de otro dominio se muestra sin enlace', () => {
+  const items = [
+    tareaCr('otro-dominio', 'https://example.com/c/1/a/2/details'),
+    tareaCr('subdominio-falso', 'https://classroom.google.com.evil.com/c/1'),
+    tareaCr('ruta-engañosa', 'https://evil.com/classroom.google.com'),
+  ];
+  const r = renderCourses({
+    state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items, updatedAt: COURSE_CR.updatedAt } },
+  });
+  assert.equal(r.all.filter(n => n.type === 'a').length, 0);
+  assert.doesNotMatch(r.texto, /Abrir en Classroom/);
+  for (const i of items) assert.match(r.texto, new RegExp(i.label));
+  assert.doesNotMatch(JSON.stringify(r.all.map(n => n.props?.href ?? null)), /example\.com|evil\.com/);
+});
