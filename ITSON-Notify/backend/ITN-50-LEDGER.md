@@ -1,0 +1,115 @@
+# ITN-50 / ITN-44 — Ledger aditivo de entregas de notificaciones de Google Classroom
+
+Contrato e implementación acordados entre Luis, Julián y Pedro para consumir
+`classroom_task_events` (migración `016`, baseline en `017`, autorización de tareas
+en `018`) sin acoplar eventos de Classroom a `grade_changes` ni a `notifications_log`.
+
+## 1. Piezas implementadas
+
+* `database/migrations/019_classroom_notification_deliveries.sql`:
+  * Tabla `public.classroom_notification_deliveries` con `UNIQUE (source, event_id, channel)`,
+    `source = 'classroom'`, `channel in ('email', 'web_push')`, manifiesto congelado
+    `required_channels`, `policy_version`, vinculación a la generación del grant
+    (`authorization_google_id`, `authorization_created_at`), máquina de estados
+    (`pending`, `claimed`, `sending`, `retry_wait`, `blocked`, `unknown`, `sent`,
+    `dead`, `cancelled`), `attempts`, `next_attempt_at`, `claim_token`, `lease_until`,
+    `send_deadline`, `cancel_requested`, `template_version`, `payload`,
+    `recipient_fingerprint` (`^v1:[0-9a-f]{64}$`), `idempotency_key`,
+    `provider_reference`, `last_error_code` (`^[a-z0-9_]{1,64}$`), `sent_at`,
+    `read_at`, `created_at` y `updated_at`.
+  * RLS habilitado sin políticas públicas; permisos revocados a `public`, `anon` y
+    `authenticated` y concedidos exclusivamente a `service_role`.
+  * Trigger `trg_classroom_task_event_delete` (`BEFORE DELETE ON public.classroom_task_events`):
+    compatible con `disable_classroom_tasks` (`018`). Cuando se borran eventos de
+    `classroom_task_events` al desactivar tareas, las filas del ledger **no se borran**:
+    las entregas `pending/claimed/retry_wait/blocked` pasan atómicamente a `cancelled`
+    (`last_error_code = 'event_deleted'`) y las entregas en vuelo (`sending/unknown`)
+    marcan `cancel_requested = true`, conservando la auditoría y las llaves de idempotencia.
+  * 4 funciones RPC (`security invoker`, `set search_path = pg_catalog, public`, solo `service_role`):
+    1. `public.materialize_classroom_deliveries(p_event_id, p_channels, p_policy_version)`
+    2. `public.claim_classroom_delivery(p_lease_seconds, p_max_attempts)`
+    3. `public.begin_classroom_delivery_send(p_delivery_id, p_claim_token, p_send_deadline_seconds, p_max_attempts, p_recipient_fingerprint, p_template_version)`
+    4. `public.ack_classroom_delivery(p_delivery_id, p_claim_token, p_outcome, p_provider_reference, p_error_code, p_retry_delay_seconds, p_max_attempts)`
+* `backend/src/repositories/classroomDeliveryRepository.js`:
+  * Cliente de las RPCs y lector aditivo de entregas `sent` para la bandeja de la app
+    (`listStudentDeliveredEvents`, `markDeliveryRead`, `markAllDeliveriesRead`).
+  * Distingue el conflicto de negocio `42501` (`classroom_authorization_required` → `409`)
+    de errores reales de privilegios SQL/RLS (`42501` genérico → `500`) y migraciones
+    pendientes (`42883`, `PGRST202`, `42P01`, `PGRST205`, `42703` → `503`).
+* `backend/src/services/classroomDeliveryService.js`:
+  * `processClassroomDeliveries`: materializa planes de eventos pendientes y procesa la
+    cola en dos fases (`claim` → `beginSend` → transporte → `ack`).
+  * `createClassroomEmailTransport`: usa `google_authorizations.email` validado en
+    `beginSend` y envía el header nativo `Idempotency-Key` a Resend. Si ocurre un
+    timeout o `5xx` dentro de la ventana certificada de idempotencia, pasa a
+    `retry_wait` con la misma llave; fuera de la ventana o sin garantía, pasa a `unknown`.
+  * `createClassroomWebPushTransport`: purga sesiones revocadas (`ITN-54`), limpia
+    endpoints `404/410`, usa `tag: "itson-classroom-task-<event_id>"` y considera
+    `accepted` cuando al menos un dispositivo activo acepta el push.
+  * `toClassroomDeliveryNotif`: proyecta entregas `sent` al formato `Notif` (`type: "tareas"`).
+* `backend/tests/services/classroomDeliveryService.test.js`,
+  `backend/tests/sql/classroomDeliveries.sql` y
+  `backend/scripts/verify-classroom-deliveries-sql.cjs`.
+
+## 2. Garantías de exclusión, autorización y finalización
+
+* **Claim atómico en dos fases:** `claim_classroom_delivery` usa `FOR UPDATE OF d SKIP LOCKED`
+  y reloj de base de datos (`clock_timestamp()`). Recuperar una reserva `claimed` cuya
+  `lease_until` venció emite un `claim_token` nuevo sin incrementar `attempts` e
+  impide que el consumidor anterior pase `beginSend`.
+* **`sending` jamás se reclama por expiración:** si vence `send_deadline` mientras
+  una fila está en `sending`, pasa a `unknown` (`last_error_code = 'send_deadline_expired'`).
+  Un ACK tardío con el mismo `claim_token` puede resolver `unknown` a `sent`.
+* **Revalidación en `beginSend`:** inmediatamente antes del I/O externo se verifica
+  en base de datos que el evento siga existiendo, que `event.user_id = work.user_id = course.user_id`,
+  que la tarea siga `PUBLISHED` con `event.created_at > coursework_baseline_at`, y que
+  `google_authorizations` esté en `status = 'active'`, conserve la misma generación
+  (`google_id`, `created_at`) y tenga el **permiso específico de tareas**
+  (`classroom.coursework.me.readonly` o `classroom.student-submissions.me.readonly`)
+  además de `classroom.courses.readonly`.
+* **`delivered_at` estricto:** `ack_classroom_delivery` solo actualiza
+  `classroom_task_events.delivered_at` en la misma transacción cuando existen todas
+  las filas de `required_channels` para el evento y todas están en `state = 'sent'`.
+  Los estados `blocked`, `unknown`, `dead` y `cancelled` nunca marcan `delivered_at`.
+  Además, `ack_classroom_delivery` solo acepta `p_outcome in ('sent', 'unknown', 'retry_wait')`
+  cuando la entrega está en `sending` o `unknown` (nunca desde `claimed`), y
+  `claim_classroom_delivery` transiciona a `dead` (`last_error_code = 'max_attempts_reached'`)
+  cualquier fila en `retry_wait`, `pending` o `claimed` vencida que haya alcanzado `attempts >= p_max_attempts`.
+
+## 3. Orden canónico de bloqueos (prevención de deadlocks `40P01`)
+
+Para evitar interbloqueos (`40P01`) cuando `disable_classroom_tasks` (`018`) se ejecuta en paralelo con el
+consumidor de entregas (`019`), las 4 funciones RPC y el trigger siguen el mismo orden global de adquisición de
+candados por alumno:
+
+1. `public.app_users` (`FOR UPDATE` sobre `id = v_user_id`)
+2. `public.google_authorizations` (`FOR UPDATE` en `018` / `FOR SHARE` en `016`, `017` y `019`)
+3. `public.classroom_task_events` (`FOR UPDATE` / `FOR SHARE` / `DELETE` en `018`)
+4. `public.classroom_notification_deliveries` (`FOR UPDATE` en las RPCs de `019` y en `trg_classroom_task_event_delete`)
+
+* **`materialize_classroom_deliveries`:** lee `user_id` del evento sin candado, bloquea `app_users` (`FOR UPDATE`),
+  bloquea `google_authorizations` (`FOR SHARE`), relee y bloquea `classroom_task_events` (`FOR SHARE`) y luego
+  inserta/lee `classroom_notification_deliveries`.
+* **`begin_classroom_delivery_send`:** lee `(user_id, event_id)` de la entrega sin candado, bloquea `app_users`
+  (`FOR UPDATE`), `google_authorizations` (`FOR SHARE`), `classroom_task_events` (`FOR SHARE`) y por último
+  `classroom_notification_deliveries` (`FOR UPDATE`).
+* **`ack_classroom_delivery`:** lee `(user_id, event_id)` de la entrega sin candado, bloquea `app_users`
+  (`FOR UPDATE`), `google_authorizations` (`FOR SHARE`), `classroom_task_events` (`FOR UPDATE`) y por último
+  `classroom_notification_deliveries` (`FOR UPDATE`).
+* **`claim_classroom_delivery`:** solo toca `classroom_notification_deliveries` usando `FOR UPDATE OF d SKIP LOCKED`
+  (ordenado por `d.id`) tanto en los CTEs de mantenimiento (`expired_sending`, `exhausted`, `unblocked`) como en la
+  selección de la entrega elegible, sin esperar candados de otras transacciones.
+* **`handle_classroom_task_event_delete` (trigger `BEFORE DELETE ON classroom_task_events`):** se ejecuta cuando
+  `disable_classroom_tasks` ya posee `app_users` (`FOR UPDATE`), `google_authorizations` (`FOR UPDATE`) y el candado
+  de borrado sobre `classroom_task_events`, actualizando `classroom_notification_deliveries` en cuarto lugar.
+
+## 4. Despacho de avisos (ITN-50, rama `feature/ITN-50-despacho-classroom`, sobre #44)
+
+`POST /internal/classroom/dispatch` ejecuta `processClassroomDeliveries` sobre el ledger 019 (no usa `notifications_log` ni `grade_changes`).
+
+* **Apagado por defecto:** `CLASSROOM_DISPATCH_ENABLED` (lista cerrada `true/false/1/0`; vacío = apagado). Apagado responde `404` sin tocar la base. Un valor inválido también responde `404` (falla cerrado).
+* **Lista permitida:** `CLASSROOM_DISPATCH_ALLOWED_USERS` (correo, `user_id` o `google_id`, separados por coma). Vacía por defecto (falla cerrado: sin correos reales en el repositorio y no envía a ningún estudiante hasta configurarla en Railway). El comodín `*` se ignora. Se aplica en dos puntos: antes de materializar el evento y antes de `beginSend`; una entrega encolada de otro alumno se cancela con `user_not_allowed` sin enviar.
+* **Respuesta:** solo `{ procesados, enviados, fallidos }`. `409` si ya hay un despacho en curso en la instancia (la exclusión real entre instancias la da el claim atómico de 019); `503` si falta una migración o no hay ningún transporte (`email` ni `web_push`) configurado (nunca finge envíos con el canal `log`).
+* **Bandeja:** `GET /api/notifications` incluye los avisos `sent` del ledger con categoría `tareas`; marcar como leído funciona por id de evento.
+* **Worker:** `despacharClassroom` corre después de la sincronización, lee la misma variable y nunca cambia el código de salida.
+* **Pruebas:** `backend/tests/app/classroomDispatch.test.js` y `automation/schedulers/test/classroom-fase.test.js`.
