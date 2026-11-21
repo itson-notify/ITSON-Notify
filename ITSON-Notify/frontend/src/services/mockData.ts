@@ -63,6 +63,10 @@ export const MOCK_COURSES: Course[] = [
   { id: 'mock-itson-1', name: 'Cálculo Diferencial', source: 'itson_api', period: '05', finalGrade: '9', updatedAt: enHoras(-30) },
   { id: 'mock-itson-2', name: 'Ética Profesional', source: 'itson_api', period: '05', finalGrade: 'A', updatedAt: enHoras(-30) },
   { id: 'mock-itson-6', name: 'Sistemas Operativos', source: 'itson_api', period: '05', finalGrade: '10', updatedAt: enHoras(-30) },
+  // ITN-58d - Cursos de Classroom fuera del plan de estudios: uno archivado y uno
+  // ACTIVE sin actividad desde 2023 (el backend calcula scope).
+  { id: 'mock-classroom-4', name: 'Club de Ajedrez 2024', source: 'classroom', period: 'Grupo A', finalGrade: null, updatedAt: enHoras(-5), scope: 'anterior' },
+  { id: 'mock-classroom-5', name: 'Precálculo Grupo 9', source: 'classroom', period: null, finalGrade: null, updatedAt: enHoras(-5), scope: 'anterior' },
 ]
 
 export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
@@ -80,6 +84,11 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
   // Las tareas de Classroom todavía no se sincronizan: sus clases van sin items.
   'mock-classroom-1': [],
   'mock-classroom-2': [],
+  'mock-classroom-4': [],
+  'mock-classroom-5': [
+    { id: 'm8', label: 'Guía de ejercicios 1', grade: null, maxGrade: 10, dueAt: '2023-03-10T06:59:00.000Z', kind: 'classroom', source: 'classroom' },
+    { id: 'm9', label: 'Examen diagnóstico', grade: null, maxGrade: 100, dueAt: null, kind: 'classroom', source: 'classroom' },
+  ],
   'mock-itson-1': [],
   'mock-itson-2': [],
   'mock-itson-4': [],

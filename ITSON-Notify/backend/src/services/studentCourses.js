@@ -11,8 +11,12 @@
 //
 // ITN-58b - La misma materia en varias fuentes sale como una sola entrada con
 // sources[] (ver unificarCursos y courseMatcher.js).
+//
+// ITN-58d - Cada materia trae `scope` ("actual" | "anterior"): las que vienen solo de
+// Classroom y no son del semestre actual van como "anterior" (ver courseScope.js).
 const { normalizarCodigo } = require("./itsonGradeCodes");
 const { matchCourses } = require("./courseMatcher");
+const { asignarScopes } = require("./courseScope");
 
 const COURSE_SOURCES = ["ivirtual", "classroom", "itson_api"];
 const ITEM_KINDS = {
@@ -204,7 +208,7 @@ async function listarCursosPorFuente(userId, repo, options) {
   }
 
   courses.sort(compararCursos);
-  return courses;
+  return { courses, classroomCourses };
 }
 
 function masReciente(a, b) {
@@ -250,13 +254,36 @@ function unificarCursos(porFuente) {
   return { courses, ambiguous: ambiguous.length };
 }
 
+// Materias unificadas sin scope (lo que usa /items para hallar las fuentes hermanas).
+async function listarUnificadas(userId, repo, options) {
+  const { courses: porFuente, classroomCourses } = await listarCursosPorFuente(userId, repo, options);
+  const { courses, ambiguous } = unificarCursos(porFuente);
+  return { courses, ambiguous, classroomCourses };
+}
+
+// ITN-58d - Fechas de las tareas de Classroom para saber si un curso ACTIVE sigue en
+// uso. Solo se leen si hay alguna materia que sea solo de Classroom. Si falla, se
+// avisa y la actividad queda desconocida (null): esas materias quedan "actual".
+async function leerActividadClassroom(userId, repo, courses, options) {
+  const soloClassroom = courses.some((c) => c.sources.every((s) => s.source === "classroom"));
+  if (!soloClassroom || typeof repo.listClassroomActivity !== "function") return [];
+  try {
+    return await repo.listClassroomActivity(userId);
+  } catch (error) {
+    avisarFuente(options, "classroom_actividad", error);
+    return null;
+  }
+}
+
 // options.onSourceError(step, error): se llama cuando una fuente secundaria falla.
 // options.onAmbiguous(count): cuántas materias quedaron sin unir por un empate.
+// options.now: instante (ms) para calcular el semestre actual; por defecto Date.now().
 async function listStudentCourses(userId, repo, options = {}) {
-  const porFuente = await listarCursosPorFuente(userId, repo, options);
-  const { courses, ambiguous } = unificarCursos(porFuente);
+  const { courses, ambiguous, classroomCourses } = await listarUnificadas(userId, repo, options);
   if (ambiguous > 0) options.onAmbiguous?.(ambiguous);
-  return { courses };
+  const tareas = await leerActividadClassroom(userId, repo, courses, options);
+  const now = typeof options.now === "function" ? options.now() : options.now ?? Date.now();
+  return { courses: asignarScopes(courses, { classroomCourses, tareas, now }) };
 }
 
 // Items de una sola materia de una sola fuente. Devuelve { source, items } o null si
@@ -316,7 +343,7 @@ async function listStudentCourseItems(userId, courseId, repo, options = {}) {
 
   let hermanas = [];
   try {
-    const { courses } = await listStudentCourses(userId, repo, options);
+    const { courses } = await listarUnificadas(userId, repo, options);
     const grupo = courses.find((c) => c.sources.some((s) => s.id === courseId));
     hermanas = (grupo?.sources ?? []).filter((s) => s.id !== courseId && s.source !== "itson_api");
   } catch (error) {

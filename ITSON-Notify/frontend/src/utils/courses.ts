@@ -186,3 +186,16 @@ export function itsonSemesters(courses: Course[]): SemesterGroup[] {
     return b.period.localeCompare(a.period, 'es')
   })
 }
+
+// ── ITN-58d - Materias fuera del plan de estudios ──────────────────────────
+
+/** Solo "anterior" saca la materia de la lista normal; sin `scope` (backend viejo) es actual. */
+export const isPastCourse = (course: Course) => course.scope === 'anterior'
+
+/** Separa las materias del semestre actual de las fuera del plan, conservando el orden. */
+export function splitByScope(courses: Course[]): { current: Course[]; past: Course[] } {
+  return { current: courses.filter(c => !isPastCourse(c)), past: courses.filter(isPastCourse) }
+}
+
+export const PAST_COURSES_TITLE = 'Fuera del plan de estudios'
+export const PAST_COURSES_HELP = 'Cursos de Classroom que no coinciden con tu semestre actual.'

@@ -566,3 +566,88 @@ test('con VITE_USE_MOCK=true el historial de ITSON trae dos semestres con materi
   assert.ok(sems[0].courses.some(c => c.course.sources?.length > 1), 'incluye la materia unificada');
   for (const c of mock.MOCK_COURSES) assert.ok(Array.isArray(mock.MOCK_COURSE_ITEMS[c.id]), c.id);
 });
+
+// ── ITN-58d - Materias fuera del plan de estudios ───────────────────────────
+
+const ANTERIOR_ARCH = { id: '44444444-4444-4444-8444-444444444444', name: 'Taller Antiguo Inventado', source: 'classroom', period: 'Grupo A', finalGrade: null, updatedAt: '2026-11-18T10:00:00.000Z', scope: 'anterior' };
+const ANTERIOR_VIEJO = { id: '55555555-5555-4555-8555-555555555555', name: 'Precálculo Inventado', source: 'classroom', period: null, finalGrade: null, updatedAt: '2026-11-18T10:00:00.000Z', scope: 'anterior' };
+const ITEM_VIEJO = { id: 'old1', label: 'Guía inventada de 2023', grade: null, maxGrade: 10, dueAt: '2023-03-10T06:59:00.000Z', kind: 'classroom', source: 'classroom' };
+const CON_ANTERIORES = [...HISTORIAL.map(c => ({ ...c, scope: 'actual' })), ANTERIOR_ARCH, ANTERIOR_VIEJO];
+
+test('utilidades: splitByScope separa las anteriores; sin scope cuenta como actual', () => {
+  const { current, past } = U.splitByScope([COURSE_IV, ANTERIOR_ARCH, { ...COURSE_CR, scope: 'actual' }, ANTERIOR_VIEJO]);
+  assert.deepEqual(current.map(c => c.id), [COURSE_IV.id, COURSE_CR.id]);
+  assert.deepEqual(past.map(c => c.id), [ANTERIOR_ARCH.id, ANTERIOR_VIEJO.id]);
+  assert.equal(U.isPastCourse(COURSE_CR), false);
+});
+
+test('g) sin materias anteriores no aparece la sección "Fuera del plan de estudios"', () => {
+  for (const courses of [HISTORIAL, HISTORIAL.map(c => ({ ...c, scope: 'actual' }))]) {
+    const r = renderCourses({ state: { status: 'ready', courses } });
+    assert.equal(r.seccion('fuera-del-plan'), undefined);
+    assert.doesNotMatch(r.texto, /Fuera del plan/);
+  }
+});
+
+test('g) la sección va al final, empieza cerrada, con su contador, y las anteriores salen solo ahí', () => {
+  let r = renderCourses({ state: { status: 'ready', courses: CON_ANTERIORES } });
+  assert.deepEqual(r.plegables(), ['fuente-ivirtual', 'fuente-classroom', 'fuente-itson_api', 'fuera-del-plan']);
+  const b = r.boton('fuera-del-plan');
+  assert.equal(b.props['aria-expanded'], false);
+  assert.equal(b.props['aria-controls'], 'fuera-del-plan-contenido');
+  assert.equal(r.all.find(n => n.props?.id === 'fuera-del-plan-contenido').props.hidden, true);
+  assert.match(r.textoDe('fuera-del-plan'), /^Fuera del plan de estudios \(2\)/);
+  // Google Classroom sigue contando solo su materia actual.
+  assert.match(r.textoDe('fuente-classroom'), /^Google Classroom 1/);
+  assert.doesNotMatch(r.texto, /Taller Antiguo|Precálculo Inventado|no coinciden/);
+
+  r = r.toggle('fuente-classroom');
+  assert.doesNotMatch(r.textoDe('fuente-classroom'), /Taller Antiguo|Precálculo Inventado/);
+
+  r = r.toggle('fuera-del-plan');
+  assert.equal(r.boton('fuera-del-plan').props['aria-expanded'], true);
+  assert.match(r.textoDe('fuera-del-plan'), /Cursos de Classroom que no coinciden con tu semestre actual\..*Taller Antiguo Inventado.*Precálculo Inventado/);
+  r = r.toggle('fuera-del-plan');
+  assert.doesNotMatch(r.texto, /Taller Antiguo/);
+});
+
+test('g) abrir una materia anterior muestra su detalle con sus tareas', () => {
+  const abiertas = [];
+  const r = renderCourses({ state: { status: 'ready', courses: CON_ANTERIORES }, onOpen: id => abiertas.push(id) }, { abiertas: ['fuera-del-plan'] });
+  const filas = r.all.filter(n => n.type === 'button' && n.props.onClick && !n.props.id);
+  filas.forEach(f => f.props.onClick());
+  assert.deepEqual(abiertas, [ANTERIOR_ARCH.id, ANTERIOR_VIEJO.id]);
+
+  const detalle = renderCourses({
+    state: { status: 'ready', courses: CON_ANTERIORES }, selectedId: ANTERIOR_VIEJO.id,
+    itemsById: { [ANTERIOR_VIEJO.id]: { status: 'ready', items: [ITEM_VIEJO], updatedAt: ANTERIOR_VIEJO.updatedAt } },
+  });
+  assert.match(detalle.texto, /Precálculo Inventado/);
+  assert.match(detalle.texto, /Guía inventada de 2023/);
+  assert.match(detalle.texto, /Vencida/);
+});
+
+test('g) App pide las tareas de una materia anterior al abrirla', async () => {
+  const b = backend({ courses: [COURSE_IV, ANTERIOR_VIEJO], items: { [ANTERIOR_VIEJO.id]: [ITEM_VIEJO] } });
+  const h = harness('', b.fetchImpl, { useMock: false });
+  try {
+    await h.start();
+    find(h.render(), 'AppLayout').props.onGo('materias');
+    await h.settle();
+    const page = () => find(h.render(), 'CoursesPage');
+    assert.equal(page().props.state.courses.find(c => c.id === ANTERIOR_VIEJO.id).scope, 'anterior');
+    page().props.onOpen(ANTERIOR_VIEJO.id);
+    await h.settle();
+    assert.equal(page().props.itemsById[ANTERIOR_VIEJO.id].status, 'ready');
+    assert.deepEqual(page().props.itemsById[ANTERIOR_VIEJO.id].items.map(i => i.id), ['old1']);
+    assert.ok(b.calls.some(c => c.ruta === `/api/courses/${ANTERIOR_VIEJO.id}/items`));
+  } finally { h.restore(); }
+});
+
+test('con VITE_USE_MOCK=true hay cursos de Classroom fuera del plan (archivado y antiguo) con detalle', () => {
+  const mock = compile('services/mockData.ts', require, { VITE_USE_MOCK: 'true' });
+  const { past } = U.splitByScope(mock.MOCK_COURSES);
+  assert.ok(past.length >= 2);
+  assert.ok(past.every(c => c.source === 'classroom'));
+  assert.ok(past.some(c => mock.MOCK_COURSE_ITEMS[c.id].length > 0), 'una anterior con tareas');
+});
