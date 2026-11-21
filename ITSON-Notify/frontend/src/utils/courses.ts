@@ -14,6 +14,21 @@ export const SOURCE_LABEL: Record<CourseSource, string> = {
   itson_api: 'API de ITSON',
 }
 
+// ITN-58e - Enlace de un item (tarea de Classroom) que se puede poner en un href. El
+// backend ya lo valida; aquí se revalida (defensa en profundidad): solo https, sin
+// usuario ni contraseña en la URL. Cualquier otro valor devuelve null (sin enlace).
+export function safeItemUrl(url: unknown): string | null {
+  if (typeof url !== 'string' || url.trim() === '' || url.length > 2048) return null
+  let parsed: URL
+  try {
+    parsed = new URL(url.trim())
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
+  return parsed.href
+}
+
 const dueMs = (item: CourseItem) => {
   if (!item.dueAt) return NaN
   return Date.parse(item.dueAt)
