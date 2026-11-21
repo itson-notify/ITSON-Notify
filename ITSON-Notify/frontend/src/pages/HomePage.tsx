@@ -26,7 +26,7 @@ export function HomePage({ student, notifs, settings, sync, onOpen, onFilter, on
       {showClassroomPrompt && (
         <div className="mt-4 mx-4 md:mx-0 flex items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white pl-3.5 pr-1.5 py-2">
           <span className="w-9 h-9 rounded-lg bg-[#F5F3FF] text-[#7C3AED] flex items-center justify-center flex-shrink-0">{I.book(18)}</span>
-          <p className="flex-1 min-w-0 text-[13px] text-[#475569]">Conecta Google Classroom para recibir tus tareas.</p>
+          <p className="flex-1 min-w-0 text-[13px] text-[#475569]">Conecta Google Classroom para sincronizar tus cursos.</p>
           <button onClick={() => onGo('configuracion')} className={`${linkCls} px-2 text-[#2563EB] flex-shrink-0`}>Conectar</button>
           {/* [H3] + [H8] Se puede quitar si no le interesa */}
           <button onClick={onDismissPrompt} aria-label="Ocultar sugerencia" className={`w-9 h-9 flex items-center justify-center rounded-md text-[#94A3B8] hover:text-[#111827] cursor-pointer flex-shrink-0 ${focusRing}`}>{I.x(16)}</button>

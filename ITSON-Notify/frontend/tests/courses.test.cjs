@@ -316,12 +316,19 @@ test('utilidades: fuentes ordenadas, materia sin sources y secciones sin fuentes
   assert.deepEqual(U.sourceSections(sinDatos, [ITEM_IV]).map(s => s.entry.source), ['ivirtual']);
 });
 
-// Renderiza CoursesPage expandiendo sus componentes locales (sin hooks). Los
-// componentes importados quedan como nodos con nombre ('Button', 'SkeletonList').
-function renderCourses(props) {
+// Renderiza CoursesPage expandiendo sus componentes locales. ITN-58c - El único hook
+// es el useState de CoursesPage (secciones abiertas); su estado se conserva entre
+// render() para poder abrir y cerrar. `abiertas` abre secciones antes del primer render.
+// Los componentes importados quedan como nodos con nombre ('Button', 'SkeletonList').
+function renderCourses(props, { abiertas = [] } = {}) {
   const jsx = (type, p) => ({ type, props: p });
   const courses = compile('utils/courses.ts', require);
+  let estado = Object.fromEntries(abiertas.map(id => [id, true]));
+  const hooks = {
+    useState: () => [estado, value => { estado = typeof value === 'function' ? value(estado) : value; }],
+  };
   const { CoursesPage } = compile('pages/CoursesPage.tsx', id => {
+    if (id === 'react') return hooks;
     if (id === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
     if (id === '@/components/icons') return { I: new Proxy({}, { get: () => () => null }) };
     if (id === '@/utils/courses') return courses;
@@ -334,29 +341,41 @@ function renderCourses(props) {
     if (typeof node.type === 'function') return expand(node.type(node.props));
     return { type: node.type, props: { ...node.props, children: expand(node.props?.children) } };
   };
-  const tree = expand(CoursesPage({
-    state: { status: 'ready', courses: [UNIFICADA] }, itemsById: {}, selectedId: null,
-    onOpen() {}, onClose() {}, onRetry() {}, onRetryItems() {}, onGo() {},
-    ivirtualLink: { linked: true }, classroomConnected: true, now: NOW, ...props,
-  }));
-  const all = [];
-  const walk = n => { if (Array.isArray(n)) return n.forEach(walk); if (n && typeof n === 'object') { all.push(n); walk(n.props?.children); } };
-  walk(tree);
   const text = n => [n?.props?.children].flat(Infinity).map(c => (typeof c === 'string' || typeof c === 'number' ? String(c) : c && typeof c === 'object' ? text(c) : '')).join('');
-  return { all, texto: text(tree), conFuente: tipo => all.filter(n => n.props?.['data-source'] && n.type === tipo) };
+  const render = () => {
+    const tree = expand(CoursesPage({
+      state: { status: 'ready', courses: [UNIFICADA] }, itemsById: {}, selectedId: null,
+      onOpen() {}, onClose() {}, onRetry() {}, onRetryItems() {}, onGo() {},
+      ivirtualLink: { linked: true }, classroomConnected: true, now: NOW, ...props,
+    }));
+    const all = [];
+    const walk = n => { if (Array.isArray(n)) return n.forEach(walk); if (n && typeof n === 'object') { all.push(n); walk(n.props?.children); } };
+    walk(tree);
+    const seccion = id => all.find(n => n.props?.['data-collapsible'] === id);
+    const boton = id => all.find(n => n.type === 'button' && n.props?.id === `${id}-titulo`);
+    return {
+      all, texto: text(tree), conFuente: tipo => all.filter(n => n.props?.['data-source'] && n.type === tipo),
+      seccion, boton, textoDe: id => text(seccion(id)),
+      // Encabezados plegables en orden de aparición.
+      plegables: () => all.filter(n => n.props?.['data-collapsible']).map(n => n.props['data-collapsible']),
+      toggle(id) { boton(id).props.onClick(); return render(); },
+      render,
+    };
+  };
+  return render();
 }
 
 test('la lista muestra una sola tarjeta por materia unificada con los indicadores de sus fuentes', () => {
-  const r = renderCourses({});
-  const tarjetas = r.all.filter(n => n.type === 'li');
-  assert.equal(tarjetas.length, 1);
+  const r = renderCourses({}, { abiertas: ['fuente-ivirtual'] });
+  assert.equal(r.all.filter(n => n.type === 'li').length, 1);
   assert.deepEqual(r.conFuente('span').map(n => n.props['data-source']), ['ivirtual', 'classroom', 'itson_api']);
   assert.match(r.texto, /Ingeniería de Software/);
   assert.match(r.texto, /iVirtual.*Google Classroom.*API de ITSON/);
-  // Una materia de una sola fuente conserva el texto de antes y no lleva indicadores.
-  const sola = renderCourses({ state: { status: 'ready', courses: [COURSE_IT] } });
+  // Una materia de una sola fuente no lleva indicadores; la de ITSON sale en su semestre.
+  const sola = renderCourses({ state: { status: 'ready', courses: [COURSE_IT] } }, { abiertas: ['fuente-itson_api', 'semestre-03'] });
   assert.equal(sola.conFuente('span').length, 0);
-  assert.match(sola.texto, /API de ITSON · Semestre 3/);
+  assert.match(sola.texto, /API de ITSON 1/);
+  assert.match(sola.textoDe('semestre-03'), /Semestre 3 · 1 materia.*Cálculo.*9/);
 });
 
 test('el detalle de una materia unificada tiene una sección por fuente con sus datos', () => {
@@ -396,7 +415,30 @@ test('el detalle omite las fuentes sin datos y conserva carga y error', () => {
 
   const vacia = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => ({ ...s, finalGrade: null })) };
   const sinNada = renderCourses({ state: { status: 'ready', courses: [vacia] }, selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [], updatedAt: UNIFICADA.updatedAt } } });
-  assert.match(sinNada.texto, /Sin tareas ni calificaciones registradas/);
+  // Con fuente Classroom no se afirma que no haya tareas: aún no se sincronizan.
+  assert.match(sinNada.texto, /Las tareas de Google Classroom todavía no están disponibles en ITSON Notify/);
+  assert.doesNotMatch(sinNada.texto, /Sin tareas ni calificaciones registradas/);
+});
+
+test('estado vacío del detalle: Classroom explica que sus tareas aún no llegan; sin Classroom es neutro', () => {
+  assert.equal(U.emptyCourseNotice(COURSE_CR).body,
+    'Las tareas de Google Classroom todavía no están disponibles en ITSON Notify. Consulta Classroom para revisar tus actividades y entregas pendientes.');
+  assert.equal(U.emptyCourseNotice(UNIFICADA), U.CLASSROOM_TASKS_NOTICE);
+  for (const curso of [COURSE_IV, COURSE_IT, { ...COURSE_IT, sources: [UNIFICADA.sources[0], UNIFICADA.sources[2]] }]) {
+    const { title, body } = U.emptyCourseNotice(curso);
+    assert.match(`${title} ${body}`, /sincronizad/);
+    assert.doesNotMatch(`${title} ${body}`, /Classroom|no tiene|Sin tareas/);
+  }
+
+  // Materia de iVirtual sin actividades (detalle de una sola fuente): texto neutro.
+  const iv = renderCourses({ state: { status: 'ready', courses: [COURSE_IV] }, selectedId: COURSE_IV.id, itemsById: { [COURSE_IV.id]: { status: 'ready', items: [], updatedAt: COURSE_IV.updatedAt } } });
+  assert.match(iv.texto, /Aún no hay actividades sincronizadas/);
+
+  // Unificada con datos de iVirtual pero sin tareas de Classroom: se aclara lo de Classroom.
+  const soloIv = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [ITEM_IV], updatedAt: UNIFICADA.updatedAt } } });
+  assert.match(soloIv.texto, /Tareas de Classroom aún no disponibles/);
+  const conCr = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: { status: 'ready', items: [ITEM_IV, ITEM_CR], updatedAt: UNIFICADA.updatedAt } } });
+  assert.doesNotMatch(conCr.texto, /Tareas de Classroom aún no disponibles/);
 });
 
 test('App pide /items de una materia unificada aunque su fuente principal sea ITSON', async () => {
@@ -409,4 +451,118 @@ test('App pide /items de una materia unificada aunque su fuente principal sea IT
     assert.deepEqual(rutas(calls, '/api/courses/'), [`/api/courses/${COURSE_IT.id}/items`]);
     assert.deepEqual(page().props.itemsById[COURSE_IT.id].items, [ITEM_CR]);
   } finally { h.restore(); }
+});
+
+// ── ITN-58c - Secciones plegables e historial de ITSON por semestre ──────────
+
+const itsonCurso = (id, name, period, finalGrade) => ({ id, name, source: 'itson_api', period, finalGrade, updatedAt: '2026-11-18T09:00:00.000Z' });
+const HISTORIAL = [
+  UNIFICADA, // su fuente itson_api es del semestre 05
+  COURSE_CR,
+  itsonCurso('it-a', 'Álgebra', '01', '10'),
+  itsonCurso('it-b', 'Redes', '08', null),
+  itsonCurso('it-c', 'Compiladores', '08', '-'),
+  itsonCurso('it-d', 'Ética', '10', 'A'),
+];
+
+test('utilidades: semestres de ITSON en orden descendente con las materias unificadas', () => {
+  const sems = U.itsonSemesters(HISTORIAL);
+  assert.deepEqual(sems.map(s => s.label), ['Semestre 10', 'Semestre 8', 'Semestre 5', 'Semestre 1']);
+  assert.deepEqual(sems[1].courses.map(c => c.course.name), ['Compiladores', 'Redes']);
+  // La unificada aparece con el nombre y el id de la materia y la calificación de ITSON.
+  assert.deepEqual(sems[2].courses.map(c => [c.course.id, c.entry.finalGrade]), [[UNIFICADA.id, '9']]);
+  // Classroom no entra; sin semestre va al final.
+  assert.deepEqual(U.itsonSemesters([COURSE_CR]), []);
+  assert.deepEqual(U.itsonSemesters([itsonCurso('x', 'X', null, '9'), itsonCurso('y', 'Y', '02', '9')]).map(s => s.label), ['Semestre 2', 'Sin semestre']);
+});
+
+test('utilidades: null y "-" son "Sin calificación"', () => {
+  assert.equal(U.finalGradeLabel(null), 'Sin calificación');
+  assert.equal(U.finalGradeLabel('-'), 'Sin calificación');
+  assert.equal(U.finalGradeLabel(' - '), 'Sin calificación');
+  assert.equal(U.finalGradeLabel(''), 'Sin calificación');
+  assert.equal(U.finalGradeLabel('9'), '9');
+  assert.equal(U.finalGradeLabel('A'), 'A');
+  assert.equal(U.hasFinalGrade('-'), false);
+});
+
+test('las secciones por plataforma empiezan cerradas: solo el encabezado', () => {
+  const r = renderCourses({ state: { status: 'ready', courses: HISTORIAL } });
+  assert.deepEqual(r.plegables(), ['fuente-ivirtual', 'fuente-classroom', 'fuente-itson_api']);
+  for (const id of r.plegables()) {
+    const b = r.boton(id);
+    assert.equal(b.props['aria-expanded'], false);
+    assert.equal(b.props['aria-controls'], `${id}-contenido`);
+    assert.equal(b.props.type, 'button');
+    const region = r.all.find(n => n.props?.id === `${id}-contenido`);
+    assert.equal(region.props.hidden, true);
+    assert.equal(region.props.children, false);
+  }
+  assert.equal(r.all.filter(n => n.type === 'li').length, 0);
+  // Encabezado con nombre y conteo; ITSON cuenta todas sus materias (también la unificada).
+  assert.match(r.textoDe('fuente-ivirtual'), /^iVirtual 1/);
+  assert.match(r.textoDe('fuente-classroom'), /^Google Classroom 1/);
+  assert.match(r.textoDe('fuente-itson_api'), /^API de ITSON 5/);
+  assert.doesNotMatch(r.texto, /Semestre|Redes|Álgebra/);
+});
+
+test('abrir y cerrar una sección y un semestre', () => {
+  let r = renderCourses({ state: { status: 'ready', courses: HISTORIAL } });
+  r = r.toggle('fuente-classroom');
+  assert.equal(r.boton('fuente-classroom').props['aria-expanded'], true);
+  assert.equal(r.all.find(n => n.props?.id === 'fuente-classroom-contenido').props.hidden, false);
+  assert.match(r.textoDe('fuente-classroom'), /IA/);
+  assert.equal(r.boton('fuente-ivirtual').props['aria-expanded'], false);
+  r = r.toggle('fuente-classroom');
+  assert.equal(r.boton('fuente-classroom').props['aria-expanded'], false);
+  assert.doesNotMatch(r.textoDe('fuente-classroom'), /IA/);
+
+  // Al abrir ITSON salen los semestres, todos cerrados.
+  r = r.toggle('fuente-itson_api');
+  assert.deepEqual(r.plegables().filter(id => id.startsWith('semestre-')), ['semestre-10', 'semestre-08', 'semestre-05', 'semestre-01']);
+  assert.ok(r.plegables().filter(id => id.startsWith('semestre-')).every(id => r.boton(id).props['aria-expanded'] === false));
+  assert.match(r.textoDe('fuente-itson_api'), /Semestre 10 · 1 materia.*Semestre 8 · 2 materias.*Semestre 5 · 1 materia.*Semestre 1 · 1 materia/);
+  assert.doesNotMatch(r.texto, /Compiladores/);
+
+  r = r.toggle('semestre-08');
+  assert.equal(r.boton('semestre-08').props['aria-expanded'], true);
+  assert.match(r.textoDe('semestre-08'), /Compiladores.*Sin calificación.*Redes.*Sin calificación/);
+  assert.doesNotMatch(r.textoDe('semestre-08'), /-/);
+  r = r.toggle('semestre-05');
+  assert.match(r.textoDe('semestre-05'), /Ingeniería de Software.*9/);
+  r = r.toggle('semestre-08');
+  assert.doesNotMatch(r.texto, /Compiladores/);
+  // Cerrar la sección de ITSON oculta todo su historial.
+  r = r.toggle('fuente-itson_api');
+  assert.doesNotMatch(r.texto, /Semestre|Ingeniería de Software/);
+});
+
+test('una materia del historial abre su detalle (también la unificada)', () => {
+  const abiertas = [];
+  const r = renderCourses({ state: { status: 'ready', courses: HISTORIAL }, onOpen: id => abiertas.push(id) }, { abiertas: ['fuente-itson_api', 'semestre-05', 'semestre-08'] });
+  const filas = r.all.filter(n => n.type === 'button' && n.props.onClick && !n.props.id);
+  filas.forEach(f => f.props.onClick());
+  // Semestre 8 (Compiladores, Redes) va antes que el 5 (la unificada, con su propio id).
+  assert.deepEqual(abiertas, ['it-c', 'it-b', UNIFICADA.id]);
+});
+
+test('el detalle de una unificada muestra semestre y calificación de ITSON; "-" no cuenta', () => {
+  const entry = { status: 'ready', items: [ITEM_IV], updatedAt: UNIFICADA.updatedAt };
+  const r = renderCourses({ selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: entry } });
+  const itson = r.conFuente('section').find(s => s.props['data-source'] === 'itson_api');
+  assert.ok(itson);
+  const guion = { ...UNIFICADA, sources: UNIFICADA.sources.map(s => (s.source === 'itson_api' ? { ...s, finalGrade: '-' } : s)) };
+  const sinItson = renderCourses({ state: { status: 'ready', courses: [guion] }, selectedId: UNIFICADA.id, itemsById: { [UNIFICADA.id]: entry } });
+  assert.deepEqual(sinItson.conFuente('section').map(s => s.props['data-source']), ['ivirtual']);
+});
+
+test('con VITE_USE_MOCK=true el historial de ITSON trae dos semestres con materias sin calificación', () => {
+  const env = { VITE_USE_MOCK: 'true' };
+  const mock = compile('services/mockData.ts', require, env);
+  const sems = U.itsonSemesters(mock.MOCK_COURSES);
+  assert.deepEqual(sems.map(s => s.label), ['Semestre 6', 'Semestre 5']);
+  const grados = sems.flatMap(s => s.courses.map(c => U.finalGradeLabel(c.entry.finalGrade)));
+  assert.ok(grados.includes('Sin calificación'));
+  assert.ok(sems[0].courses.some(c => c.course.sources?.length > 1), 'incluye la materia unificada');
+  for (const c of mock.MOCK_COURSES) assert.ok(Array.isArray(mock.MOCK_COURSE_ITEMS[c.id]), c.id);
 });

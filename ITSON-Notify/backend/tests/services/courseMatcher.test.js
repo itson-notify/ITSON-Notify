@@ -128,3 +128,79 @@ describe("ITN-58b - matchCourses", () => {
     assert.deepEqual(entradas, copia);
   });
 });
+
+describe("ITN-58c - palabras vacías en español e inglés", () => {
+  test("quita palabras vacías solo del conjunto que compara Jaccard", () => {
+    assert.deepEqual(normalizeCourseName("Business Strategy and Technology for the Planning of Projects").words, [
+      "busines", // singular() quita la "s" final
+      "planning",
+      "project",
+      "strategy",
+      "technology",
+    ]);
+    assert.deepEqual(normalizeCourseName("Taller para Diseño con Datos").words, ["dato", "diseno", "taller"]);
+  });
+
+  test("une BUSINESS STRATEGY AND TECHNOLOGY (classroom) con Business Strategy Technology (itson_api)", () => {
+    assert.deepEqual(
+      grupos([
+        { key: "cr1", source: "classroom", name: "BUSINESS STRATEGY AND TECHNOLOGY" },
+        { key: "it1", source: "itson_api", name: "Business Strategy Technology" },
+      ]),
+      [["cr1", "it1"]],
+    );
+  });
+
+  test("no une Optativa II - DevOps con Optativa II", () => {
+    assert.deepEqual(
+      grupos([
+        { key: "cr1", source: "classroom", name: "Optativa II - DevOps" },
+        { key: "it1", source: "itson_api", name: "Optativa II" },
+      ]),
+      [["cr1"], ["it1"]],
+    );
+  });
+
+  test("no une Optativa II con Optativa III", () => {
+    assert.deepEqual(
+      grupos([
+        { key: "iv1", source: "ivirtual", name: "Optativa II" },
+        { key: "it1", source: "itson_api", name: "Optativa III" },
+      ]),
+      [["iv1"], ["it1"]],
+    );
+  });
+
+  test("no une Diseño de Software con Diseño de sistemas Interactivos", () => {
+    assert.deepEqual(
+      grupos([
+        { key: "iv1", source: "ivirtual", name: "Diseño de Software" },
+        { key: "it1", source: "itson_api", name: "Diseño de sistemas Interactivos" },
+      ]),
+      [["iv1"], ["it1"]],
+    );
+  });
+
+  test("sigue ignorando acentos y mayúsculas", () => {
+    assert.equal(courseSimilarity("Ingeniería de requisitos", "INGENIERIA DE REQUISITOS"), 1);
+    assert.deepEqual(
+      grupos([
+        { key: "cr1", source: "classroom", name: "Ingeniería de requisitos" },
+        { key: "it1", source: "itson_api", name: "INGENIERIA DE REQUISITOS" },
+      ]),
+      [["cr1", "it1"]],
+    );
+  });
+
+  test("un nombre hecho solo de palabras vacías no se une", () => {
+    assert.deepEqual(normalizeCourseName("The and of").words, []);
+    assert.equal(courseSimilarity("The and of", "The and of"), 0);
+    assert.deepEqual(
+      grupos([
+        { key: "cr1", source: "classroom", name: "The and of" },
+        { key: "it1", source: "itson_api", name: "the AND of" },
+      ]),
+      [["cr1"], ["it1"]],
+    );
+  });
+});

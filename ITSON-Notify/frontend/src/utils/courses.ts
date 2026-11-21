@@ -116,5 +116,73 @@ export const itemSource = (item: CourseItem): 'ivirtual' | 'classroom' => item.s
 export function sourceSections(course: Course, items: CourseItem[]): { entry: CourseSourceEntry; items: CourseItem[] }[] {
   return courseSources(course)
     .map(entry => ({ entry, items: entry.source === 'itson_api' ? [] : items.filter(i => itemSource(i) === entry.source) }))
-    .filter(({ entry, items }) => items.length > 0 || Boolean(entry.finalGrade))
+    .filter(({ entry, items }) => items.length > 0 || hasFinalGrade(entry.finalGrade))
+}
+
+/** Aviso de Classroom: sus tareas todavía no se sincronizan (no significa que no existan). */
+export const CLASSROOM_TASKS_NOTICE = {
+  title: 'Tareas de Classroom aún no disponibles',
+  body: 'Las tareas de Google Classroom todavía no están disponibles en ITSON Notify. Consulta Classroom para revisar tus actividades y entregas pendientes.',
+}
+
+/**
+ * Estado vacío del detalle de una materia. No afirma que no haya actividades: con
+ * Classroom explica que sus tareas aún no se sincronizan; sin Classroom, que aún no
+ * hay actividades sincronizadas.
+ */
+export function emptyCourseNotice(course: Course): { title: string; body: string } {
+  if (courseSources(course).some(s => s.source === 'classroom')) return CLASSROOM_TASKS_NOTICE
+  return {
+    title: 'Aún no hay actividades sincronizadas',
+    body: 'Todavía no hemos sincronizado actividades ni calificaciones de esta materia. Aparecerán aquí en cuanto lleguen de sus fuentes.',
+  }
+}
+
+// ── ITN-58c - Historial de calificaciones de la API de ITSON por semestre ────
+
+/** La API de ITSON manda null o '-' cuando aún no hay calificación final. */
+export function hasFinalGrade(value: string | null | undefined): value is string {
+  const v = value?.trim()
+  return Boolean(v) && v !== '-'
+}
+
+/** Calificación final legible o "Sin calificación" (null, vacío o '-'). */
+export const finalGradeLabel = (value: string | null | undefined): string =>
+  hasFinalGrade(value) ? value.trim() : 'Sin calificación'
+
+export interface SemesterCourse { course: Course; entry: CourseSourceEntry }
+export interface SemesterGroup { period: string | null; label: string; courses: SemesterCourse[] }
+
+const periodNumber = (period: string | null) => (period && /^\d{1,2}$/.test(period.trim()) ? Number(period) : null)
+
+/**
+ * Un grupo por semestre con todas las fuentes itson_api de la lista, también las de
+ * materias unificadas (es el historial de calificaciones). Orden descendente por
+ * semestre; los periodos no numéricos van después y "sin semestre" al final. Dentro
+ * de cada semestre, por nombre.
+ */
+export function itsonSemesters(courses: Course[]): SemesterGroup[] {
+  const porPeriodo = new Map<string, SemesterGroup>()
+  for (const course of courses) {
+    for (const entry of courseSources(course)) {
+      if (entry.source !== 'itson_api') continue
+      const period = entry.period?.trim() || null
+      const key = period ?? ''
+      let group = porPeriodo.get(key)
+      if (!group) {
+        group = { period, label: period ? periodLabel({ source: 'itson_api', period }) ?? period : 'Sin semestre', courses: [] }
+        porPeriodo.set(key, group)
+      }
+      group.courses.push({ course, entry })
+    }
+  }
+  const groups = [...porPeriodo.values()]
+  for (const g of groups) g.courses.sort((a, b) => a.course.name.localeCompare(b.course.name, 'es'))
+  return groups.sort((a, b) => {
+    if (a.period === null || b.period === null) return a.period === null ? (b.period === null ? 0 : 1) : -1
+    const na = periodNumber(a.period); const nb = periodNumber(b.period)
+    if (na !== null && nb !== null) return nb - na
+    if (na !== null || nb !== null) return na !== null ? -1 : 1
+    return b.period.localeCompare(a.period, 'es')
+  })
 }

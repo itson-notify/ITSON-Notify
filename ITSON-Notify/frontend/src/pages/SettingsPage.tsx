@@ -2,7 +2,6 @@ import { I } from '@/components/icons'
 import { Button, Section, SettingRow, SmallIcon, Toggle } from '@/components/ui'
 import { CategoryRows } from '@/components/CategoryRows'
 import { PageTitle } from '@/components/PageTitle'
-import { WatchEditor } from '@/components/WatchEditor'
 import { linkCls } from '@/utils/styles'
 import { connectGoogle, disconnectGoogle } from '@/services/googleAuth'
 import { subscribeBrowserPush, unsubscribeBrowserPush } from '@/services/pushNotifications'
@@ -55,7 +54,7 @@ export function SettingsPage({
 
   const disconnectClassroom = () => askConfirm({
     title: '¿Desconectar Google Classroom?',
-    body: 'Dejarás de recibir avisos de tareas. Puedes volver a conectarlo cuando quieras.',
+    body: 'Dejaremos de sincronizar tus cursos de Classroom. Puedes volver a conectarlo cuando quieras.',
     label: 'Desconectar', danger: true,
     onConfirm: async () => {
       try {
@@ -149,14 +148,6 @@ export function SettingsPage({
         <Section title="Qué quieres recibir">
           <CategoryRows settings={settings} setSettings={setSettings} />
         </Section>
-
-        {settings.categories.cupos && (
-          <Section title="Materias para vigilar cupos" description="Te avisamos solo cuando se libere un lugar en estas materias.">
-            <WatchEditor list={settings.cupoWatch}
-              onChange={fn => setSettings(s => ({ ...s, cupoWatch: fn(s.cupoWatch) }))}
-              onRemoved={(m, undo) => notify(`Dejaste de vigilar ${m}`, undo)} />
-          </Section>
-        )}
 
         <Section title="Cómo te avisamos">
           <SettingRow icon={<SmallIcon>{I.phone(18)}</SmallIcon>} title="En este dispositivo"

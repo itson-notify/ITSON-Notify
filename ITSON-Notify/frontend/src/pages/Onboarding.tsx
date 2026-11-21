@@ -4,7 +4,6 @@ import { Button, PasswordField, Spinner, SuccessCard, TextField, TypeIcon } from
 import { CategoryRows } from '@/components/CategoryRows'
 import { ItsonProfileForm } from '@/components/ItsonProfileForm'
 import type { ItsonProfile } from '@/services/api'
-import { WatchEditor } from '@/components/WatchEditor'
 import { ITSON_RECOVERY_URL } from '@/services/mockData'
 import type { StudentView } from '@/utils/student'
 import { connectGoogle as startGoogleAuth } from '@/services/googleAuth'
@@ -58,7 +57,7 @@ export function Onboarding({
       <div className="flex flex-col h-full pt-6 md:pt-2">
         <span className="w-14 h-14 rounded-xl bg-[#2563EB] text-white flex items-center justify-center">{I.bell(26)}</span>
         <h1 className="mt-6 text-[28px] md:text-[30px] leading-[1.15] font-semibold text-[#111827] tracking-[-0.02em]">Deja de revisar el portal a cada rato</h1>
-        <p className="mt-3 text-[15px] leading-relaxed text-[#64748B]">ITSON Notify revisa tus portales y Google Classroom por ti, y te avisa en cuanto algo cambia.</p>
+        <p className="mt-3 text-[15px] leading-relaxed text-[#64748B]">ITSON Notify revisa iVirtual y tus portales por ti, y te avisa de tareas nuevas y calificaciones. De Google Classroom sincronizamos tus cursos.</p>
         <ul className="mt-8 space-y-4">
           {TYPES.map(t => (
             <li key={t} className="flex items-center gap-3">
@@ -145,7 +144,7 @@ export function Onboarding({
       <div>
         <span className="w-12 h-12 rounded-xl bg-[#F5F3FF] text-[#7C3AED] flex items-center justify-center">{I.book(22)}</span>
         <h1 className="mt-5 text-[24px] font-semibold text-[#111827] tracking-[-0.015em]">Conecta Google Classroom</h1>
-        <p className="mt-2 text-[15px] text-[#64748B]">Así te avisamos de tareas nuevas y de las que están por vencer.</p>
+        <p className="mt-2 text-[15px] text-[#64748B]">Por ahora sincronizamos tus cursos de Classroom. Los avisos de sus tareas llegarán en una siguiente versión.</p>
 
         {settings.classroomConnected ? (
           <div className="mt-6"><SuccessCard title="Classroom conectado" subtitle={settings.classroomEmail} /></div>
@@ -153,7 +152,7 @@ export function Onboarding({
           <div className="mt-6 rounded-lg border border-[#E5E7EB] divide-y divide-[#F1F5F9]">
             <div className="p-4">
               <p className="text-[13px] font-semibold text-[#111827] mb-2">Vamos a poder</p>
-              {['Ver tus clases', 'Ver tus tareas y fechas de entrega'].map(t => (
+              {['Ver tus clases', 'Más adelante, ver tus tareas y fechas de entrega'].map(t => (
                 <p key={t} className="flex items-center gap-2 text-[14px] text-[#475569] py-1"><span className="text-[#16A34A]">{I.check(16)}</span>{t}</p>
               ))}
             </div>
@@ -208,17 +207,6 @@ export function Onboarding({
         <div className="mt-5 border-y border-[#E5E7EB] divide-y divide-[#F1F5F9]">
           <CategoryRows settings={settings} setSettings={setSettings} />
         </div>
-        {settings.categories.cupos && (
-          <div className="mt-6">
-            <div className="px-4 md:px-6">
-              <h2 className="text-[15px] font-semibold text-[#111827]">Materias para vigilar cupos</h2>
-              <p className="text-[13px] text-[#64748B] mt-0.5">Te avisamos solo cuando se libere un lugar en estas materias.</p>
-            </div>
-            <div className="md:px-2">
-              <WatchEditor list={settings.cupoWatch} onChange={fn => setSettings(s => ({ ...s, cupoWatch: fn(s.cupoWatch) }))} />
-            </div>
-          </div>
-        )}
       </div>
     )
     footer = <Button full onClick={next}>Continuar</Button>
@@ -235,8 +223,8 @@ export function Onboarding({
             <span className="w-9 h-9 rounded-lg bg-[#2563EB] text-white flex items-center justify-center flex-shrink-0">{I.bell(16)}</span>
             <div className="min-w-0 flex-1">
               <div className="flex justify-between text-[12px] text-[#64748B]"><span className="font-medium">ITSON Notify</span><span>ahora</span></div>
-              <p className="text-[14px] font-semibold text-[#111827] mt-0.5">Se liberó un cupo</p>
-              <p className="text-[13px] text-[#475569]">Redes de Computadoras, grupo 01</p>
+              <p className="text-[14px] font-semibold text-[#111827] mt-0.5">Nueva calificación disponible</p>
+              <p className="text-[13px] text-[#475569]">Programación Avanzada</p>
             </div>
           </div>
         </div>
@@ -258,11 +246,9 @@ export function Onboarding({
   }
 
   if (step === 5) {
-    const watched = settings.cupoWatch.length
     const summary = [
       { ok: true, text: `Cuenta ITSON conectada (ID ${settings.itsonId})` },
       { ok: settings.classroomConnected, text: settings.classroomConnected ? 'Google Classroom conectado' : 'Google Classroom sin conectar (puedes hacerlo después)' },
-      { ok: !settings.categories.cupos || watched > 0, text: settings.categories.cupos ? `Vigilando cupos en ${watched} ${watched === 1 ? 'materia' : 'materias'}` : 'Cupos desactivados' },
       { ok: true, text: settings.pushOn ? `Avisos en este dispositivo y en ${settings.email}` : `Avisos por correo a ${settings.email}` },
     ]
     body = (

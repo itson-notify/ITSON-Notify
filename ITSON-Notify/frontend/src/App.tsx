@@ -409,7 +409,7 @@ export default function App() {
           <NotificationsPage notifs={visible} settings={settings} filter={filter} setFilter={setFilter} selectedId={selectedId}
             onOpen={openNotif} onClose={() => setSelectedId(null)} onMarkAll={markAll} onMarkUnread={markUnread} sync={syncProps} />
         )}
-        {/* TODO(API): los ajustes y los cupos vigilados siguen simulados: solo viven en memoria. */}
+        {/* TODO(API): los ajustes siguen simulados: solo viven en memoria. */}
         {page === 'configuracion' && (
           <SettingsPage settings={settings} setSettings={setSettings} onFix={() => setLinkOpen(true)} askConfirm={setConfirmReq} notify={notify}
             ivirtualLink={mockMode ? undefined : ivirtualLink} onUnlinkItson={unlinkItson}
