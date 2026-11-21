@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { CalendarEvent, Course, CourseItem } from '@/services/api'
 
 export type Page = 'inicio' | 'materias' | 'calendario' | 'notificaciones' | 'configuracion' | 'perfil'
-export type NotifType = 'calificaciones' | 'tareas' | 'cupos' | 'tramites'
+export type NotifType = 'calificaciones' | 'tareas' | 'tramites'
 export type Filter = 'todas' | NotifType
 export type SourceStatus = 'ok' | 'error'
 
@@ -23,7 +23,6 @@ export interface Settings {
   classroomConnected: boolean
   classroomEmail: string
   categories: Record<NotifType, boolean>
-  cupoWatch: string[]
   pushOn: boolean
   pushPermission: 'default' | 'granted' | 'denied';
   emailOn: boolean
