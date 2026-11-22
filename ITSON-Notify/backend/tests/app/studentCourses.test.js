@@ -370,6 +370,8 @@ describe("ITN-57 - GET /api/courses/:id/items", () => {
           kind: "classroom",
           // ITN-58b: campo nuevo, aditivo.
           source: "classroom",
+          // ITN-58e: sin alternate_link válido, url null.
+          url: null,
         },
         {
           id: tarea2Id,
@@ -379,6 +381,7 @@ describe("ITN-57 - GET /api/courses/:id/items", () => {
           dueAt: null,
           kind: "classroom",
           source: "classroom",
+          url: null,
         },
       ],
     });

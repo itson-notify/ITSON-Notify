@@ -33,12 +33,12 @@ function setup({ scope = `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}`, responses
   // Ids ordenados: el backend recorre los cursos por id, así el orden de respuestas es fijo.
   for (const [i, external] of courses.entries()) {
     const id = `10000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
-    db.tables.classroom_courses.push({ id, user_id: USER, external_course_id: external, name: 'PRIVATE' });
+    db.tables.classroom_courses.push({ id, user_id: USER, external_course_id: external, name: 'PRIVATE', course_state: 'ACTIVE' });
     db.tables.classroom_coursework.push({ id: crypto.randomUUID(), user_id: USER, course_id: id,
       external_coursework_id: `w-${external}`, title: 'PRIVATE' });
   }
   // Curso sin tareas: nunca se consulta.
-  db.tables.classroom_courses.push({ id: '00000000-0000-4000-8000-000000000000', user_id: USER, external_course_id: 'empty', name: 'PRIVATE' });
+  db.tables.classroom_courses.push({ id: '00000000-0000-4000-8000-000000000000', user_id: USER, external_course_id: 'empty', name: 'PRIVATE', course_state: 'ACTIVE' });
   const calls = [];
   const lines = [];
   const classroomFetch = async (url) => {
@@ -80,6 +80,21 @@ describe('ITN-58f - POST /internal/classroom/submissions', () => {
     // Nunca toca eventos, tareas ni cursos.
     assert.equal(s.db.calls.some((c) => c.rpc && c.rpc !== 'sync_classroom_submissions'), false);
     assert.equal(s.db.calls.some((c) => c.table === 'classroom_task_events' || (c.op && c.op !== 'select')), false);
+  });
+
+  test('omite cursos con tareas cuyo course_state no es ACTIVE (archivados o sin estado)', async () => {
+    const s = setup({ responses: [token(), json({ studentSubmissions: [sub('w1', 'TURNED_IN')] })] });
+    for (const [idx, state] of ['ARCHIVED', 'PROVISIONED', 'DECLINED', null].entries()) {
+      const id = `20000000-0000-4000-8000-${String(idx).padStart(12, '0')}`;
+      s.db.tables.classroom_courses.push({ id, user_id: USER, external_course_id: `inactivo-${idx}`, name: 'PRIVATE', course_state: state });
+      s.db.tables.classroom_coursework.push({ id: crypto.randomUUID(), user_id: USER, course_id: id,
+        external_coursework_id: `w-inactivo-${idx}`, title: 'PRIVATE' });
+    }
+    const res = await s.post();
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.submissions, { courses: 1, items: 1, stored: 1, unknown: 0, invalid: 0, failedCourses: 0, skipped: false });
+    assert.equal(s.calls.length, 2, 'solo consulta el curso ACTIVE');
+    assert.equal(s.calls.some((c) => c.includes('inactivo-')), false);
   });
 
   test('pagina studentSubmissions hasta el final y detecta un bucle de paginación', async () => {

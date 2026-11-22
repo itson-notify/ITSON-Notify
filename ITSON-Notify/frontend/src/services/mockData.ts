@@ -94,8 +94,8 @@ export const MOCK_COURSE_ITEMS: Record<string, CourseItem[]> = {
   'mock-classroom-2': [],
   'mock-classroom-4': [],
   'mock-classroom-5': [
-    { id: 'm8', label: 'Guía de ejercicios 1', grade: null, maxGrade: 10, dueAt: '2023-03-10T06:59:00.000Z', kind: 'classroom', source: 'classroom' },
-    { id: 'm9', label: 'Examen diagnóstico', grade: null, maxGrade: 100, dueAt: null, kind: 'classroom', source: 'classroom' },
+    { id: 'm8', label: 'Guía de ejercicios 1', grade: null, maxGrade: 10, dueAt: '2023-03-10T06:59:00.000Z', kind: 'classroom', source: 'classroom', url: 'https://classroom.google.com/c/MOCK5/a/MOCK8/details' },
+    { id: 'm9', label: 'Examen diagnóstico', grade: null, maxGrade: 100, dueAt: null, kind: 'classroom', source: 'classroom', url: null },
   ],
   'mock-itson-1': [],
   'mock-itson-2': [],

@@ -190,7 +190,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
       throw new CoursesError(error.retryable ? 503 : 502, 'classroom_no_disponible');
     }
   }
-  // ITN-58f - Cursos del alumno que ya tienen tareas guardadas: { external_course_id }.
+  // ITN-58f - Cursos activos del alumno que ya tienen tareas guardadas: { external_course_id }.
   // Sin las tablas (006 sin aplicar) no hay nada que leer.
   async function coursesWithWork(userId) {
     const PAGE = 1000;
@@ -207,7 +207,7 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
     const external = [];
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await supabase.from('classroom_courses').select('id,external_course_id')
-        .eq('user_id', userId).order('id', { ascending: true }).range(from, from + PAGE - 1);
+        .eq('user_id', userId).eq('course_state', 'ACTIVE').order('id', { ascending: true }).range(from, from + PAGE - 1);
       if (MISSING_MIGRATION.has(error?.code)) return [];
       if (error || !Array.isArray(data)) throw new CoursesError(500, 'error_interno');
       for (const row of data) {
