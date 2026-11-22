@@ -14,6 +14,29 @@ export const SOURCE_LABEL: Record<CourseSource, string> = {
   itson_api: 'API de ITSON',
 }
 
+// ITN-58e - Enlace de un item (tarea de Classroom) que se puede poner en un href. El
+// backend ya lo valida; aquí se revalida con las mismas reglas que urlClassroomSegura
+// (backend/src/utils/classroomUrl.js), como defensa en profundidad: solo
+// https://classroom.google.com/..., sin usuario, contraseña ni puerto, máximo 2048
+// caracteres. Cualquier otro valor devuelve null (sin enlace).
+const CLASSROOM_HOST = 'classroom.google.com'
+const MAX_URL_LENGTH = 2048
+
+export function safeItemUrl(url: unknown): string | null {
+  if (typeof url !== 'string') return null
+  const text = url.trim()
+  if (text === '' || text.length > MAX_URL_LENGTH) return null
+  let parsed: URL
+  try {
+    parsed = new URL(text)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== CLASSROOM_HOST) return null
+  if (parsed.username || parsed.password || parsed.port) return null
+  return parsed.href
+}
+
 const dueMs = (item: CourseItem) => {
   if (!item.dueAt) return NaN
   return Date.parse(item.dueAt)

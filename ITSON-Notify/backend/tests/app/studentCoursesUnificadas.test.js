@@ -295,3 +295,61 @@ describe("ITN-58b - GET /api/courses/:id/items de una materia unificada", () => 
     assert.deepEqual(res.body, { error: "no_autenticado" });
   });
 });
+
+describe("ITN-58e - enlace a la tarea de Classroom en GET /api/courses/:id/items", () => {
+  const ENLACE = "https://classroom.google.com/c/MTIz/a/NDU2/details";
+
+  function agregarTarea(db, courseId, title, alternateLink) {
+    db.tables.classroom_coursework.push({
+      id: uuid(),
+      user_id: ALUMNA.userId,
+      course_id: courseId,
+      external_coursework_id: `cw-${title}`,
+      title,
+      due_at: "2026-11-26T06:59:00.000Z",
+      max_points: 10,
+      alternate_link: alternateLink,
+    });
+  }
+
+  test("los items de Classroom traen url válida o null; los de iVirtual no traen url", async () => {
+    const { app, db } = setup();
+    const ids = await sembrarTresFuentes(db);
+    db.tables.classroom_coursework.find((t) => t.id === ids.tareaId).alternate_link = ENLACE;
+    agregarTarea(db, ids.classroomId, "Enlace http", "http://classroom.google.com/c/1/a/2/details");
+    agregarTarea(db, ids.classroomId, "Enlace falso", "https://classroom.google.com.evil.com/c/1");
+    agregarTarea(db, ids.classroomId, "Enlace script", "javascript:alert(1)");
+
+    const res = await request(app).get(`/api/courses/${ids.ivirtualId}/items`).set("Cookie", cookie());
+    assert.equal(res.status, 200);
+    const porNombre = Object.fromEntries(res.body.items.map((i) => [i.label, i]));
+    assert.equal(porNombre["Tarea Classroom"].url, ENLACE);
+    assert.equal(porNombre["Enlace http"].url, null);
+    assert.equal(porNombre["Enlace falso"].url, null);
+    assert.equal(porNombre["Enlace script"].url, null);
+    assert.equal(porNombre["Tarea iVirtual"].url ?? null, null);
+    assert.equal("url" in porNombre["Tarea iVirtual"], false);
+  });
+
+  test("sin la columna alternate_link la ruta responde y los items traen url null", async () => {
+    const { app, db } = setup();
+    const ids = await sembrarTresFuentes(db);
+    db.withoutColumn("classroom_coursework", "alternate_link");
+
+    const res = await request(app).get(`/api/courses/${ids.classroomId}/items`).set("Cookie", cookie());
+    assert.equal(res.status, 200);
+    const tarea = res.body.items.find((i) => i.source === "classroom");
+    assert.equal(tarea.label, "Tarea Classroom");
+    assert.equal(tarea.url, null);
+  });
+
+  test("sin la tabla classroom_coursework la ruta responde sin items de Classroom", async () => {
+    const { app, db } = setup();
+    const ids = await sembrarTresFuentes(db);
+    db.failNext("classroom_coursework", "select", "42P01");
+
+    const res = await request(app).get(`/api/courses/${ids.classroomId}/items`).set("Cookie", cookie());
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.items.map((i) => i.source), ["ivirtual"]);
+  });
+});

@@ -651,3 +651,113 @@ test('con VITE_USE_MOCK=true hay cursos de Classroom fuera del plan (archivado y
   assert.ok(past.every(c => c.source === 'classroom'));
   assert.ok(past.some(c => mock.MOCK_COURSE_ITEMS[c.id].length > 0), 'una anterior con tareas');
 });
+
+// ── ITN-58e - Enlace a la tarea en Google Classroom ─────────────────────────
+
+const ENLACE_CR = 'https://classroom.google.com/c/MTIz/a/NDU2/details';
+const tareaCr = (id, url) => ({ id, label: `Tarea ${id}`, grade: null, maxGrade: 10, dueAt: '2026-11-25T06:59:00.000Z', kind: 'classroom', source: 'classroom', url });
+
+test('utilidades: safeItemUrl solo acepta https sin credenciales', () => {
+  const U = compile('utils/courses.ts', require);
+  assert.equal(U.safeItemUrl(ENLACE_CR), ENLACE_CR);
+  for (const malo of [
+    'http://classroom.google.com/c/1', 'javascript:alert(1)', 'data:text/html,hola', '', '   ',
+    'https://usuario:clave@classroom.google.com/c/1', '/c/1', 'no es url', null, undefined, 42, {},
+  ]) {
+    assert.equal(U.safeItemUrl(malo), null, String(malo));
+  }
+});
+
+test('detalle: tarea de Classroom con url es un enlace a una pestaña nueva; sin url o no https, no', () => {
+  const items = [
+    tareaCr('con-url', ENLACE_CR),
+    tareaCr('sin-url', null),
+    tareaCr('sin-campo', undefined),
+    tareaCr('http', 'http://classroom.google.com/c/1/a/2/details'),
+    tareaCr('script', 'javascript:alert(1)'),
+  ];
+  const r = renderCourses({
+    state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items, updatedAt: COURSE_CR.updatedAt } },
+  });
+  const enlaces = r.all.filter(n => n.type === 'a');
+  assert.equal(enlaces.length, 1);
+  const [a] = enlaces;
+  assert.equal(a.props.href, ENLACE_CR);
+  assert.equal(a.props.target, '_blank');
+  assert.equal(a.props.rel, 'noopener noreferrer');
+  const textoEnlace = [a].flatMap(function t(n) { return [n?.props?.children].flat(Infinity).flatMap(c => (typeof c === 'string' ? [c] : c && typeof c === 'object' ? t(c) : [])); }).join('');
+  assert.match(textoEnlace, /Tarea con-url/);
+  assert.match(textoEnlace, /Abrir en Classroom/);
+  assert.match(textoEnlace, /se abre en una pestaña nueva/);
+  for (const otra of ['sin-url', 'sin-campo', 'http', 'script']) assert.match(r.texto, new RegExp(`Tarea ${otra}`));
+  assert.equal((r.texto.match(/Abrir en Classroom/g) ?? []).length, 1);
+  assert.doesNotMatch(JSON.stringify(r.all.map(n => n.props?.href ?? null)), /javascript:|http:\/\//);
+});
+
+test('detalle: los items de iVirtual nunca son enlace, aunque traigan url', () => {
+  const r = renderCourses({
+    state: { status: 'ready', courses: [COURSE_IV] }, selectedId: COURSE_IV.id,
+    itemsById: { [COURSE_IV.id]: { status: 'ready', items: [{ ...ITEM, url: ENLACE_CR }], updatedAt: COURSE_IV.updatedAt } },
+  });
+  assert.equal(r.all.filter(n => n.type === 'a').length, 0);
+  assert.match(r.texto, /Práctica 1/);
+});
+
+test('detalle de Classroom: el aviso explica que no leemos entregas, sin prometer nada', () => {
+  const r = renderCourses({
+    state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items: [tareaCr('a', ENLACE_CR)], updatedAt: COURSE_CR.updatedAt } },
+  });
+  assert.match(r.texto, /ITSON Notify no lee tus entregas de Classroom: “Vencida” solo significa que pasó la fecha de entrega\./);
+  assert.doesNotMatch(r.texto, /no nos dice|pronto|próximamente/i);
+});
+
+test('con VITE_USE_MOCK=true hay una tarea de Classroom con enlace válido', () => {
+  const U = compile('utils/courses.ts', require);
+  const mock = compile('services/mockData.ts', require, { VITE_USE_MOCK: 'true' });
+  const conUrl = Object.values(mock.MOCK_COURSE_ITEMS).flat().filter(i => i.url);
+  assert.ok(conUrl.length > 0);
+  assert.ok(conUrl.every(i => i.kind === 'classroom' && U.safeItemUrl(i.url) === i.url));
+});
+
+// ── ITN-58e - safeItemUrl igual al backend (solo classroom.google.com) ──────
+
+test('utilidades: safeItemUrl solo acepta https://classroom.google.com, como el backend', () => {
+  const U = compile('utils/courses.ts', require);
+  assert.equal(U.safeItemUrl(ENLACE_CR), ENLACE_CR);
+  assert.equal(U.safeItemUrl('https://classroom.google.com/u/0/c/MTIz/a/NDU2/details'), 'https://classroom.google.com/u/0/c/MTIz/a/NDU2/details');
+  for (const malo of [
+    'https://example.com/c/1/a/2/details',
+    'https://classroom.google.com.evil.com/c/1/a/2/details',
+    'https://evil.com/classroom.google.com',
+    'https://evilclassroom.google.com/c/1',
+    'https://docs.google.com/c/1',
+    'https://usuario:clave@classroom.google.com/c/1',
+    'https://usuario@classroom.google.com/c/1',
+    'https://classroom.google.com:8443/c/1',
+    'http://classroom.google.com/c/1',
+    'javascript:alert(1)',
+    'data:text/html,hola',
+    '', '   ', null, undefined, 42, {}, [], true,
+    `https://classroom.google.com/${'a'.repeat(3000)}`,
+  ]) {
+    assert.equal(U.safeItemUrl(malo), null, String(malo).slice(0, 80));
+  }
+});
+
+test('detalle: una tarea de Classroom con url https de otro dominio se muestra sin enlace', () => {
+  const items = [
+    tareaCr('otro-dominio', 'https://example.com/c/1/a/2/details'),
+    tareaCr('subdominio-falso', 'https://classroom.google.com.evil.com/c/1'),
+    tareaCr('ruta-engañosa', 'https://evil.com/classroom.google.com'),
+  ];
+  const r = renderCourses({
+    state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items, updatedAt: COURSE_CR.updatedAt } },
+  });
+  assert.equal(r.all.filter(n => n.type === 'a').length, 0);
+  assert.doesNotMatch(r.texto, /Abrir en Classroom/);
+  for (const i of items) assert.match(r.texto, new RegExp(i.label));
+  assert.doesNotMatch(JSON.stringify(r.all.map(n => n.props?.href ?? null)), /example\.com|evil\.com/);
+});
