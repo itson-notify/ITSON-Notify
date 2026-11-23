@@ -14,10 +14,15 @@
 //
 // ITN-58d - Cada materia trae `scope` ("actual" | "anterior"): las que vienen solo de
 // Classroom y no son del semestre actual van como "anterior" (ver courseScope.js).
+//
+// ITN-58g - Las materias con fuente iVirtual traen `ivirtualUrl` (string | null): la
+// página de la materia en iVirtual, armada con subjects.external_subject_id (id de
+// curso de Moodle). Las que no tienen fuente iVirtual no traen el campo.
 const { normalizarCodigo } = require("./itsonGradeCodes");
 const { matchCourses } = require("./courseMatcher");
 const { asignarScopes } = require("./courseScope");
 const { urlClassroomSegura } = require("../utils/classroomUrl");
+const { urlMateriaIvirtual } = require("../utils/ivirtualUrl");
 
 const COURSE_SOURCES = ["ivirtual", "classroom", "itson_api"];
 const ITEM_KINDS = {
@@ -192,6 +197,8 @@ async function listarCursosPorFuente(userId, repo, options) {
           period: null,
           finalGrade: notaFinalTexto(totalRow),
           updatedAt,
+          // ITN-58g: solo materias cuyo snapshot es de iVirtual (no itson_api).
+          ivirtualUrl: urlMateriaIvirtual(subject.external_subject_id),
         });
       }
     }
@@ -232,6 +239,7 @@ function unificarCursos(porFuente) {
   const courses = groups.map((ids) => {
     const miembros = ids.map((id) => porId.get(id)).sort(compararCursos);
     const principal = miembros[0];
+    const ivirtual = miembros.find((c) => c.source === "ivirtual");
     return {
       id: principal.id,
       name: principal.name,
@@ -247,6 +255,8 @@ function unificarCursos(porFuente) {
         finalGrade,
         updatedAt,
       })),
+      // ITN-58g: el enlace a iVirtual solo si una de las fuentes es iVirtual.
+      ...(ivirtual ? { ivirtualUrl: ivirtual.ivirtualUrl ?? null } : {}),
     };
   });
 
