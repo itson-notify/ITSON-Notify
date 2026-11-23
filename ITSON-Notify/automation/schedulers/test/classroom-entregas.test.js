@@ -5,14 +5,15 @@ const assert = require('node:assert/strict');
 const { ejecutarClassroom, sincronizarEntregas } = require('../classroom-fase');
 const { createClassroomWorkerClient } = require('../../rpa/google-classroom');
 
-const env = { CLASSROOM_SYNC_ENABLED: 'true', BACKEND_URL: 'https://backend.test', INTERNAL_API_KEY: 'synthetic' };
+const base = { CLASSROOM_SYNC_ENABLED: 'true', BACKEND_URL: 'https://backend.test', INTERNAL_API_KEY: 'synthetic' };
+const env = { ...base, CLASSROOM_ENTREGAS_ENABLED: 'true' };
 const counts = (extra = {}) => ({ courses: 1, items: 2, stored: 2, unknown: 0, invalid: 0, failedCourses: 0, skipped: false, ...extra });
 const synced = coursework => ({ ok: true, data: { sync: { courses: 1, coursework, newTasks: 0 } } });
 
-function fase({ students, sync, submissions }) {
+function fase({ students, sync, submissions, env: faseEnv = env }) {
   const calls = { sync: [], submissions: [] };
   const logs = [], errors = [];
-  const run = ejecutarClassroom({ env, log: s => logs.push(s), logError: s => errors.push(s), crearCliente: () => ({
+  const run = ejecutarClassroom({ env: faseEnv, log: s => logs.push(s), logError: s => errors.push(s), crearCliente: () => ({
     listActive: async () => ({ ok: true, data: { students: students.map(id => ({ userId: id, googleId: id })) } }),
     sync: async s => { calls.sync.push(s.userId); return sync(s.userId); },
     submissions: async s => { calls.submissions.push(s.userId); return submissions(s.userId); },
@@ -64,6 +65,52 @@ test('401 o 404 (backend sin la fase) detienen la fase sin afectar el sync ni el
   }
 });
 
+test('backend con la fase apagada (404) y worker encendido: una línea informativa, sin errores', async () => {
+  const f = fase({ students: ['a', 'b'], sync: () => synced(1), submissions: () => ({ ok: false, status: 404 }) });
+  assert.equal(await f.run, 0);
+  assert.deepEqual(f.calls.submissions, ['a']);
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.logs, ['Classroom: procesadas=2 omitidas=0 fallidas=0',
+    'Classroom entregas: desactivada en el backend (status=404).']);
+});
+
+test('CLASSROOM_ENTREGAS_ENABLED distinto del exacto "true" apaga solo la fase de entregas', async () => {
+  for (const flag of [undefined, '', 'false', 'TRUE', 'True', ' true', 'true ', '1', 'yes', 'basura']) {
+    const faseEnv = { ...base };
+    if (flag !== undefined) faseEnv.CLASSROOM_ENTREGAS_ENABLED = flag;
+    const f = fase({ env: faseEnv, students: ['a', 'b'], sync: () => synced(2), submissions: () => assert.fail('no debe llamarse') });
+    assert.equal(await f.run, 0, `bandera ${JSON.stringify(flag)}`);
+    assert.deepEqual(f.calls.sync, ['a', 'b'], 'el sync normal no cambia');
+    assert.deepEqual(f.calls.submissions, []);
+    assert.deepEqual(f.logs, ['Classroom: procesadas=2 omitidas=0 fallidas=0']);
+    assert.deepEqual(f.errors, []);
+  }
+  // Un valor inválido nunca lanza ni cambia el código de salida de un sync fallido.
+  const fallido = fase({ env: { ...base, CLASSROOM_ENTREGAS_ENABLED: '{}' }, students: ['a'],
+    sync: () => ({ ok: false, status: 500 }), submissions: () => assert.fail('no debe llamarse') });
+  assert.equal(await fallido.run, 1);
+  // Sin env explícito ni variable en process.env: apagada.
+  const prev = process.env.CLASSROOM_ENTREGAS_ENABLED;
+  delete process.env.CLASSROOM_ENTREGAS_ENABLED;
+  try {
+    await sincronizarEntregas({ client: { submissions: () => assert.fail('no debe llamarse') },
+      accounts: [{ userId: 'a', googleId: 'a' }], log: () => assert.fail(), logError: () => assert.fail() });
+  } finally { if (prev !== undefined) process.env.CLASSROOM_ENTREGAS_ENABLED = prev; }
+});
+
+test('la bandera de entregas no interfiere con el despacho', async () => {
+  const dispatched = [];
+  const run = ejecutarClassroom({ env: { ...base, CLASSROOM_DISPATCH_ENABLED: 'true' }, log: () => {}, logError: () => {},
+    crearCliente: () => ({
+      listActive: async () => ({ ok: true, data: { students: [{ userId: 'a', googleId: 'a' }] } }),
+      sync: async () => synced(1),
+      submissions: async () => assert.fail('no debe llamarse'),
+      dispatch: async () => { dispatched.push(1); return { ok: true, data: { procesados: 0, enviados: 0, fallidos: 0 } }; },
+    }) });
+  assert.equal(await run, 0);
+  assert.equal(dispatched.length, 1);
+});
+
 test('una falla del sync mantiene el código 1 y la fase sigue con las cuentas que sí sincronizaron', async () => {
   const f = fase({ students: ['a', 'b'], sync: id => (id === 'a' ? { ok: false, status: 500 } : synced(1)),
     submissions: () => ({ ok: true, data: { submissions: counts() } }) });
@@ -72,9 +119,9 @@ test('una falla del sync mantiene el código 1 y la fase sigue con las cuentas q
 });
 
 test('sincronizarEntregas tolera un cliente sin la operación y nunca lanza', async () => {
-  await sincronizarEntregas({ client: {}, accounts: [{ userId: 'a', googleId: 'a' }], log: () => assert.fail(), logError: () => assert.fail() });
+  await sincronizarEntregas({ env, client: {}, accounts: [{ userId: 'a', googleId: 'a' }], log: () => assert.fail(), logError: () => assert.fail() });
   const logs = [];
-  await sincronizarEntregas({ client: { submissions: async () => ({ ok: true, data: null }) },
+  await sincronizarEntregas({ env, client: { submissions: async () => ({ ok: true, data: null }) },
     accounts: [{ userId: 'a', googleId: 'a' }], log: s => logs.push(s), logError: s => logs.push(s) });
   assert.match(logs.join('\n'), /Classroom entregas: no disponible \(status=0\)/);
 });

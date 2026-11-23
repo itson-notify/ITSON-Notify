@@ -32,7 +32,10 @@ async function despacharClassroom({ env = process.env, client, log = console.log
 // (backend calls Google and stores it; never creates events or notices). Only accounts whose
 // sync reported tasks are asked: courses-only grants (no task permission) report coursework=0.
 // Never throws, never changes the exit code and logs only counters and HTTP status codes.
-async function sincronizarEntregas({ client, accounts, log = console.log, logError = console.error } = {}) {
+// Fail-closed switch: only the exact value CLASSROOM_ENTREGAS_ENABLED="true" turns it on; any
+// other value (empty, missing, "TRUE", "1", garbage) leaves it off without calling the backend.
+async function sincronizarEntregas({ env = process.env, client, accounts, log = console.log, logError = console.error } = {}) {
+  if (env?.CLASSROOM_ENTREGAS_ENABLED !== 'true') return;
   if (typeof client?.submissions !== 'function' || !Array.isArray(accounts) || accounts.length === 0) return;
   let processed = 0, skipped = 0, failures = 0, stored = 0;
   try {
@@ -50,11 +53,14 @@ async function sincronizarEntregas({ client, accounts, log = console.log, logErr
         continue;
       }
       const status = Number.isSafeInteger(result?.status) ? result.status : 0;
+      // 404: the backend has the phase off (CLASSROOM_ENTREGAS_ENABLED) or predates it. Expected
+      // configuration, not a failure: one informational line and stop asking.
+      if (status === 404) { log('Classroom entregas: desactivada en el backend (status=404).'); return; }
       if (status === 409 || (status === 403 && result.permissionsMissing === true)) { skipped++; continue; }
       failures++;
       logError(`Classroom entregas: no disponible (status=${status}).`);
-      // 401 (key) or 404 (older backend): every other account would fail the same way.
-      if (status === 401 || status === 404) break;
+      // 401 (key): every other account would fail the same way.
+      if (status === 401) break;
     }
   } catch {
     logError('Classroom entregas: no disponible (status=0).');
@@ -102,7 +108,7 @@ async function ejecutarClassroom({ env = process.env, crearCliente = createClass
   // No bodies, account identities, academic metadata or arbitrary error messages.
   log(`Classroom: procesadas=${processed} omitidas=${skipped} fallidas=${failures}`);
   // ITN-58f: submission status for synced accounts with tasks; never changes the exit code.
-  await sincronizarEntregas({ client, accounts: withTasks, log, logError });
+  await sincronizarEntregas({ env, client, accounts: withTasks, log, logError });
   // ITN-50: dispatch pending task notices; its result never changes the exit code.
   await despacharClassroom({ env, client, log, logError });
   return failures ? 1 : 0;

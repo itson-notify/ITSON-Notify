@@ -1,7 +1,7 @@
 // ITN-58f - Estado de entrega de Classroom: POST /internal/classroom/submissions (lectura de
 // studentSubmissions, lotes a la RPC 022) y el campo submission en /api/courses/:id/items.
 // Datos sintéticos; sin red (fetch simulado) ni base real (Supabase simulado).
-const { test, describe } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const request = require('supertest');
@@ -59,7 +59,59 @@ function setup({ scope = `${CLASSROOM_SCOPE} ${CLASSROOM_WORK_SCOPE}`, responses
   return { db, calls, rpcArgs, lines, post };
 }
 
+// Interruptor de la fase de escritura: se restaura el valor original al terminar.
+const PREV_FLAG = process.env.CLASSROOM_ENTREGAS_ENABLED;
+const setFlag = (value) => {
+  if (value === undefined) delete process.env.CLASSROOM_ENTREGAS_ENABLED;
+  else process.env.CLASSROOM_ENTREGAS_ENABLED = value;
+};
+after(() => setFlag(PREV_FLAG));
+
+describe('ITN-58f - CLASSROOM_ENTREGAS_ENABLED (fail-closed)', () => {
+  test('ausente, vacío, false, TRUE, 1 o basura: 404 sin tocar Google ni la base', async () => {
+    for (const flag of [undefined, '', 'false', 'TRUE', 'True', ' true', '1', 'yes', 'basura']) {
+      setFlag(flag);
+      const s = setup();
+      const touched = [];
+      const from = s.db.client.from.bind(s.db.client);
+      s.db.client.from = (table) => { touched.push(table); return from(table); };
+      s.db.client.rpc = () => assert.fail('no debe llamar a la RPC');
+      const res = await s.post();
+      assert.equal(res.status, 404, `bandera ${JSON.stringify(flag)}`);
+      assert.deepEqual(res.body, { error: 'no_encontrado' });
+      // Body inválido también es 404: la bandera va antes de cualquier validación.
+      assert.equal((await s.post({})).status, 404);
+      assert.equal(s.calls.length, 0, 'no llama a Google');
+      assert.deepEqual(touched, [], 'no toca la base');
+      assert.deepEqual(s.rpcArgs, []);
+    }
+  });
+
+  test('se lee en cada petición: "true" la enciende sin reconstruir la app y la llave sigue siendo obligatoria', async () => {
+    setFlag('false');
+    const s = setup({ responses: [token(), json({ studentSubmissions: [sub('w1', 'TURNED_IN')] })] });
+    assert.equal((await s.post()).status, 404);
+    setFlag('true');
+    const res = await s.post();
+    assert.equal(res.status, 200);
+    assert.equal(res.body.submissions.stored, 1);
+    setFlag('false');
+    assert.equal((await s.post()).status, 404);
+    const sinLlave = await request(createApp({ config: { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY },
+      supabase: s.db.client, channels: [] })).post('/internal/classroom/submissions').send({ userId: USER, googleId: GOOGLE });
+    assert.equal(sinLlave.status, 401);
+  });
+
+  test('un valor inválido no impide construir la app ni afecta /health', async () => {
+    setFlag('{basura');
+    const app = createApp({ config: { internalApiKey: API_KEY, credentialsEncryptionKey: CREDENTIALS_KEY },
+      supabase: createFakeSupabase().client, channels: [] });
+    assert.equal((await request(app).get('/health')).status, 200);
+  });
+});
+
 describe('ITN-58f - POST /internal/classroom/submissions', () => {
+  before(() => setFlag('true'));
   test('lee entregas por curso con tareas (courseWorkId "-", userId "me") y solo devuelve conteos', async () => {
     const s = setup({ responses: [token(), json({ studentSubmissions: [sub('w1', 'TURNED_IN', { late: true }),
       sub('w2', 'NEW', { assignedGrade: 8, updateTime: '2026-11-20T10:00:00Z' })] })] });
@@ -257,6 +309,19 @@ function setupItems() {
 }
 
 describe('ITN-58f - submission en /api/courses/:id/items', () => {
+  test('la bandera de entregas no afecta la lectura: con la fase apagada sigue mostrando submission', async () => {
+    for (const flag of [undefined, 'false', 'true']) {
+      setFlag(flag);
+      const s = setupItems();
+      s.db.tables.classroom_submissions.push(
+        { user_id: ALUMNA.userId, coursework_id: s.tareas[0].id, state: 'RETURNED', late: false });
+      const res = await s.get();
+      assert.equal(res.status, 200);
+      const item = res.body.items.find((i) => i.id === s.tareas[0].id);
+      assert.deepEqual(item.submission, { state: 'RETURNED', late: false }, `bandera ${JSON.stringify(flag)}`);
+    }
+  });
+
   test('incluye { state, late } cuando hay entrega conocida y omite la llave si no', async () => {
     const s = setupItems();
     s.db.tables.classroom_submissions.push(

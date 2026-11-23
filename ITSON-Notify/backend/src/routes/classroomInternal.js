@@ -136,7 +136,12 @@ function classroomInternalRouter({
   });
   // ITN-58f - Estado de entrega del alumno por tarea (solo lectura, sin avisos). Fase aparte del
   // sync: la llama el worker después de sincronizar cursos y tareas. Solo devuelve conteos.
+  // Interruptor fail-closed leído en cada petición: solo CLASSROOM_ENTREGAS_ENABLED="true" exacto
+  // la enciende; cualquier otro valor (o ausente) responde 404 sin tocar Google ni la base.
   router.post('/submissions', async (req, res) => {
+    if (process.env.CLASSROOM_ENTREGAS_ENABLED !== 'true') {
+      return res.status(404).json({ error: 'no_encontrado' });
+    }
     const { userId, googleId } = req.body ?? {};
     if (typeof userId !== 'string' ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId) ||
