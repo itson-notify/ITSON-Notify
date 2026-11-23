@@ -525,6 +525,7 @@ fuga de la base, no contra una fuga del worker o de esta llave.
 | `GOOGLE_COOKIE_SAME_SITE` | `lax` o `none`. `none` exige HTTPS en backend y frontend                          |
 | `VITE_BACKEND_URL`        | Solo frontend. Origen del backend, sin `/auth/google`                             |
 | `CLASSROOM_TASKS_AUTH_ENABLED` | ITN-43c. `true`/`1` muestra en Ajustes la activación opcional del permiso de tareas. Default `false`. Ver `ITN-43c.md` |
+| `CLASSROOM_ENTREGAS_ENABLED` | ITN-58f. Solo el valor exacto `true` habilita `POST /internal/classroom/submissions` (estado de entrega); cualquier otro valor o ausente responde `404` sin tocar Google ni la base. Se lee en cada petición y nunca impide el arranque. No afecta el sync ni `/api/courses/:id/items`, que sigue mostrando `submission` si hay filas. Default `false` |
 
 `GOOGLE_AUTH_SECRET` es distinta de `CREDENTIALS_ENCRYPTION_KEY` (ITN-36), y ambas van solo en el backend.
 

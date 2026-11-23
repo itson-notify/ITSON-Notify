@@ -26,7 +26,7 @@ function createClassroomClient({ fetchImpl = globalThis.fetch, timeoutMs = 15000
     throw new TypeError('Invalid client options');
   }
 
-  async function list(accessToken, path, key, { pageSize = 100, studentId } = {}) {
+  async function list(accessToken, path, key, { pageSize = 100, studentId, userId } = {}) {
     if (typeof accessToken !== 'string' || !/^[A-Za-z0-9._~+\/-]+=*$/.test(accessToken)) {
       throw new TypeError('Invalid access token');
     }
@@ -34,6 +34,8 @@ function createClassroomClient({ fetchImpl = globalThis.fetch, timeoutMs = 15000
     if (studentId !== undefined && (key !== 'courses' || studentId !== 'me')) {
       throw new TypeError('Invalid student filter');
     }
+    // ITN-58f: las entregas solo se leen del propio alumno (userId=me).
+    if ((key === 'studentSubmissions') !== (userId === 'me')) throw new TypeError('Invalid user filter');
     const items = [];
     const seen = new Set();
     let pageToken = '';
@@ -41,6 +43,7 @@ function createClassroomClient({ fetchImpl = globalThis.fetch, timeoutMs = 15000
       const url = new URL(`${BASE_URL}/${path}`);
       url.searchParams.set('pageSize', String(pageSize));
       if (studentId) url.searchParams.set('studentId', studentId);
+      if (userId) url.searchParams.set('userId', userId);
       if (pageToken) url.searchParams.set('pageToken', pageToken);
       let response;
       let data;
@@ -66,9 +69,11 @@ function createClassroomClient({ fetchImpl = globalThis.fetch, timeoutMs = 15000
           (Object.hasOwn(data, key) && !Array.isArray(data[key])) ||
           (Object.hasOwn(data, 'nextPageToken') && typeof data.nextPageToken !== 'string')) throw invalid();
       const batch = data[key] ?? [];
-      if (batch.some((item) => !object(item) || typeof item.id !== 'string' || !item.id.trim() ||
-          typeof item[key === 'courses' ? 'name' : 'title'] !== 'string' ||
-          (key === 'courseWork' && (typeof item.courseId !== 'string' || !item.courseId.trim())))) throw invalid();
+      const text = (value) => typeof value === 'string' && value.trim() !== '';
+      if (batch.some((item) => !object(item) || !text(item.id) || (key === 'studentSubmissions'
+        ? !text(item.courseId) || !text(item.courseWorkId)
+        : typeof item[key === 'courses' ? 'name' : 'title'] !== 'string' ||
+          (key === 'courseWork' && !text(item.courseId))))) throw invalid();
       items.push(...batch);
       pageToken = data.nextPageToken || '';
       if (!pageToken) return items;
@@ -86,6 +91,14 @@ function createClassroomClient({ fetchImpl = globalThis.fetch, timeoutMs = 15000
         throw new TypeError('Invalid course ID');
       }
       return list(accessToken, `courses/${encodeURIComponent(courseId)}/courseWork`, 'courseWork', options);
+    },
+    // ITN-58f: entregas del alumno en todas las tareas del curso (courseWorkId "-", userId "me").
+    listStudentSubmissions(accessToken, courseId, options = {}) {
+      if (typeof courseId !== 'string' || !courseId.trim() || courseId === '.' || courseId === '..') {
+        throw new TypeError('Invalid course ID');
+      }
+      return list(accessToken, `courses/${encodeURIComponent(courseId)}/courseWork/-/studentSubmissions`,
+        'studentSubmissions', { ...options, userId: 'me' });
     },
   });
 }

@@ -40,6 +40,9 @@ const CAMPOS_PERMITIDOS = new Set([
   // ITN-43c: marca booleana de si Google devolvió el alias del scope de tareas,
   // nunca el valor del scope.
   "scope_tareas_alias",
+  // ITN-58f: conteos de la fase de entregas de Classroom, nunca estados ni tareas.
+  "stored",
+  "unknown",
 ]);
 
 // uuid, códigos de Postgres (23505), nombres de paso (snapshot_grades), etc.

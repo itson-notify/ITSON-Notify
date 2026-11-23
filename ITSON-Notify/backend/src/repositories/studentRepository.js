@@ -17,6 +17,8 @@ const PAGE = 1000;
 // Códigos de Postgres cuando una migración opcional aún no está aplicada.
 const UNDEFINED_COLUMN = "42703";
 const UNDEFINED_TABLE = "42P01";
+// ITN-58f - PostgREST responde PGRST205 si la tabla no está en su caché de esquema.
+const MISSING_SUBMISSIONS = new Set([UNDEFINED_TABLE, UNDEFINED_COLUMN, "PGRST205"]);
 
 const SNAPSHOT_GRADE_COLS = "id,snapshot_id,subject_id,external_item_id,grade_label,grade_value,grade_text,raw_payload";
 const SNAPSHOT_GRADE_COLS_WITH_DUE = `${SNAPSHOT_GRADE_COLS},due_at`;
@@ -235,6 +237,22 @@ function createStudentRepository(supabase) {
     return check("classroom_coursework", res);
   }
 
+  // ITN-58f - Estado de entrega de las tareas dadas (migración 022). Sin la tabla o la
+  // columna (022 sin aplicar), lista vacía: /items sigue funcionando sin estado de entrega.
+  async function listClassroomSubmissions(userId, courseworkIds) {
+    const filas = [];
+    for (const ids of trozos(courseworkIds, IDS_PER_QUERY)) {
+      const res = await supabase
+        .from("classroom_submissions")
+        .select("coursework_id,state,late")
+        .eq("user_id", userId)
+        .in("coursework_id", ids);
+      if (MISSING_SUBMISSIONS.has(res.error?.code)) return [];
+      filas.push(...check("classroom_submissions", res));
+    }
+    return filas;
+  }
+
   // ITN-58d - Fechas de Classroom de todas las tareas del alumno (sin títulos), para
   // medir la actividad más reciente de cada curso. Paginado; sin la tabla, lista vacía.
   async function listClassroomActivity(userId) {
@@ -299,6 +317,7 @@ function createStudentRepository(supabase) {
     listClassroomCourses,
     getClassroomCourse,
     listClassroomCoursework,
+    listClassroomSubmissions,
     listClassroomActivity,
     markRead,
     markAllRead,

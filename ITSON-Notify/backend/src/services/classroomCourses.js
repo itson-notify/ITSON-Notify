@@ -4,6 +4,7 @@ const { CLASSROOM_SCOPE, tienePermisoTareas, cumpleScopes } = require('./googleA
 const { normalizeCourses, persistClassroom } = require('./classroomSync');
 const { createClassroomClient, ClassroomError } = require('./classroomClient');
 const { isMissingAuthorizationStatus } = require('./googleAuthorizationSchema');
+const { normalizeSubmissions, persistSubmissions, SubmissionsSyncError, MISSING_MIGRATION } = require('./classroomSubmissions');
 
 class CoursesError extends Error {
   constructor(status, code) {
@@ -189,8 +190,81 @@ function createCoursesService({ config, supabase, fetchImpl = globalThis.fetch, 
       throw new CoursesError(error.retryable ? 503 : 502, 'classroom_no_disponible');
     }
   }
+  // ITN-58f - Cursos activos del alumno que ya tienen tareas guardadas: { external_course_id }.
+  // Sin las tablas (006 sin aplicar) no hay nada que leer.
+  async function coursesWithWork(userId) {
+    const PAGE = 1000;
+    const withWork = new Set();
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase.from('classroom_coursework').select('course_id')
+        .eq('user_id', userId).order('id', { ascending: true }).range(from, from + PAGE - 1);
+      if (MISSING_MIGRATION.has(error?.code)) return [];
+      if (error || !Array.isArray(data)) throw new CoursesError(500, 'error_interno');
+      for (const row of data) withWork.add(row.course_id);
+      if (data.length < PAGE) break;
+    }
+    if (withWork.size === 0) return [];
+    const external = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase.from('classroom_courses').select('id,external_course_id')
+        .eq('user_id', userId).eq('course_state', 'ACTIVE').order('id', { ascending: true }).range(from, from + PAGE - 1);
+      if (MISSING_MIGRATION.has(error?.code)) return [];
+      if (error || !Array.isArray(data)) throw new CoursesError(500, 'error_interno');
+      for (const row of data) {
+        if (withWork.has(row.id) && typeof row.external_course_id === 'string') external.push(row.external_course_id);
+      }
+      if (data.length < PAGE) break;
+    }
+    return external;
+  }
+
+  // ITN-58f - Estado de entrega por tarea (studentSubmissions.list, courseWorkId "-", userId "me")
+  // de los cursos que ya tienen tareas. Fase aparte del sync: nunca toca cursos, tareas, eventos
+  // ni baselines, y no borra estado previo si falla. Sin permiso de tareas no llama a Google.
+  // Un curso que falla se cuenta (solo su código) y no detiene a los demás.
+  async function syncSubmissionsForWorker(identity) {
+    const empty = { courses: 0, items: 0, stored: 0, unknown: 0, invalid: 0, failedCourses: 0 };
+    const { accessToken, storedScope, refreshedScope } = await authorize(identity, [CLASSROOM_SCOPE]);
+    if (!tienePermisoTareas(storedScope) || (refreshedScope !== undefined && !tienePermisoTareas(refreshedScope))) {
+      return { submissions: { ...empty, skipped: 'sin_permiso_tareas' }, errorCodes: [] };
+    }
+    const courseIds = await coursesWithWork(identity.userId);
+    const summary = { ...empty };
+    const errorCodes = new Set();
+    const items = [];
+    for (const courseId of courseIds) {
+      let raw;
+      try {
+        raw = await client.listStudentSubmissions(accessToken, courseId);
+      } catch (error) {
+        // Token recién refrescado rechazado: el resto de cursos fallaría igual.
+        if (error instanceof ClassroomError && error.code === 'UNAUTHENTICATED') throw relink();
+        summary.failedCourses++;
+        errorCodes.add(error instanceof ClassroomError ? error.code : 'UNEXPECTED');
+        continue;
+      }
+      summary.courses++;
+      const normalized = normalizeSubmissions(raw, courseId);
+      summary.invalid += normalized.invalid;
+      items.push(...normalized.items);
+    }
+    summary.items = items.length;
+    if (items.length > 0) {
+      try {
+        const result = await persistSubmissions(supabase, identity, items);
+        summary.stored = result.stored;
+        summary.unknown = result.unknown;
+        if (!result.tasksAllowed) summary.skipped = 'sin_permiso_tareas';
+      } catch (error) {
+        if (error instanceof SubmissionsSyncError) throw new CoursesError(error.status, error.code);
+        throw new CoursesError(500, 'error_interno');
+      }
+    }
+    return { submissions: summary, errorCodes: [...errorCodes].sort() };
+  }
+
   // Preserve the ITN-42 callable API while exposing reusable backend operations.
-  return Object.assign(listCourses, { getAccessToken, readForWorker });
+  return Object.assign(listCourses, { getAccessToken, readForWorker, syncSubmissionsForWorker });
 }
 
 module.exports = { createCoursesService, CoursesError };

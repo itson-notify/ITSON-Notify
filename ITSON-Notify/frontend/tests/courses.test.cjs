@@ -652,10 +652,97 @@ test('con VITE_USE_MOCK=true hay cursos de Classroom fuera del plan (archivado y
   assert.ok(past.some(c => mock.MOCK_COURSE_ITEMS[c.id].length > 0), 'una anterior con tareas');
 });
 
+// ── ITN-58f - Estado de entrega de Classroom ───────────────────────────────
+
+const tareaCr = (id, dueAt, submission, grade = null) => ({ id, label: id, grade, maxGrade: 100, dueAt, kind: 'classroom', source: 'classroom',
+  ...(submission === undefined ? {} : { submission }) });
+const PASADA = '2026-11-10T06:59:00.000Z';
+const FUTURA = '2026-11-25T06:59:00.000Z';
+
+test('classifyItem con estado de entrega: TURNED_IN y RETURNED son entregada; el resto, por fecha', () => {
+  for (const state of ['TURNED_IN', 'RETURNED']) {
+    assert.equal(U.classifyItem(tareaCr('e', PASADA, { state, late: false }), NOW), 'entregada', `${state} vencida`);
+    assert.equal(U.classifyItem(tareaCr('e', FUTURA, { state, late: true }), NOW), 'entregada', `${state} futura`);
+    assert.equal(U.classifyItem(tareaCr('e', null, { state, late: false }), NOW), 'entregada', `${state} sin fecha`);
+  }
+  for (const state of ['NEW', 'CREATED', 'RECLAIMED_BY_STUDENT', 'SUBMISSION_STATE_UNSPECIFIED', 'turned_in', '']) {
+    assert.equal(U.classifyItem(tareaCr('n', PASADA, { state, late: false }), NOW), 'vencida', `${state || 'vacío'} no cuenta como entregada`);
+    assert.equal(U.classifyItem(tareaCr('n', FUTURA, { state, late: false }), NOW), 'proxima');
+    assert.equal(U.classifyItem(tareaCr('n', null, { state, late: false }), NOW), 'sin_fecha');
+  }
+  // Sin submission (ausente o null) se queda como hoy.
+  assert.equal(U.classifyItem(tareaCr('x', PASADA), NOW), 'vencida');
+  assert.equal(U.classifyItem(tareaCr('x', PASADA, null), NOW), 'vencida');
+  // Nota + entregada = calificada (también un 0).
+  assert.equal(U.classifyItem(tareaCr('c', PASADA, { state: 'RETURNED', late: true }, 95), NOW), 'calificada');
+  assert.equal(U.classifyItem(tareaCr('c0', PASADA, { state: 'TURNED_IN', late: false }, 0), NOW), 'calificada');
+});
+
+test('isLateSubmission solo aplica a entregas reales con late true', () => {
+  assert.equal(U.isLateSubmission(tareaCr('a', PASADA, { state: 'TURNED_IN', late: true })), true);
+  assert.equal(U.isLateSubmission(tareaCr('b', PASADA, { state: 'TURNED_IN', late: false })), false);
+  assert.equal(U.isLateSubmission(tareaCr('c', PASADA, { state: 'RECLAIMED_BY_STUDENT', late: true })), false);
+  assert.equal(U.isLateSubmission(tareaCr('d', PASADA)), false);
+});
+
+test('grupos en orden Vencidas, Próximas, Entregadas, Calificadas, Sin fecha', () => {
+  assert.deepEqual(U.STATUS_ORDER, ['vencida', 'proxima', 'entregada', 'calificada', 'sin_fecha']);
+  const groups = U.groupItems([item('s', null), tareaCr('e2', FUTURA, { state: 'RETURNED', late: false }),
+    item('c', '2026-11-01T00:00:00.000Z', 90), tareaCr('e1', PASADA, { state: 'TURNED_IN', late: true }),
+    item('p', '2026-11-25T00:00:00.000Z'), tareaCr('v', PASADA, { state: 'RECLAIMED_BY_STUDENT', late: false })], NOW);
+  assert.deepEqual(groups.map(g => [g.status, g.items.map(i => i.id)]),
+    [['vencida', ['v']], ['proxima', ['p']], ['entregada', ['e1', 'e2']], ['calificada', ['c']], ['sin_fecha', ['s']]]);
+});
+
+test('iVirtual no cambia: sus items se clasifican igual aunque traigan una llave submission', () => {
+  const conEntrega = i => ({ ...i, submission: { state: 'TURNED_IN', late: true } });
+  const iv = [item('v', PASADA), item('p', FUTURA), item('c', PASADA, 80), item('s', null)].map(conEntrega);
+  const antes = iv.map(i => U.classifyItem(i, NOW));
+  assert.deepEqual(antes, ['vencida', 'proxima', 'calificada', 'sin_fecha']);
+  assert.equal(U.groupItems(iv, NOW).some(g => g.status === 'entregada'), false);
+});
+
+test('el detalle de Classroom muestra el grupo Entregadas, la etiqueta de retraso y el aviso nuevo', () => {
+  const items = [tareaCr('Tarea a tiempo', PASADA, { state: 'TURNED_IN', late: false }),
+    tareaCr('Tarea tarde', PASADA, { state: 'RETURNED', late: true }),
+    tareaCr('Tarea retirada', PASADA, { state: 'RECLAIMED_BY_STUDENT', late: true })];
+  const r = renderCourses({ state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items, updatedAt: COURSE_CR.updatedAt } } });
+  const secciones = r.all.filter(n => n.type === 'section' && n.props?.['aria-labelledby']?.startsWith('grupo-'));
+  assert.deepEqual(secciones.map(s => s.props['aria-labelledby']), ['grupo-vencida', 'grupo-entregada']);
+  const tags = r.all.filter(n => n.props?.['data-status']);
+  const textoTag = n => [n.props.children].flat(Infinity).filter(c => typeof c === 'string').join('');
+  assert.deepEqual(tags.map(n => [n.props['data-status'], textoTag(n)]),
+    [['vencida', 'Vencida'], ['entregada', 'Entregada'], ['entregada', 'Entregada con retraso']]);
+  // Estilo sobrio: el grupo Entregadas no usa el rojo de Vencidas.
+  const entregada = tags.find(n => n.props['data-status'] === 'entregada');
+  assert.doesNotMatch(entregada.props.className, /B91C1C|FEF2F2|FECACA/);
+  assert.match(r.texto, /Entregadas/);
+  assert.match(r.texto, /El estado de entrega se actualiza con cada sincronización con Google Classroom\. Si una tarea aún no muestra su estado, puede tardar en aparecer\./);
+  assert.doesNotMatch(r.texto, /no nos dice si ya entregaste/);
+});
+
+test('el detalle de iVirtual no muestra el aviso de entregas de Classroom ni el grupo Entregadas', () => {
+  const r = renderCourses({ state: { status: 'ready', courses: [COURSE_IV] }, selectedId: COURSE_IV.id,
+    itemsById: { [COURSE_IV.id]: { status: 'ready', items: [item('a', PASADA), item('b', PASADA, 70)], updatedAt: COURSE_IV.updatedAt } } });
+  assert.doesNotMatch(r.texto, /Entregadas|estado de entrega/);
+  assert.deepEqual(r.all.filter(n => n.props?.['data-status']).map(n => n.props['data-status']), ['vencida', 'calificada']);
+});
+
+test('mockData trae tareas de Classroom con entrega a tiempo, con retraso, retirada y sin estado', () => {
+  const mock = compile('services/mockData.ts', require);
+  const tareas = mock.MOCK_COURSE_ITEMS['mock-classroom-1'];
+  const estados = tareas.map(t => U.classifyItem(t, Date.now()));
+  assert.ok(estados.filter(e => e === 'entregada').length >= 2);
+  assert.ok(tareas.some(t => U.isLateSubmission(t)));
+  assert.ok(tareas.some(t => t.submission?.state === 'RECLAIMED_BY_STUDENT' && U.classifyItem(t, Date.now()) === 'vencida'));
+  assert.ok(tareas.some(t => !('submission' in t)));
+});
+
 // ── ITN-58e - Enlace a la tarea en Google Classroom ─────────────────────────
 
 const ENLACE_CR = 'https://classroom.google.com/c/MTIz/a/NDU2/details';
-const tareaCr = (id, url) => ({ id, label: `Tarea ${id}`, grade: null, maxGrade: 10, dueAt: '2026-11-25T06:59:00.000Z', kind: 'classroom', source: 'classroom', url });
+const tareaCrUrl = (id, url) => ({ id, label: `Tarea ${id}`, grade: null, maxGrade: 10, dueAt: '2026-11-25T06:59:00.000Z', kind: 'classroom', source: 'classroom', url });
 
 test('utilidades: safeItemUrl solo acepta https sin credenciales', () => {
   const U = compile('utils/courses.ts', require);
@@ -670,11 +757,11 @@ test('utilidades: safeItemUrl solo acepta https sin credenciales', () => {
 
 test('detalle: tarea de Classroom con url es un enlace a una pestaña nueva; sin url o no https, no', () => {
   const items = [
-    tareaCr('con-url', ENLACE_CR),
-    tareaCr('sin-url', null),
-    tareaCr('sin-campo', undefined),
-    tareaCr('http', 'http://classroom.google.com/c/1/a/2/details'),
-    tareaCr('script', 'javascript:alert(1)'),
+    tareaCrUrl('con-url', ENLACE_CR),
+    tareaCrUrl('sin-url', null),
+    tareaCrUrl('sin-campo', undefined),
+    tareaCrUrl('http', 'http://classroom.google.com/c/1/a/2/details'),
+    tareaCrUrl('script', 'javascript:alert(1)'),
   ];
   const r = renderCourses({
     state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
@@ -704,12 +791,15 @@ test('detalle: los items de iVirtual nunca son enlace, aunque traigan url', () =
   assert.match(r.texto, /Práctica 1/);
 });
 
-test('detalle de Classroom: el aviso explica que no leemos entregas, sin prometer nada', () => {
+test('detalle de Classroom: combina enlace a Classroom (58e) con estado de entrega y aviso de sincronización (58f)', () => {
   const r = renderCourses({
     state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,
-    itemsById: { [COURSE_CR.id]: { status: 'ready', items: [tareaCr('a', ENLACE_CR)], updatedAt: COURSE_CR.updatedAt } },
+    itemsById: { [COURSE_CR.id]: { status: 'ready', items: [{ ...tareaCrUrl('a', ENLACE_CR), submission: { state: 'RETURNED', late: true } }], updatedAt: COURSE_CR.updatedAt } },
   });
-  assert.match(r.texto, /ITSON Notify no lee tus entregas de Classroom: “Vencida” solo significa que pasó la fecha de entrega\./);
+  assert.equal(r.all.filter(n => n.type === 'a').length, 1);
+  assert.match(r.texto, /Abrir en Classroom/);
+  assert.match(r.texto, /Entregada con retraso/);
+  assert.match(r.texto, /El estado de entrega se actualiza con cada sincronización con Google Classroom\. Si una tarea aún no muestra su estado, puede tardar en aparecer\./);
   assert.doesNotMatch(r.texto, /no nos dice|pronto|próximamente/i);
 });
 
@@ -748,9 +838,9 @@ test('utilidades: safeItemUrl solo acepta https://classroom.google.com, como el 
 
 test('detalle: una tarea de Classroom con url https de otro dominio se muestra sin enlace', () => {
   const items = [
-    tareaCr('otro-dominio', 'https://example.com/c/1/a/2/details'),
-    tareaCr('subdominio-falso', 'https://classroom.google.com.evil.com/c/1'),
-    tareaCr('ruta-engañosa', 'https://evil.com/classroom.google.com'),
+    tareaCrUrl('otro-dominio', 'https://example.com/c/1/a/2/details'),
+    tareaCrUrl('subdominio-falso', 'https://classroom.google.com.evil.com/c/1'),
+    tareaCrUrl('ruta-engañosa', 'https://evil.com/classroom.google.com'),
   ];
   const r = renderCourses({
     state: { status: 'ready', courses: [COURSE_CR] }, selectedId: COURSE_CR.id,

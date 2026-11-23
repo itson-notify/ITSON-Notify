@@ -242,6 +242,14 @@ export interface CourseItem {
   // ITN-58e - Enlace a la tarea en Google Classroom (solo items de Classroom; null si
   // no hay enlace válido). Los de iVirtual no lo traen.
   url?: string | null
+  // ITN-58f - Estado de entrega en Classroom (solo tareas de Classroom). Ausente o null si
+  // aún no se conoce. state es el de Google: NEW, CREATED, TURNED_IN, RETURNED o RECLAIMED_BY_STUDENT.
+  submission?: CourseItemSubmission | null
+}
+
+export interface CourseItemSubmission {
+  state: string
+  late: boolean
 }
 
 export async function getCourses(): Promise<Course[]> {
