@@ -851,3 +851,143 @@ test('detalle: una tarea de Classroom con url https de otro dominio se muestra s
   for (const i of items) assert.match(r.texto, new RegExp(i.label));
   assert.doesNotMatch(JSON.stringify(r.all.map(n => n.props?.href ?? null)), /example\.com|evil\.com/);
 });
+
+// ── ITN-58g - Enlace "Abrir en iVirtual" a nivel de materia ─────────────────
+
+const ENLACE_IV = 'https://ivirtual.itson.edu.mx/course/view.php?id=12345';
+const textoDeNodo = n => [n?.props?.children].flat(Infinity).map(c => (typeof c === 'string' ? c : c && typeof c === 'object' ? textoDeNodo(c) : '')).join('');
+const enlacesIvirtual = r => r.all.filter(n => n.type === 'a' && /Abrir en iVirtual/.test(textoDeNodo(n)));
+
+test('utilidades: safeIvirtualUrl solo acepta https://ivirtual.itson.edu.mx/course/view.php?id=N', () => {
+  const U = compile('utils/courses.ts', require);
+  assert.equal(U.safeIvirtualUrl(ENLACE_IV), ENLACE_IV);
+  assert.equal(U.safeIvirtualUrl('https://ivirtual.itson.edu.mx/course/view.php?id=1'), 'https://ivirtual.itson.edu.mx/course/view.php?id=1');
+  assert.equal(U.safeIvirtualUrl('https://ivirtual.itson.edu.mx/course/view.php?id=9999999999'), 'https://ivirtual.itson.edu.mx/course/view.php?id=9999999999');
+  for (const malo of [
+    'https://ivirtual.itson.edu.mx.evil.com/course/view.php?id=12345',
+    'https://evil.com/ivirtual.itson.edu.mx/course/view.php?id=12345',
+    'https://evil.com/course/view.php?id=12345',
+    'https://evilivirtual.itson.edu.mx/course/view.php?id=12345',
+    'https://itson.edu.mx/course/view.php?id=12345',
+    'http://ivirtual.itson.edu.mx/course/view.php?id=12345',
+    'https://ivirtual.itson.edu.mx:8443/course/view.php?id=12345',
+    'https://usuario:clave@ivirtual.itson.edu.mx/course/view.php?id=12345',
+    'https://usuario@ivirtual.itson.edu.mx/course/view.php?id=12345',
+    'https://ivirtual.itson.edu.mx/mod/assign/view.php?id=12345',
+    'https://ivirtual.itson.edu.mx/course/view.php/x?id=12345',
+    'https://ivirtual.itson.edu.mx/',
+    'https://ivirtual.itson.edu.mx/course/view.php',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=12345&section=2',
+    'https://ivirtual.itson.edu.mx/course/view.php?section=2&id=12345',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=12345&id=6',
+    'https://ivirtual.itson.edu.mx/course/view.php?x=12345',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=abc',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=0',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=-5',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=12345678901',
+    'https://ivirtual.itson.edu.mx/course/view.php?id=12345#x',
+    'javascript:alert(1)',
+    'JavaScript:alert("ivirtual.itson.edu.mx/course/view.php?id=1")',
+    'data:text/html,hola',
+    '/course/view.php?id=12345',
+    '', '   ', null, undefined, 42, {}, [], true,
+    `https://ivirtual.itson.edu.mx/course/view.php?id=1${'0'.repeat(3000)}`,
+  ]) {
+    assert.equal(U.safeIvirtualUrl(malo), null, String(malo).slice(0, 80));
+  }
+});
+
+test('detalle de materia de iVirtual: enlace "Abrir en iVirtual" a pestaña nueva, accesible', () => {
+  const curso = { ...COURSE_IV, ivirtualUrl: ENLACE_IV };
+  const r = renderCourses({
+    state: { status: 'ready', courses: [curso] }, selectedId: curso.id,
+    itemsById: { [curso.id]: { status: 'ready', items: [ITEM], updatedAt: curso.updatedAt } },
+  });
+  const enlaces = enlacesIvirtual(r);
+  assert.equal(enlaces.length, 1);
+  const [a] = enlaces;
+  assert.equal(a.props.href, ENLACE_IV);
+  assert.equal(a.props.target, '_blank');
+  assert.equal(a.props.rel, 'noopener noreferrer');
+  assert.equal(textoDeNodo(a), 'Abrir en iVirtual (se abre en una pestaña nueva)');
+  assert.ok(a.props.children.some(c => c?.type === 'span' && /sr-only/.test(c.props.className)));
+  // Los items de iVirtual siguen sin enlace (eso necesita el cmid).
+  assert.equal(r.all.filter(n => n.type === 'a').length, 1);
+});
+
+test('detalle de iVirtual sin enlace o con enlace inválido no muestra nada', () => {
+  for (const ivirtualUrl of [undefined, null, '', 'https://evil.com/course/view.php?id=1', 'javascript:alert(1)', 'http://ivirtual.itson.edu.mx/course/view.php?id=1']) {
+    const curso = { ...COURSE_IV, ivirtualUrl };
+    const r = renderCourses({
+      state: { status: 'ready', courses: [curso] }, selectedId: curso.id,
+      itemsById: { [curso.id]: { status: 'ready', items: [ITEM], updatedAt: curso.updatedAt } },
+    });
+    assert.equal(r.all.filter(n => n.type === 'a').length, 0, String(ivirtualUrl));
+    assert.doesNotMatch(r.texto, /Abrir en iVirtual/);
+  }
+});
+
+test('materias de Classroom o de la API de ITSON no muestran enlace a iVirtual, aunque traigan ivirtualUrl', () => {
+  for (const base of [COURSE_CR, COURSE_IT]) {
+    const curso = { ...base, ivirtualUrl: ENLACE_IV };
+    const r = renderCourses({
+      state: { status: 'ready', courses: [curso] }, selectedId: curso.id,
+      itemsById: { [curso.id]: { status: 'ready', items: [], updatedAt: curso.updatedAt } },
+    });
+    assert.doesNotMatch(r.texto, /Abrir en iVirtual/, base.source);
+    assert.equal(enlacesIvirtual(r).length, 0);
+  }
+  const U = compile('utils/courses.ts', require);
+  assert.equal(U.courseIvirtualUrl({ ...COURSE_CR, ivirtualUrl: ENLACE_IV }), null);
+  assert.equal(U.courseIvirtualUrl({ ...COURSE_IT, ivirtualUrl: ENLACE_IV }), null);
+  assert.equal(U.courseIvirtualUrl({ ...COURSE_IV, ivirtualUrl: ENLACE_IV }), ENLACE_IV);
+});
+
+test('materia unificada: el enlace va en la sección de iVirtual, una sola vez; Classroom e ITSON no lo llevan', () => {
+  const curso = { ...UNIFICADA, ivirtualUrl: ENLACE_IV };
+  const r = renderCourses({
+    state: { status: 'ready', courses: [curso] }, selectedId: curso.id,
+    itemsById: { [curso.id]: { status: 'ready', items: [ITEM_IV, ITEM_CR], updatedAt: curso.updatedAt } },
+  });
+  assert.equal(enlacesIvirtual(r).length, 1);
+  const seccion = fuente => r.all.find(n => n.type === 'section' && n.props['data-source'] === fuente);
+  assert.match(textoDeNodo(seccion('ivirtual')), /Abrir en iVirtual/);
+  assert.doesNotMatch(textoDeNodo(seccion('classroom')), /Abrir en iVirtual/);
+  assert.doesNotMatch(textoDeNodo(seccion('itson_api')), /Abrir en iVirtual/);
+});
+
+test('materia unificada sin sección de iVirtual (sin tareas ni nota): el enlace sale bajo el encabezado', () => {
+  const sinNota = { ...UNIFICADA, finalGrade: null, ivirtualUrl: ENLACE_IV,
+    sources: [{ ...UNIFICADA.sources[0], finalGrade: null }, UNIFICADA.sources[1]] };
+  const r = renderCourses({
+    state: { status: 'ready', courses: [sinNota] }, selectedId: sinNota.id,
+    itemsById: { [sinNota.id]: { status: 'ready', items: [ITEM_CR], updatedAt: sinNota.updatedAt } },
+  });
+  assert.equal(r.all.some(n => n.type === 'section' && n.props['data-source'] === 'ivirtual'), false);
+  assert.equal(enlacesIvirtual(r).length, 1);
+  // Mientras cargan las tareas no se muestra (después decide si va en la sección).
+  const cargando = renderCourses({
+    state: { status: 'ready', courses: [sinNota] }, selectedId: sinNota.id,
+    itemsById: { [sinNota.id]: { status: 'loading' } },
+  });
+  assert.equal(enlacesIvirtual(cargando).length, 0);
+});
+
+test('materia unificada Classroom + ITSON (sin iVirtual) no muestra enlace aunque traiga ivirtualUrl', () => {
+  const curso = { ...COURSE_CR, ivirtualUrl: ENLACE_IV, sources: [UNIFICADA.sources[1], UNIFICADA.sources[2]] };
+  const r = renderCourses({
+    state: { status: 'ready', courses: [curso] }, selectedId: curso.id,
+    itemsById: { [curso.id]: { status: 'ready', items: [ITEM_CR], updatedAt: curso.updatedAt } },
+  });
+  assert.doesNotMatch(r.texto, /Abrir en iVirtual/);
+});
+
+test('con VITE_USE_MOCK=true hay materias de iVirtual con enlace válido y ninguna de otra fuente lo trae', () => {
+  const U = compile('utils/courses.ts', require);
+  const mock = compile('services/mockData.ts', require, { VITE_USE_MOCK: 'true' });
+  const conUrl = mock.MOCK_COURSES.filter(c => c.ivirtualUrl);
+  assert.ok(conUrl.length > 0);
+  for (const c of conUrl) assert.equal(U.courseIvirtualUrl(c), c.ivirtualUrl);
+  assert.ok(mock.MOCK_COURSES.filter(c => !U.courseSources(c).some(s => s.source === 'ivirtual')).every(c => c.ivirtualUrl === undefined));
+});

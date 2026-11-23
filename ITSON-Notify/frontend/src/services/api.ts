@@ -214,6 +214,9 @@ export interface Course {
   // ITN-58d - "anterior": curso solo de Classroom que no es del semestre actual. Opcional
   // por compatibilidad: sin él, la materia cuenta como "actual".
   scope?: CourseScope
+  // ITN-58g - Página de la materia en iVirtual. Solo en materias con fuente iVirtual;
+  // null si el id de curso no es válido. Se revalida con safeIvirtualUrl antes de usarla.
+  ivirtualUrl?: string | null
 }
 
 export type CourseScope = 'actual' | 'anterior'

@@ -47,9 +47,10 @@ const HORA = 3_600_000
 const enHoras = (h: number) => new Date(Date.now() + h * HORA).toISOString()
 
 export const MOCK_COURSES: Course[] = [
-  { id: 'mock-ivirtual-1', name: 'Programación Avanzada', source: 'ivirtual', period: null, finalGrade: '92.5', updatedAt: enHoras(-2) },
+  // ITN-58g - Con enlace a la materia en iVirtual (id de curso inventado).
+  { id: 'mock-ivirtual-1', name: 'Programación Avanzada', source: 'ivirtual', period: null, finalGrade: '92.5', updatedAt: enHoras(-2), ivirtualUrl: 'https://ivirtual.itson.edu.mx/course/view.php?id=10001' },
   // ITN-58b - Materia unificada: la misma en iVirtual, Classroom y la API de ITSON.
-  { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2), sources: [
+  { id: 'mock-ivirtual-2', name: 'Bases de Datos', source: 'ivirtual', period: null, finalGrade: null, updatedAt: enHoras(-2), ivirtualUrl: 'https://ivirtual.itson.edu.mx/course/view.php?id=10002', sources: [
     { source: 'ivirtual', id: 'mock-ivirtual-2', name: 'Bases de Datos', period: null, finalGrade: null, updatedAt: enHoras(-2) },
     { source: 'classroom', id: 'mock-classroom-3', name: 'Bases de Datos - Grupo 01', period: 'Grupo 01', finalGrade: null, updatedAt: enHoras(-5) },
     { source: 'itson_api', id: 'mock-itson-3', name: 'BASES DE DATOS', period: '06', finalGrade: '9', updatedAt: enHoras(-30) },

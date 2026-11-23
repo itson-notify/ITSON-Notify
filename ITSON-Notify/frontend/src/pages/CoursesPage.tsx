@@ -3,7 +3,7 @@ import { I } from '@/components/icons'
 import { Button, SkeletonList } from '@/components/ui'
 import type { Course, CourseItem, CourseSource, IvirtualLink } from '@/services/api'
 import {
-  classifyItem, CLASSROOM_SUBMISSION_NOTE, CLASSROOM_TASKS_NOTICE, courseSources, isLateSubmission, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
+  classifyItem, CLASSROOM_SUBMISSION_NOTE, CLASSROOM_TASKS_NOTICE, courseIvirtualUrl, courseSources, isLateSubmission, emptyCourseNotice, finalGradeLabel, formatDue, formatGrade, groupItems, hasFinalGrade, itsonSemesters, periodLabel, sourceSections,
   PAST_COURSES_HELP, PAST_COURSES_TITLE, safeItemUrl, SOURCE_LABEL, SOURCE_ORDER, splitByScope, type ItemStatus, type SemesterCourse,
 } from '@/utils/courses'
 import { focusRing } from '@/utils/styles'
@@ -327,6 +327,18 @@ function ItemGroups({ items, now, idPrefix }: { items: CourseItem[]; now: number
   )
 }
 
+// ITN-58g - Enlace a la página de la materia en iVirtual (no a una tarea). Mismo estilo
+// sobrio que "Abrir en Classroom". Sin enlace válido no se muestra nada.
+function IvirtualCourseLink({ href }: { href: string | null }) {
+  if (!href) return null
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+      className={`inline-flex items-center gap-1 text-[12px] font-medium text-[#15803D] hover:underline underline-offset-2 rounded ${focusRing}`}>
+      Abrir en iVirtual{I.external(12)}<span className="sr-only"> (se abre en una pestaña nueva)</span>
+    </a>
+  )
+}
+
 function ClassroomNote() {
   return (
     <p className="flex items-start gap-2 text-[12px] leading-relaxed text-[#94A3B8]">
@@ -359,6 +371,9 @@ function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
   const fallo = conTareas && entry?.status === 'error'
   const perdida = conTareas && entry?.status === 'missing'
   const secciones = sourceSections(course, entry?.status === 'ready' ? entry.items : [])
+  const ivirtualHref = courseIvirtualUrl(course)
+  // Si la fuente iVirtual no tiene sección (sin tareas ni calificación), el enlace va bajo el encabezado.
+  const ivirtualEnSeccion = secciones.some(s => s.entry.source === 'ivirtual')
   return (
     <article className="px-4 py-4 md:px-8 md:py-8 max-w-2xl lg:mx-auto w-full">
       <button onClick={onBack} className={`lg:hidden -ml-2 mb-4 flex items-center gap-2 min-h-11 px-2 rounded-lg text-[15px] font-medium text-[#64748B] hover:text-[#111827] cursor-pointer ${focusRing}`}>
@@ -370,6 +385,7 @@ function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
         <div className="min-w-0 pt-0.5">
           <h1 className="text-[20px] md:text-[22px] leading-snug font-semibold text-[#111827] tracking-[-0.01em] break-words">{course.name}</h1>
           <p className="text-[13px] text-[#94A3B8] mt-1">Desde {fuentes.map(f => SOURCE_LABEL[f.source]).join(' · ')}</p>
+          {!cargando && !ivirtualEnSeccion && ivirtualHref && <p className="mt-1.5"><IvirtualCourseLink href={ivirtualHref} /></p>}
         </div>
       </div>
 
@@ -400,6 +416,7 @@ function UnifiedCourseDetail({ course, entry, now, onBack, onRetry }: {
                   {SOURCE_LABEL[fuente.source]}
                   {periodo && <span className="font-normal text-[13px] text-[#94A3B8]">{periodo}</span>}
                 </h2>
+                {fuente.source === 'ivirtual' && ivirtualHref && <p className="-mt-2"><IvirtualCourseLink href={ivirtualHref} /></p>}
                 {fuente.source !== 'classroom' && <FinalGrade value={fuente.finalGrade} />}
                 {items.length > 0 && <div className="space-y-5"><ItemGroups items={items} now={now} idPrefix={`grupo-${fuente.source}`} /></div>}
                 {fuente.source === 'classroom' && <ClassroomNote />}
@@ -432,6 +449,7 @@ function CourseDetail({ course, entry, now, onBack, onRetry }: {
         <div className="min-w-0 pt-0.5">
           <h1 className="text-[20px] md:text-[22px] leading-snug font-semibold text-[#111827] tracking-[-0.01em] break-words">{course.name}</h1>
           <p className="text-[13px] text-[#94A3B8] mt-1">Desde {courseMeta(course)}</p>
+          {course.source === 'ivirtual' && courseIvirtualUrl(course) && <p className="mt-1.5"><IvirtualCourseLink href={courseIvirtualUrl(course)} /></p>}
         </div>
       </div>
 

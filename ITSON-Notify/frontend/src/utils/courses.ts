@@ -48,6 +48,40 @@ export function safeItemUrl(url: unknown): string | null {
   return parsed.href
 }
 
+// ITN-58g - Enlace "Abrir en iVirtual" de una materia. El backend lo arma con el id de
+// curso de Moodle; aquí se revalida como defensa en profundidad: solo
+// https://ivirtual.itson.edu.mx/course/view.php?id=N (N entero positivo de hasta 10
+// dígitos), sin usuario, contraseña, puerto, fragmento ni otros parámetros, máximo 2048
+// caracteres. Cualquier otro valor devuelve null (sin enlace).
+const IVIRTUAL_HOST = 'ivirtual.itson.edu.mx'
+const IVIRTUAL_PATH = '/course/view.php'
+const IVIRTUAL_ID = /^[1-9][0-9]{0,9}$/
+
+export function safeIvirtualUrl(url: unknown): string | null {
+  if (typeof url !== 'string') return null
+  const text = url.trim()
+  if (text === '' || text.length > MAX_URL_LENGTH) return null
+  let parsed: URL
+  try {
+    parsed = new URL(text)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== IVIRTUAL_HOST) return null
+  if (parsed.username || parsed.password || parsed.port || parsed.hash) return null
+  if (parsed.pathname !== IVIRTUAL_PATH) return null
+  const keys = [...parsed.searchParams.keys()]
+  const id = parsed.searchParams.get('id') ?? ''
+  if (keys.length !== 1 || keys[0] !== 'id' || !IVIRTUAL_ID.test(id)) return null
+  return `https://${IVIRTUAL_HOST}${IVIRTUAL_PATH}?id=${id}`
+}
+
+/** Enlace válido a la materia en iVirtual, solo si una de sus fuentes es iVirtual. */
+export function courseIvirtualUrl(course: Course): string | null {
+  if (!courseSources(course).some(s => s.source === 'ivirtual')) return null
+  return safeIvirtualUrl(course.ivirtualUrl)
+}
+
 const dueMs = (item: CourseItem) => {
   if (!item.dueAt) return NaN
   return Date.parse(item.dueAt)

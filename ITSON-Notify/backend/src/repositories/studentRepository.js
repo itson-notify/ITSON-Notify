@@ -93,7 +93,7 @@ function createStudentRepository(supabase) {
       filas.push(
         ...check(
           "subjects",
-          await supabase.from("subjects").select("id,name").eq("user_id", userId).in("id", parte),
+          await supabase.from("subjects").select("id,name,external_subject_id").eq("user_id", userId).in("id", parte),
         ),
       );
     }

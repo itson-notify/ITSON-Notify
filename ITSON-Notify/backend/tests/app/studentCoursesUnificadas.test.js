@@ -136,8 +136,11 @@ describe("ITN-58b - GET /api/courses con materias unificadas", () => {
     // Ingeniería de Software (3 fuentes), Cálculo II (iVirtual), Cálculo I (ITSON).
     assert.equal(cursos.length, 3);
     for (const c of cursos) {
-      // ITN-58d agrega `scope` (aditivo): los campos antiguos siguen igual.
-      assert.deepEqual(Object.keys(c).sort(), [...CAMPOS_ANTIGUOS, "sources", "scope"].sort());
+      // ITN-58d agrega `scope` e ITN-58g `ivirtualUrl` (solo con fuente iVirtual), ambos
+      // aditivos: los campos antiguos siguen igual.
+      const conIvirtual = c.sources.some((s) => s.source === "ivirtual");
+      const esperadas = [...CAMPOS_ANTIGUOS, "sources", "scope", ...(conIvirtual ? ["ivirtualUrl"] : [])];
+      assert.deepEqual(Object.keys(c).sort(), esperadas.sort());
       assert.equal(c.scope, "actual");
       assert.equal(typeof c.id, "string");
       assert.equal(typeof c.name, "string");
